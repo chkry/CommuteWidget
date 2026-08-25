@@ -12,4 +12,8 @@ data class CommuteSnapshot(
     val fetchedAtEpochMillis: Long,
     val lastFetchFailed: Boolean,
     val lastErrorMessage: String?,
+    val destinationLabel: String? = null,
+    val destinationLat: Double? = null,
+    val destinationLng: Double? = null,
+    val leaveByMinuteOfDay: Int? = null,
 )

@@ -1,6 +1,8 @@
 package com.crpakala.commutewidget.data
 
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.serializer
 
 internal val commuteJson = Json {
     ignoreUnknownKeys = true
@@ -42,4 +44,55 @@ fun decodeCommuteSnapshot(json: String?): CommuteSnapshot? {
     return runCatching {
         commuteJson.decodeFromString(CommuteSnapshot.serializer(), json)
     }.getOrNull()
+}
+
+fun encodeFavourites(favourites: List<Favourite>): String =
+    commuteJson.encodeToString(ListSerializer(Favourite.serializer()), favourites)
+
+fun decodeFavourites(json: String?): List<Favourite> {
+    if (json.isNullOrBlank()) {
+        return emptyList()
+    }
+    return runCatching {
+        commuteJson.decodeFromString(ListSerializer(Favourite.serializer()), json)
+    }.getOrElse { emptyList() }
+}
+
+fun encodeActiveFavourite(activeFavourite: ActiveFavourite): String =
+    commuteJson.encodeToString(ActiveFavourite.serializer(), activeFavourite)
+
+fun decodeActiveFavourite(json: String?): ActiveFavourite? {
+    if (json.isNullOrBlank()) {
+        return null
+    }
+    return runCatching {
+        commuteJson.decodeFromString(ActiveFavourite.serializer(), json)
+    }.getOrNull()
+}
+
+private val longListSerializer = ListSerializer(serializer<Long>())
+private val intListSerializer = ListSerializer(serializer<Int>())
+
+fun encodeLongSet(values: Set<Long>): String =
+    commuteJson.encodeToString(longListSerializer, values.sorted())
+
+fun decodeLongSet(json: String?, default: Set<Long> = emptySet()): Set<Long> {
+    if (json.isNullOrBlank()) {
+        return default
+    }
+    return runCatching {
+        commuteJson.decodeFromString(longListSerializer, json).toSet()
+    }.getOrElse { default }
+}
+
+fun encodeIntSet(values: Set<Int>): String =
+    commuteJson.encodeToString(intListSerializer, values.sorted())
+
+fun decodeIntSet(json: String?, default: Set<Int> = emptySet()): Set<Int> {
+    if (json.isNullOrBlank()) {
+        return default
+    }
+    return runCatching {
+        commuteJson.decodeFromString(intListSerializer, json).toSet()
+    }.getOrElse { default }
 }

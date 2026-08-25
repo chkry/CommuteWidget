@@ -20,6 +20,7 @@ import java.util.concurrent.TimeUnit
 object CommuteScheduler {
     const val MORNING_WORK_NAME = "commute_refresh_morning"
     const val EVENING_WORK_NAME = "commute_refresh_evening"
+    const val SLOT_CHAIN_WORK_NAME = "commute_slot_chain"
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -28,6 +29,7 @@ object CommuteScheduler {
         val settings = SettingsRepository.get(appContext).settingsSnapshot()
         scheduleSlot(appContext, CommuteRefreshWorker.Slot.MORNING, settings)
         scheduleSlot(appContext, CommuteRefreshWorker.Slot.EVENING, settings)
+        scheduleSlotChain(appContext, settings)
     }
 
     fun ensureScheduledAsync(context: Context) {
@@ -72,6 +74,54 @@ object CommuteScheduler {
             request,
         )
     }
+
+    /**
+     * (Re)schedules the "commute_slot_chain" unique work to fire at the next slot tick computed
+     * from [settings]. A no-op when history collection is disabled or no valid tick exists (e.g.
+     * empty [AppSettings.historyDays]) - the chain simply ends until [ensureScheduled] runs again
+     * with a config that produces a tick (see [SlotFetchWorker] for the self-reschedule side of
+     * this contract).
+     */
+    internal fun scheduleSlotChain(
+        context: Context,
+        settings: AppSettings,
+        existingWorkPolicy: ExistingWorkPolicy = ExistingWorkPolicy.REPLACE,
+    ) {
+        if (!settings.historyEnabled) {
+            return
+        }
+        val next = nextSlotTick(ZonedDateTime.now(), settings.historyDays, slotRanges(settings)) ?: return
+        scheduleSlotChainAt(context, next, existingWorkPolicy)
+    }
+
+    internal fun scheduleSlotChainAt(
+        context: Context,
+        target: ZonedDateTime,
+        existingWorkPolicy: ExistingWorkPolicy,
+    ) {
+        val now = ZonedDateTime.now()
+        val delayMillis = Duration.between(now, target).toMillis().coerceAtLeast(0)
+        val request = OneTimeWorkRequestBuilder<SlotFetchWorker>()
+            .setConstraints(
+                Constraints.Builder()
+                    .setRequiredNetworkType(NetworkType.CONNECTED)
+                    .build(),
+            )
+            .setInitialDelay(delayMillis, TimeUnit.MILLISECONDS)
+            .build()
+
+        WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
+            SLOT_CHAIN_WORK_NAME,
+            existingWorkPolicy,
+            request,
+        )
+    }
+
+    /** The morning and evening minute-of-day windows history collection samples within. */
+    internal fun slotRanges(settings: AppSettings): List<IntRange> = listOf(
+        settings.morningSlotStartMinuteOfDay..settings.morningSlotEndMinuteOfDay,
+        settings.eveningSlotStartMinuteOfDay..settings.eveningSlotEndMinuteOfDay,
+    )
 
     fun nextWeekdayOccurrence(now: ZonedDateTime, minuteOfDay: Int): ZonedDateTime {
         require(minuteOfDay in 0 until MINUTES_PER_DAY) {

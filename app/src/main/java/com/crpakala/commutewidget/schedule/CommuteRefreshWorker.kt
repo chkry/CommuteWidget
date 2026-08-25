@@ -8,6 +8,7 @@ import androidx.work.WorkerParameters
 import com.crpakala.commutewidget.data.AppSettings
 import com.crpakala.commutewidget.data.SettingsRepository
 import com.crpakala.commutewidget.engine.CommuteRefresher
+import com.crpakala.commutewidget.engine.RefreshTrigger
 import java.time.DayOfWeek
 import java.time.ZonedDateTime
 import kotlin.coroutines.cancellation.CancellationException
@@ -21,7 +22,7 @@ class CommuteRefreshWorker(
 
         try {
             if (isWeekday(ZonedDateTime.now().dayOfWeek)) {
-                CommuteRefresher.refreshNow(applicationContext)
+                CommuteRefresher.refreshNow(applicationContext, RefreshTrigger.AUTO)
             }
             val settings = SettingsRepository.get(applicationContext).settingsSnapshot()
             // APPEND_OR_REPLACE, not REPLACE: this worker IS the current holder of `slot.workName`,

@@ -1,7 +1,9 @@
 package com.crpakala.commutewidget.data
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class StoredValueCodecTest {
@@ -77,5 +79,128 @@ class StoredValueCodecTest {
     fun commuteSnapshotJson_invalidReturnsNull() {
         assertNull(decodeCommuteSnapshot("[]"))
         assertNull(decodeCommuteSnapshot(null))
+    }
+
+    @Test
+    fun commuteSnapshotJson_v1FormatDecodesWithNewFieldDefaults() {
+        val v1Json = """
+            {
+              "direction": "TO_WORK",
+              "durationSeconds": 1800,
+              "durationNoTrafficSeconds": 1500,
+              "distanceMeters": 12000,
+              "mapImagePath": "/cache/map.png",
+              "fetchedAtEpochMillis": 1700000000000,
+              "lastFetchFailed": false,
+              "lastErrorMessage": null
+            }
+        """.trimIndent()
+        val decoded = decodeCommuteSnapshot(v1Json)
+        requireNotNull(decoded)
+        assertEquals(Direction.TO_WORK, decoded.direction)
+        assertEquals(1800L, decoded.durationSeconds)
+        assertEquals(1500L, decoded.durationNoTrafficSeconds)
+        assertEquals(12000L, decoded.distanceMeters)
+        assertEquals("/cache/map.png", decoded.mapImagePath)
+        assertEquals(1_700_000_000_000L, decoded.fetchedAtEpochMillis)
+        assertEquals(false, decoded.lastFetchFailed)
+        assertNull(decoded.lastErrorMessage)
+        assertNull(decoded.destinationLabel)
+        assertNull(decoded.destinationLat)
+        assertNull(decoded.destinationLng)
+        assertNull(decoded.leaveByMinuteOfDay)
+    }
+
+    @Test
+    fun favouritesJson_roundTrip() {
+        val favourites = listOf(
+            Favourite(label = "Gym", place = Place("Gym St", 12.0, 77.0)),
+            Favourite(label = "School", place = Place("School Rd", 13.0, 78.0)),
+        )
+        val encoded = encodeFavourites(favourites)
+        assertEquals(favourites, decodeFavourites(encoded))
+    }
+
+    @Test
+    fun favouritesJson_corruptReturnsEmptyList() {
+        assertEquals(emptyList<Favourite>(), decodeFavourites("{not json}"))
+        assertEquals(emptyList<Favourite>(), decodeFavourites("[{bad}]"))
+        assertEquals(emptyList<Favourite>(), decodeFavourites(null))
+        assertEquals(emptyList<Favourite>(), decodeFavourites(""))
+    }
+
+    @Test
+    fun activeFavouriteJson_roundTrip() {
+        val favourite = Favourite(label = "Gym", place = Place("Gym St", 12.0, 77.0))
+        val active = ActiveFavourite(
+            favourite = favourite,
+            activatedAtEpochMillis = 1_000L,
+            expiresAtEpochMillis = 3_600_000L,
+        )
+        val encoded = encodeActiveFavourite(active)
+        assertEquals(active, decodeActiveFavourite(encoded))
+    }
+
+    @Test
+    fun isActive_beforeExpiry() {
+        val active = ActiveFavourite(
+            favourite = Favourite("Gym", Place("Gym St", 12.0, 77.0)),
+            activatedAtEpochMillis = 1_000L,
+            expiresAtEpochMillis = 5_000L,
+        )
+        assertTrue(isActive(active, nowEpochMillis = 4_999L))
+    }
+
+    @Test
+    fun isActive_atExpiry() {
+        val active = ActiveFavourite(
+            favourite = Favourite("Gym", Place("Gym St", 12.0, 77.0)),
+            activatedAtEpochMillis = 1_000L,
+            expiresAtEpochMillis = 5_000L,
+        )
+        assertFalse(isActive(active, nowEpochMillis = 5_000L))
+    }
+
+    @Test
+    fun isActive_afterExpiry() {
+        val active = ActiveFavourite(
+            favourite = Favourite("Gym", Place("Gym St", 12.0, 77.0)),
+            activatedAtEpochMillis = 1_000L,
+            expiresAtEpochMillis = 5_000L,
+        )
+        assertFalse(isActive(active, nowEpochMillis = 5_001L))
+    }
+
+    @Test
+    fun isActive_nullIsInactive() {
+        assertFalse(isActive(null, nowEpochMillis = 0L))
+    }
+
+    @Test
+    fun longSetJson_roundTrip() {
+        val values = setOf(42L, 7L, 99L)
+        val encoded = encodeLongSet(values)
+        assertEquals(values, decodeLongSet(encoded))
+    }
+
+    @Test
+    fun longSetJson_corruptReturnsDefault() {
+        assertEquals(emptySet<Long>(), decodeLongSet("{bad}"))
+        assertEquals(emptySet<Long>(), decodeLongSet(null))
+        assertEquals(setOf(1L), decodeLongSet("{bad}", default = setOf(1L)))
+    }
+
+    @Test
+    fun intSetJson_roundTrip() {
+        val values = setOf(1, 3, 5)
+        val encoded = encodeIntSet(values)
+        assertEquals(values, decodeIntSet(encoded))
+    }
+
+    @Test
+    fun intSetJson_corruptReturnsDefault() {
+        assertEquals(emptySet<Int>(), decodeIntSet("{bad}"))
+        assertEquals(emptySet<Int>(), decodeIntSet(null))
+        assertEquals(setOf(1, 2, 3, 4, 5), decodeIntSet("{bad}", default = setOf(1, 2, 3, 4, 5)))
     }
 }
