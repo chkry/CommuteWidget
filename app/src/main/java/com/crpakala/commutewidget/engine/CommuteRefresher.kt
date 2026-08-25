@@ -182,15 +182,12 @@ object CommuteRefresher {
             if (lastCompletedElapsedRealtime != 0L &&
                 nowElapsed - lastCompletedElapsedRealtime < MIN_REFRESH_GAP_MS
             ) {
-                // Cooldown skip: must not touch the refreshing-since flag, since no refresh (and
-                // therefore no widget-visible state change) is actually about to happen.
                 return
             }
 
             val repo = SettingsRepository.get(appContext)
-            // Set BEFORE any location/network work, with an immediate widget update, so the
-            // widget can render "Updating..." instantly instead of only after the fetch completes.
-            repo.setRefreshing(true)
+            // Immediate render before any location/network work so state changes made by the
+            // caller (e.g. a just-activated favourite chip) appear without waiting for the fetch.
             CommuteWidget().updateAll(appContext)
             try {
                 performRefresh(appContext, trigger)
@@ -201,7 +198,6 @@ object CommuteRefresher {
                 saveFailure(repo, currentDirectionHint(settings, ZonedDateTime.now()), e.message ?: "Refresh failed")
             } finally {
                 lastCompletedElapsedRealtime = SystemClock.elapsedRealtime()
-                repo.setRefreshing(false)
                 CommuteWidget().updateAll(appContext)
             }
         }

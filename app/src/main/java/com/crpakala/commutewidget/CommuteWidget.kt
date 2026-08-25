@@ -57,7 +57,6 @@ import com.crpakala.commutewidget.data.Favourite
 import com.crpakala.commutewidget.data.SettingsRepository
 import com.crpakala.commutewidget.data.SnapshotMode
 import com.crpakala.commutewidget.data.TravelMode
-import com.crpakala.commutewidget.data.isRefreshingActive
 import com.crpakala.commutewidget.engine.CommuteRefresher
 import com.crpakala.commutewidget.engine.RefreshTrigger
 import com.crpakala.commutewidget.engine.mapInSampleSize
@@ -73,10 +72,9 @@ private val WIDE_BREAKPOINT = DpSize(220.dp, 110.dp)
 private val LARGE_BREAKPOINT = DpSize(220.dp, 220.dp)
 private const val MAP_DECODE_MAX_EDGE = 1200
 private val LEAVE_BY_LATE_COLOR = Color(0xFFEA4335)
-private val WIDE_CHIP_COLUMN_WIDTH = 58.dp
 
-/** WIDE middle column holds up to 4 slim chips between the info panel and the map. */
-internal const val WIDE_MAX_FAVOURITE_CHIPS = 4
+/** WIDE shows at most 2 chips in the bottom row of the info panel; more would be unreadable. */
+internal const val WIDE_MAX_FAVOURITE_CHIPS = 2
 
 internal val FavouriteLabelKey = ActionParameters.Key<String>("favourite_label")
 
@@ -95,7 +93,6 @@ class CommuteWidget : GlanceAppWidget() {
         val nowMinuteOfDay = now.hour * 60 + now.minute
         val configured = settings.apiKey.isNotBlank() && settings.home != null && settings.work != null
         val activeFavourite = repo.activeFavourite(nowEpochMillis)
-        val refreshingSince = repo.refreshingSince()
 
         val colors = ColorProviders(
             light = dynamicLightColorScheme(context),
@@ -114,7 +111,6 @@ class CommuteWidget : GlanceAppWidget() {
                         showFavouriteChips = settings.showFavouriteChips,
                         favourites = settings.favourites,
                         activeFavouriteLabel = activeFavourite?.favourite?.label,
-                        isRefreshing = isRefreshingActive(refreshingSince, nowEpochMillis),
                     ),
                 )
             }
@@ -198,7 +194,6 @@ private data class WidgetExtras(
     val showFavouriteChips: Boolean,
     val favourites: List<Favourite>,
     val activeFavouriteLabel: String?,
-    val isRefreshing: Boolean,
 )
 
 private data class InfoStyle(
@@ -347,11 +342,7 @@ private fun WideLayout(
     val accent = trafficAccentColor(snapshot.durationSeconds, snapshot.durationNoTrafficSeconds)
     val showChips = shouldShowFavouriteChips(extras)
     val quiet = snapshot.mode == SnapshotMode.CALENDAR_EMPTY
-    val infoWidth = if (showChips) {
-        LocalSize.current.width * 0.34f
-    } else {
-        LocalSize.current.width * 0.4f
-    }
+    val infoWidth = LocalSize.current.width * 0.4f
     val mapAction = if (quiet) {
         actionRunCallback<RefreshAction>()
     } else {
@@ -394,12 +385,16 @@ private fun WideLayout(
             } else if (snapshot.lastFetchFailed) {
                 WarningGlyph()
             }
-        }
-        if (showChips) {
-            FavouriteChipColumn(
-                favourites = extras.favourites,
-                activeLabel = extras.activeFavouriteLabel,
-            )
+            if (showChips) {
+                Spacer(modifier = GlanceModifier.defaultWeight())
+                FavouriteChipRow(
+                    favourites = extras.favourites,
+                    activeLabel = extras.activeFavouriteLabel,
+                    maxChips = WIDE_MAX_FAVOURITE_CHIPS,
+                    expandChips = true,
+                    opaqueContainer = false,
+                )
+            }
         }
         Box(
             modifier = GlanceModifier
@@ -484,6 +479,7 @@ private fun LargeLayout(
                     activeLabel = extras.activeFavouriteLabel,
                     maxChips = extras.favourites.size,
                     expandChips = false,
+                    opaqueContainer = true,
                 )
             }
         }
@@ -499,8 +495,8 @@ private fun ModeInfo(
 ) {
     when (snapshot.mode) {
         SnapshotMode.COMMUTE -> CommuteInfo(snapshot, extras, accent, style)
-        SnapshotMode.CALENDAR_EVENT -> CalendarEventInfo(snapshot, extras, accent, style)
-        SnapshotMode.CALENDAR_EMPTY -> CalendarEmptyInfo(snapshot, extras, style)
+        SnapshotMode.CALENDAR_EVENT -> CalendarEventInfo(snapshot, accent, style)
+        SnapshotMode.CALENDAR_EMPTY -> CalendarEmptyInfo(snapshot, style)
     }
 }
 
@@ -513,12 +509,12 @@ private fun CommuteInfo(
 ) {
     val title = destinationDisplayLabel(snapshot.direction, snapshot.destinationLabel)
     if (style.inlineEta) {
-        InlineTitleEta(title, snapshot, extras.isRefreshing, accent, style.etaFontSize)
+        InlineTitleEta(title, snapshot, accent, style.etaFontSize)
     } else {
         DestinationLabelText(title, style.destinationFontSize)
-        EtaText(snapshot, extras.isRefreshing, accent, style.etaFontSize)
+        EtaText(snapshot, accent, style.etaFontSize)
     }
-    if (style.showDistance && !extras.isRefreshing) {
+    if (style.showDistance) {
         DistanceText(snapshot.distanceMeters)
     }
     if (style.showTrafficBar) {
@@ -533,22 +529,21 @@ private fun CommuteInfo(
 @Composable
 private fun CalendarEventInfo(
     snapshot: CommuteSnapshot,
-    extras: WidgetExtras,
     accent: Color,
     style: InfoStyle,
 ) {
     CaptionText("Next event", style.captionFontSize)
     val title = calendarEventTitle(snapshot.destinationLabel)
     if (style.inlineEta) {
-        InlineTitleEta(title, snapshot, extras.isRefreshing, accent, style.etaFontSize)
+        InlineTitleEta(title, snapshot, accent, style.etaFontSize)
     } else {
         EventTitleText(title, style.destinationFontSize)
-        EtaText(snapshot, extras.isRefreshing, accent, style.etaFontSize)
+        EtaText(snapshot, accent, style.etaFontSize)
     }
     snapshot.eventStartEpochMillis?.let { start ->
         CaptionText(formatEventAtTime(start), style.captionFontSize)
     }
-    if (style.showDistance && !extras.isRefreshing) {
+    if (style.showDistance) {
         DistanceText(snapshot.distanceMeters)
     }
     if (style.showTrafficBar) {
@@ -559,7 +554,6 @@ private fun CalendarEventInfo(
 @Composable
 private fun CalendarEmptyInfo(
     snapshot: CommuteSnapshot,
-    extras: WidgetExtras,
     style: InfoStyle,
 ) {
     when (calendarEmptyCase(snapshot)) {
@@ -594,28 +588,19 @@ private fun CalendarEmptyInfo(
             )
         }
     }
-    if (extras.isRefreshing) {
-        EtaText(snapshot, isRefreshing = true, accent = Color(0xFF34A853), fontSize = style.captionFontSize)
-    }
 }
 
 @Composable
 private fun InlineTitleEta(
     title: String,
     snapshot: CommuteSnapshot,
-    isRefreshing: Boolean,
     accent: Color,
     fontSize: TextUnit,
 ) {
-    val etaPart = if (isRefreshing) "Updating..." else formatEta(snapshot.durationSeconds)
     Text(
-        text = "$title  $etaPart",
+        text = "$title  ${formatEta(snapshot.durationSeconds)}",
         style = TextStyle(
-            color = if (isRefreshing) {
-                GlanceTheme.colors.onSurfaceVariant
-            } else {
-                ColorProvider(accent)
-            },
+            color = ColorProvider(accent),
             fontSize = fontSize,
             fontWeight = FontWeight.Bold,
         ),
@@ -664,31 +649,18 @@ private fun CaptionText(text: String, fontSize: TextUnit) {
 @Composable
 private fun EtaText(
     snapshot: CommuteSnapshot,
-    isRefreshing: Boolean,
     accent: Color,
     fontSize: TextUnit,
 ) {
-    if (isRefreshing) {
-        Text(
-            text = "Updating...",
-            style = TextStyle(
-                color = GlanceTheme.colors.onSurfaceVariant,
-                fontSize = fontSize,
-                fontWeight = FontWeight.Medium,
-            ),
-            maxLines = 1,
-        )
-    } else {
-        Text(
-            text = formatEta(snapshot.durationSeconds),
-            style = TextStyle(
-                color = ColorProvider(accent),
-                fontSize = fontSize,
-                fontWeight = FontWeight.Bold,
-            ),
-            maxLines = 1,
-        )
-    }
+    Text(
+        text = formatEta(snapshot.durationSeconds),
+        style = TextStyle(
+            color = ColorProvider(accent),
+            fontSize = fontSize,
+            fontWeight = FontWeight.Bold,
+        ),
+        maxLines = 1,
+    )
 }
 
 @Composable
@@ -754,16 +726,22 @@ private fun FavouriteChipRow(
     activeLabel: String?,
     maxChips: Int,
     expandChips: Boolean,
+    opaqueContainer: Boolean,
 ) {
     val shown = favouriteChipsToShow(favourites, maxChips)
     if (shown.isEmpty()) return
-    Row(
-        modifier = GlanceModifier
+    val containerModifier = if (opaqueContainer) {
+        GlanceModifier
             .fillMaxWidth()
             .padding(8.dp)
             .background(GlanceTheme.colors.surfaceVariant)
             .cornerRadius(16.dp)
-            .padding(horizontal = 8.dp, vertical = 6.dp),
+            .padding(horizontal = 8.dp, vertical = 6.dp)
+    } else {
+        GlanceModifier.fillMaxWidth()
+    }
+    Row(
+        modifier = containerModifier,
         verticalAlignment = Alignment.Vertical.CenterVertically,
     ) {
         shown.forEachIndexed { index, favourite ->
@@ -781,40 +759,10 @@ private fun FavouriteChipRow(
 }
 
 @Composable
-private fun FavouriteChipColumn(
-    favourites: List<Favourite>,
-    activeLabel: String?,
-) {
-    val shown = favouriteChipsToShow(favourites, WIDE_MAX_FAVOURITE_CHIPS)
-    if (shown.isEmpty()) return
-    Column(
-        modifier = GlanceModifier
-            .width(WIDE_CHIP_COLUMN_WIDTH)
-            .fillMaxHeight()
-            .padding(vertical = 6.dp, horizontal = 2.dp),
-        verticalAlignment = Alignment.Vertical.CenterVertically,
-        horizontalAlignment = Alignment.Horizontal.CenterHorizontally,
-    ) {
-        shown.forEachIndexed { index, favourite ->
-            if (index > 0) {
-                Spacer(modifier = GlanceModifier.height(3.dp))
-            }
-            FavouriteChip(
-                favourite = favourite,
-                highlighted = favourite.label == activeLabel,
-                modifier = GlanceModifier.fillMaxWidth(),
-                compact = true,
-            )
-        }
-    }
-}
-
-@Composable
 private fun FavouriteChip(
     favourite: Favourite,
     highlighted: Boolean,
     modifier: GlanceModifier,
-    compact: Boolean = false,
 ) {
     val background = if (highlighted) {
         GlanceTheme.colors.primaryContainer
@@ -830,10 +778,7 @@ private fun FavouriteChip(
         modifier = modifier
             .background(background)
             .cornerRadius(12.dp)
-            .padding(
-                horizontal = if (compact) 4.dp else 6.dp,
-                vertical = if (compact) 2.dp else 3.dp,
-            )
+            .padding(horizontal = 6.dp, vertical = 3.dp)
             .clickable(
                 actionRunCallback<FavouriteAction>(
                     actionParametersOf(FavouriteLabelKey to favourite.label),
@@ -845,7 +790,7 @@ private fun FavouriteChip(
             text = favourite.label,
             style = TextStyle(
                 color = foreground,
-                fontSize = if (compact) 9.sp else 10.sp,
+                fontSize = 10.sp,
                 fontWeight = if (highlighted) FontWeight.Bold else FontWeight.Medium,
             ),
             maxLines = 1,

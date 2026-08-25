@@ -6,7 +6,6 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
-import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -40,7 +39,6 @@ private object PreferenceKeys {
     val ACTIVE_FAVOURITE_JSON = stringPreferencesKey("active_favourite_json")
     val LEAVE_BY_NOTIFIED_TO_WORK = stringPreferencesKey("leave_by_notified_to_work")
     val LEAVE_BY_NOTIFIED_TO_HOME = stringPreferencesKey("leave_by_notified_to_home")
-    val REFRESHING_SINCE_EPOCH_MILLIS = longPreferencesKey("refreshing_since_epoch_millis")
 }
 
 private fun Preferences.toAppSettings(): AppSettings {
@@ -81,25 +79,9 @@ class SettingsRepository private constructor(
         decodeActiveFavourite(preferences[PreferenceKeys.ACTIVE_FAVOURITE_JSON])
     }
 
-    val refreshingSinceFlow: Flow<Long?> = dataStore.data.map { preferences ->
-        preferences[PreferenceKeys.REFRESHING_SINCE_EPOCH_MILLIS]
-    }
-
     suspend fun settingsSnapshot(): AppSettings = settings.first()
 
     suspend fun snapshot(): CommuteSnapshot? = snapshotFlow.first()
-
-    suspend fun refreshingSince(): Long? = refreshingSinceFlow.first()
-
-    suspend fun setRefreshing(inProgress: Boolean, nowEpochMillis: Long = System.currentTimeMillis()) {
-        dataStore.edit { preferences ->
-            if (inProgress) {
-                preferences[PreferenceKeys.REFRESHING_SINCE_EPOCH_MILLIS] = nowEpochMillis
-            } else {
-                preferences.remove(PreferenceKeys.REFRESHING_SINCE_EPOCH_MILLIS)
-            }
-        }
-    }
 
     suspend fun activeFavourite(nowEpochMillis: Long = System.currentTimeMillis()): ActiveFavourite? {
         val stored = decodeActiveFavourite(

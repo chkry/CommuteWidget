@@ -69,7 +69,7 @@ class CommuteWidgetDisplayTest {
     }
 
     @Test
-    fun favouriteChipsToShow_capsWideColumnAtFour() {
+    fun favouriteChipsToShow_capsWideRowAtTwo() {
         val favourites = listOf(
             favourite("Gym"),
             favourite("School"),
@@ -78,7 +78,7 @@ class CommuteWidgetDisplayTest {
             favourite("Depot"),
         )
         val shown = favouriteChipsToShow(favourites, WIDE_MAX_FAVOURITE_CHIPS)
-        assertEquals(listOf("Gym", "School", "Airport", "Clinic"), shown.map { it.label })
+        assertEquals(listOf("Gym", "School"), shown.map { it.label })
     }
 
     @Test
