@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -21,9 +22,6 @@ private object PreferenceKeys {
     val HOME_JSON = stringPreferencesKey("home_json")
     val WORK_JSON = stringPreferencesKey("work_json")
     val TRAVEL_MODE = stringPreferencesKey("travel_mode")
-    val SWITCH_MINUTE_OF_DAY = intPreferencesKey("switch_minute_of_day")
-    val MORNING_REFRESH_MINUTE_OF_DAY = intPreferencesKey("morning_refresh_minute_of_day")
-    val EVENING_REFRESH_MINUTE_OF_DAY = intPreferencesKey("evening_refresh_minute_of_day")
     val SNAPSHOT_JSON = stringPreferencesKey("snapshot_json")
     val FAVOURITES_JSON = stringPreferencesKey("favourites_json")
     val SHOW_FAVOURITE_CHIPS = booleanPreferencesKey("show_favourite_chips")
@@ -33,7 +31,6 @@ private object PreferenceKeys {
     val ARRIVE_HOME_BY_MINUTE_OF_DAY = intPreferencesKey("arrive_home_by_minute_of_day")
     val CALENDAR_ENABLED = booleanPreferencesKey("calendar_enabled")
     val SELECTED_CALENDAR_IDS_JSON = stringPreferencesKey("selected_calendar_ids_json")
-    val CALENDAR_LOOKAHEAD_MINUTES = intPreferencesKey("calendar_lookahead_minutes")
     val HISTORY_ENABLED = booleanPreferencesKey("history_enabled")
     val HISTORY_DAYS_JSON = stringPreferencesKey("history_days_json")
     val MORNING_SLOT_START_MINUTE_OF_DAY = intPreferencesKey("morning_slot_start_minute_of_day")
@@ -43,6 +40,7 @@ private object PreferenceKeys {
     val ACTIVE_FAVOURITE_JSON = stringPreferencesKey("active_favourite_json")
     val LEAVE_BY_NOTIFIED_TO_WORK = stringPreferencesKey("leave_by_notified_to_work")
     val LEAVE_BY_NOTIFIED_TO_HOME = stringPreferencesKey("leave_by_notified_to_home")
+    val REFRESHING_SINCE_EPOCH_MILLIS = longPreferencesKey("refreshing_since_epoch_millis")
 }
 
 private fun Preferences.toAppSettings(): AppSettings {
@@ -51,9 +49,6 @@ private fun Preferences.toAppSettings(): AppSettings {
         home = decodePlace(this[PreferenceKeys.HOME_JSON]),
         work = decodePlace(this[PreferenceKeys.WORK_JSON]),
         travelMode = parseTravelMode(this[PreferenceKeys.TRAVEL_MODE]),
-        switchMinuteOfDay = this[PreferenceKeys.SWITCH_MINUTE_OF_DAY] ?: 840,
-        morningRefreshMinuteOfDay = this[PreferenceKeys.MORNING_REFRESH_MINUTE_OF_DAY] ?: 480,
-        eveningRefreshMinuteOfDay = this[PreferenceKeys.EVENING_REFRESH_MINUTE_OF_DAY] ?: 1020,
         favourites = decodeFavourites(this[PreferenceKeys.FAVOURITES_JSON]),
         showFavouriteChips = this[PreferenceKeys.SHOW_FAVOURITE_CHIPS] ?: true,
         favouriteWindowMinutes = this[PreferenceKeys.FAVOURITE_WINDOW_MINUTES] ?: 60,
@@ -62,7 +57,6 @@ private fun Preferences.toAppSettings(): AppSettings {
         arriveHomeByMinuteOfDay = this[PreferenceKeys.ARRIVE_HOME_BY_MINUTE_OF_DAY] ?: 1170,
         calendarEnabled = this[PreferenceKeys.CALENDAR_ENABLED] ?: false,
         selectedCalendarIds = decodeLongSet(this[PreferenceKeys.SELECTED_CALENDAR_IDS_JSON]),
-        calendarLookaheadMinutes = this[PreferenceKeys.CALENDAR_LOOKAHEAD_MINUTES] ?: 180,
         historyEnabled = this[PreferenceKeys.HISTORY_ENABLED] ?: true,
         historyDays = decodeIntSet(this[PreferenceKeys.HISTORY_DAYS_JSON], setOf(1, 2, 3, 4, 5)),
         morningSlotStartMinuteOfDay = this[PreferenceKeys.MORNING_SLOT_START_MINUTE_OF_DAY] ?: 420,
@@ -87,9 +81,25 @@ class SettingsRepository private constructor(
         decodeActiveFavourite(preferences[PreferenceKeys.ACTIVE_FAVOURITE_JSON])
     }
 
+    val refreshingSinceFlow: Flow<Long?> = dataStore.data.map { preferences ->
+        preferences[PreferenceKeys.REFRESHING_SINCE_EPOCH_MILLIS]
+    }
+
     suspend fun settingsSnapshot(): AppSettings = settings.first()
 
     suspend fun snapshot(): CommuteSnapshot? = snapshotFlow.first()
+
+    suspend fun refreshingSince(): Long? = refreshingSinceFlow.first()
+
+    suspend fun setRefreshing(inProgress: Boolean, nowEpochMillis: Long = System.currentTimeMillis()) {
+        dataStore.edit { preferences ->
+            if (inProgress) {
+                preferences[PreferenceKeys.REFRESHING_SINCE_EPOCH_MILLIS] = nowEpochMillis
+            } else {
+                preferences.remove(PreferenceKeys.REFRESHING_SINCE_EPOCH_MILLIS)
+            }
+        }
+    }
 
     suspend fun activeFavourite(nowEpochMillis: Long = System.currentTimeMillis()): ActiveFavourite? {
         val stored = decodeActiveFavourite(
@@ -123,24 +133,6 @@ class SettingsRepository private constructor(
     suspend fun setTravelMode(travelMode: TravelMode) {
         dataStore.edit { preferences ->
             preferences[PreferenceKeys.TRAVEL_MODE] = travelMode.name
-        }
-    }
-
-    suspend fun setSwitchMinuteOfDay(minuteOfDay: Int) {
-        dataStore.edit { preferences ->
-            preferences[PreferenceKeys.SWITCH_MINUTE_OF_DAY] = minuteOfDay
-        }
-    }
-
-    suspend fun setMorningRefreshMinuteOfDay(minuteOfDay: Int) {
-        dataStore.edit { preferences ->
-            preferences[PreferenceKeys.MORNING_REFRESH_MINUTE_OF_DAY] = minuteOfDay
-        }
-    }
-
-    suspend fun setEveningRefreshMinuteOfDay(minuteOfDay: Int) {
-        dataStore.edit { preferences ->
-            preferences[PreferenceKeys.EVENING_REFRESH_MINUTE_OF_DAY] = minuteOfDay
         }
     }
 
@@ -190,12 +182,6 @@ class SettingsRepository private constructor(
     suspend fun setSelectedCalendarIds(ids: Set<Long>) {
         dataStore.edit { preferences ->
             preferences[PreferenceKeys.SELECTED_CALENDAR_IDS_JSON] = encodeLongSet(ids)
-        }
-    }
-
-    suspend fun setCalendarLookaheadMinutes(minutes: Int) {
-        dataStore.edit { preferences ->
-            preferences[PreferenceKeys.CALENDAR_LOOKAHEAD_MINUTES] = minutes
         }
     }
 

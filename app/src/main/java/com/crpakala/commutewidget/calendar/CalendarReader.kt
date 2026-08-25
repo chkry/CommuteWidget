@@ -3,7 +3,10 @@ package com.crpakala.commutewidget.calendar
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.provider.CalendarContract
+import java.time.Instant
+import java.time.ZoneId
 
 class CalendarReader(private val context: Context) {
     fun hasPermission(): Boolean =
@@ -103,9 +106,82 @@ class CalendarReader(private val context: Context) {
         return selectEvent(rows, selectedCalendarIds, nowEpochMillis)
     }
 
+    /**
+     * v3 calendar mode: the next event today, including unlocated events (unlike
+     * [nextEventWithLocation], which the v2 tap-triggered calendar override used and which this
+     * function does not replace - it stays available for existing callers). The window is
+     * `[now - 15 min, end of local day)`; [zoneId] determines what "end of local day" means.
+     */
+    fun nextEventToday(
+        selectedCalendarIds: Set<Long>,
+        nowEpochMillis: Long,
+        zoneId: ZoneId,
+    ): TodayEvent? {
+        if (!hasPermission() || selectedCalendarIds.isEmpty()) {
+            return null
+        }
+
+        val queryStartMillis = nowEpochMillis - TODAY_LOOKBACK_MILLIS
+        val endOfDayMillis = Instant.ofEpochMilli(nowEpochMillis)
+            .atZone(zoneId)
+            .toLocalDate()
+            .plusDays(1)
+            .atStartOfDay(zoneId)
+            .toInstant()
+            .toEpochMilli()
+        val instancesUri = CalendarContract.Instances.CONTENT_URI.buildUpon()
+            .appendPath(queryStartMillis.toString())
+            .appendPath(endOfDayMillis.toString())
+            .build()
+
+        val rows = queryInstances(instancesUri)
+        return selectTodayEvent(rows, selectedCalendarIds, nowEpochMillis)
+    }
+
+    private fun queryInstances(instancesUri: Uri): List<RawInstance> {
+        return runCatching {
+            context.contentResolver.query(
+                instancesUri,
+                INSTANCE_PROJECTION,
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                buildList {
+                    val calendarIdColumn = cursor.getColumnIndexOrThrow(CalendarContract.Instances.CALENDAR_ID)
+                    val titleColumn = cursor.getColumnIndexOrThrow(CalendarContract.Instances.TITLE)
+                    val locationColumn = cursor.getColumnIndexOrThrow(CalendarContract.Instances.EVENT_LOCATION)
+                    val beginColumn = cursor.getColumnIndexOrThrow(CalendarContract.Instances.BEGIN)
+                    val endColumn = cursor.getColumnIndexOrThrow(CalendarContract.Instances.END)
+                    val allDayColumn = cursor.getColumnIndexOrThrow(CalendarContract.Instances.ALL_DAY)
+                    val statusColumn = cursor.getColumnIndexOrThrow(CalendarContract.Instances.STATUS)
+                    val attendeeStatusColumn = cursor.getColumnIndexOrThrow(
+                        CalendarContract.Instances.SELF_ATTENDEE_STATUS,
+                    )
+
+                    while (cursor.moveToNext()) {
+                        add(
+                            RawInstance(
+                                calendarId = cursor.getLong(calendarIdColumn),
+                                title = cursor.getString(titleColumn),
+                                location = cursor.getString(locationColumn),
+                                beginEpochMillis = cursor.getLong(beginColumn),
+                                endEpochMillis = cursor.getLong(endColumn),
+                                allDay = cursor.getInt(allDayColumn) != 0,
+                                status = cursor.getInt(statusColumn),
+                                selfAttendeeStatus = cursor.getInt(attendeeStatusColumn),
+                            ),
+                        )
+                    }
+                }
+            }.orEmpty()
+        }.getOrDefault(emptyList())
+    }
+
     private companion object {
         const val MILLIS_PER_MINUTE = 60_000L
         const val GRACE_PERIOD_MILLIS = 15 * MILLIS_PER_MINUTE
+        const val TODAY_LOOKBACK_MILLIS = 15 * MILLIS_PER_MINUTE
 
         val CALENDAR_PROJECTION = arrayOf(
             CalendarContract.Calendars._ID,
@@ -137,6 +213,50 @@ internal data class RawInstance(
     val status: Int,
     val selfAttendeeStatus: Int,
 )
+
+private const val LOCATION_PREFERENCE_WINDOW_MILLIS = 30 * 60_000L
+
+/**
+ * Selects the v3 calendar-mode candidate from today's remaining [rows]. Unlike [selectEvent], an
+ * unlocated event is eligible - only all-day, cancelled, declined, and already-finished instances
+ * are excluded. Among eligible rows, the earliest-starting *located* candidate is preferred over
+ * the earliest-starting *unlocated* candidate when it starts within
+ * [LOCATION_PREFERENCE_WINDOW_MILLIS] of it (a route we can draw is more actionable than a bare
+ * reminder); otherwise the plain earliest-begin (then earliest-end) candidate wins, located or not.
+ */
+internal fun selectTodayEvent(
+    rows: List<RawInstance>,
+    selectedCalendarIds: Set<Long>,
+    nowEpochMillis: Long,
+): TodayEvent? {
+    val eligible = rows.asSequence()
+        .filter { it.calendarId in selectedCalendarIds }
+        .filter { !it.allDay }
+        .filter { it.status != CalendarContract.Events.STATUS_CANCELED }
+        .filter { it.selfAttendeeStatus != CalendarContract.Attendees.ATTENDEE_STATUS_DECLINED }
+        .filter { it.endEpochMillis > nowEpochMillis }
+        .toList()
+    if (eligible.isEmpty()) return null
+
+    val beginThenEnd = compareBy<RawInstance>({ it.beginEpochMillis }, { it.endEpochMillis })
+    val earliestUnlocated = eligible.filter { it.location.isNullOrBlank() }.minWithOrNull(beginThenEnd)
+    val earliestLocated = eligible.filter { !it.location.isNullOrBlank() }.minWithOrNull(beginThenEnd)
+
+    val chosen = when {
+        earliestLocated == null -> earliestUnlocated
+        earliestUnlocated == null -> earliestLocated
+        earliestLocated.beginEpochMillis - earliestUnlocated.beginEpochMillis <= LOCATION_PREFERENCE_WINDOW_MILLIS ->
+            earliestLocated
+        else -> earliestUnlocated
+    } ?: return null
+
+    return TodayEvent(
+        title = chosen.title?.trim().takeUnless { it.isNullOrEmpty() } ?: "Event",
+        location = chosen.location?.trim().takeUnless { it.isNullOrEmpty() },
+        startEpochMillis = chosen.beginEpochMillis,
+        endEpochMillis = chosen.endEpochMillis,
+    )
+}
 
 internal fun selectEvent(
     rows: List<RawInstance>,

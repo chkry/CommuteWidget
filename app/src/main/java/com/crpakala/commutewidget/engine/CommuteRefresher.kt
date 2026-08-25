@@ -20,17 +20,20 @@ import com.crpakala.commutewidget.api.ApiResult
 import com.crpakala.commutewidget.api.GeocodingClient
 import com.crpakala.commutewidget.api.LatLng
 import com.crpakala.commutewidget.api.MapImageFetcher
+import com.crpakala.commutewidget.api.RouteResult
 import com.crpakala.commutewidget.api.RouteTravelMode
 import com.crpakala.commutewidget.api.RoutesClient
 import com.crpakala.commutewidget.api.StaticMapUrl
 import com.crpakala.commutewidget.calendar.CalendarReader
+import com.crpakala.commutewidget.calendar.TodayEvent
 import com.crpakala.commutewidget.data.ActiveFavourite
 import com.crpakala.commutewidget.data.AppSettings
 import com.crpakala.commutewidget.data.CommuteSnapshot
 import com.crpakala.commutewidget.data.Direction
+import com.crpakala.commutewidget.data.Favourite
 import com.crpakala.commutewidget.data.SettingsRepository
+import com.crpakala.commutewidget.data.SnapshotMode
 import com.crpakala.commutewidget.data.TravelMode
-import com.crpakala.commutewidget.data.isActive
 import com.crpakala.commutewidget.history.CommuteSample
 import com.crpakala.commutewidget.history.HistoryStore
 import com.google.android.gms.location.LocationServices
@@ -44,7 +47,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
-import java.time.DayOfWeek
 import java.time.LocalTime
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
@@ -65,71 +67,45 @@ private const val MAP_FILE_B = "map_b.png"
 private const val LEAVE_BY_CHANNEL_ID = "leave_by"
 private const val LEAVE_BY_CHANNEL_NAME = "Leave-by advisor"
 private const val LEAVE_BY_NOTIFICATION_ID = 1001
+private const val DEFAULT_LOCATION_MAX_AGE_MILLIS = 120_000L
 
 /** Who initiated a refresh; drives both the fetch pipeline (map or not) and history bookkeeping. */
 enum class RefreshTrigger { TAP, AUTO, SLOT }
 
-fun decideDirection(
-    dayOfWeek: DayOfWeek,
-    minuteOfDay: Int,
-    switchMinuteOfDay: Int,
-): Direction {
-    if (dayOfWeek == DayOfWeek.SATURDAY || dayOfWeek == DayOfWeek.SUNDAY) {
-        return Direction.TO_HOME
-    }
-    return if (minuteOfDay < switchMinuteOfDay) Direction.TO_WORK else Direction.TO_HOME
-}
-
 /**
- * Resolved commute destination after applying the v2 precedence rules (favourite > calendar >
- * default). [DefaultTarget] is the only variant that participates in leave-by advice and history
- * recording.
+ * Resolved commute destination after applying the v3 precedence rule: an unexpired active
+ * favourite always wins over the window-model default (home/work-by-window [direction]).
+ * Calendar mode is not part of this precedence chain anymore - it is a distinct [WidgetMode]
+ * branch handled entirely separately (see [CommuteRefresher.performRefresh]), not a per-refresh
+ * override attempted alongside the default target the way the v2 tap-triggered calendar lookup was.
  */
 internal sealed class DestinationTarget {
-    data class FavouriteTarget(val favourite: com.crpakala.commutewidget.data.Favourite) : DestinationTarget()
-    data class CalendarTarget(val label: String, val destination: LatLng) : DestinationTarget()
+    data class FavouriteTarget(val favourite: Favourite) : DestinationTarget()
     data class DefaultTarget(val direction: Direction) : DestinationTarget()
 }
 
-/** Calendar destinations are only ever attempted for a user-initiated [RefreshTrigger.TAP]. */
-internal fun shouldAttemptCalendarLookup(
-    trigger: RefreshTrigger,
-    settings: AppSettings,
-    hasCalendarPermission: Boolean,
-): Boolean {
-    return trigger == RefreshTrigger.TAP &&
-        settings.calendarEnabled &&
-        hasCalendarPermission &&
-        settings.selectedCalendarIds.isNotEmpty()
-}
-
 /**
- * Pure precedence decision: an unexpired active favourite always wins, then an already-resolved
- * (geocoded) calendar destination, otherwise the v1 home/work-by-time-of-day default.
+ * [activeFavourite] is assumed already expiry-checked (i.e. sourced from
+ * [SettingsRepository.activeFavourite], which auto-clears an expired one and returns null) - this
+ * function only encodes the precedence, not the expiry check itself.
  */
 internal fun resolveDestinationTarget(
-    settings: AppSettings,
     activeFavourite: ActiveFavourite?,
-    calendarTarget: DestinationTarget.CalendarTarget?,
-    now: ZonedDateTime,
+    direction: Direction,
 ): DestinationTarget {
-    if (isActive(activeFavourite, now.toInstant().toEpochMilli())) {
-        return DestinationTarget.FavouriteTarget(activeFavourite!!.favourite)
+    return if (activeFavourite != null) {
+        DestinationTarget.FavouriteTarget(activeFavourite.favourite)
+    } else {
+        DestinationTarget.DefaultTarget(direction)
     }
-    if (calendarTarget != null) {
-        return calendarTarget
-    }
-    val direction = decideDirection(now.dayOfWeek, now.hour * 60 + now.minute, settings.switchMinuteOfDay)
-    return DestinationTarget.DefaultTarget(direction)
 }
 
 /**
- * History sampling has two independent gates: the destination must be the plain default
- * home/work-by-time-of-day route (favourite and calendar targets are never recorded, regardless
- * of trigger), and the user's "Enable commute history" master switch must be on. [SlotFetchWorker]
- * already refuses to even attempt a fetch when history is disabled, but TAP and AUTO refreshes
- * flow through this same recording path as an ordinary side effect of every successful fetch, so
- * that path needs its own [AppSettings.historyEnabled] check to honor the same toggle.
+ * History sampling only ever applies to the plain window-model commute (never a favourite
+ * override, never calendar mode - calendar mode never even calls this). [SlotFetchWorker] already
+ * refuses to even attempt a fetch when history is disabled, but TAP and AUTO refreshes flow
+ * through this same recording path as an ordinary side effect of every successful commute-mode
+ * fetch, so that path needs its own [AppSettings.historyEnabled] check to honor the same toggle.
  */
 internal fun shouldRecordHistorySample(historyEnabled: Boolean, target: DestinationTarget): Boolean {
     return historyEnabled && target is DestinationTarget.DefaultTarget
@@ -144,12 +120,12 @@ internal fun computeLeaveByMinuteOfDay(arriveByMinuteOfDay: Int, durationSeconds
 /**
  * A [RefreshTrigger.SLOT] fetch never downloads a fresh map; it may only keep showing the
  * previous one, and only when the previous snapshot was unambiguously the same route. Matching on
- * [Direction] alone is not sufficient: an active favourite or calendar destination can occupy a
- * SLOT-triggered fetch too (favourites apply to ANY trigger per spec), and those change the
- * physical origin/destination while leaving the home/work-by-time-of-day [Direction] untouched.
- * Comparing the resolved destination coordinates as well ensures the reused map still depicts the
- * route actually being displayed, instead of a stale favourite/calendar map bleeding into a
- * default-target render (or vice versa) after a target-type switch.
+ * [Direction] alone is not sufficient: an active favourite can occupy a SLOT-triggered fetch too
+ * (favourites apply to ANY trigger per spec), and that changes the physical origin/destination
+ * while leaving the home/work-by-window [Direction] untouched. Comparing the resolved destination
+ * coordinates as well ensures the reused map still depicts the route actually being displayed,
+ * instead of a stale favourite map bleeding into a default-target render (or vice versa) after a
+ * target-type switch.
  */
 internal fun shouldReuseSlotMap(
     previousDirection: Direction?,
@@ -175,6 +151,20 @@ internal fun shouldFireLeaveByNotification(
     return nowMinuteOfDay in leaveByMinuteOfDay..arriveByMinuteOfDay
 }
 
+/**
+ * Whether a location reading taken at [locationTimeEpochMillis] is fresh enough at
+ * [nowEpochMillis] to use directly instead of requesting a new fix - part of the v3 refresh-lag
+ * fix: `fusedClient.lastLocation` is checked first and used when fresh (age `<=` [maxAgeMillis]),
+ * only falling back to the slower `getCurrentLocation` flow when it is stale.
+ */
+internal fun isLocationFresh(
+    locationTimeEpochMillis: Long,
+    nowEpochMillis: Long,
+    maxAgeMillis: Long = DEFAULT_LOCATION_MAX_AGE_MILLIS,
+): Boolean {
+    return nowEpochMillis - locationTimeEpochMillis <= maxAgeMillis
+}
+
 private data class LeaveByPlan(
     val leaveByMinuteOfDay: Int,
     val arriveByMinuteOfDay: Int,
@@ -192,18 +182,26 @@ object CommuteRefresher {
             if (lastCompletedElapsedRealtime != 0L &&
                 nowElapsed - lastCompletedElapsedRealtime < MIN_REFRESH_GAP_MS
             ) {
+                // Cooldown skip: must not touch the refreshing-since flag, since no refresh (and
+                // therefore no widget-visible state change) is actually about to happen.
                 return
             }
+
+            val repo = SettingsRepository.get(appContext)
+            // Set BEFORE any location/network work, with an immediate widget update, so the
+            // widget can render "Updating..." instantly instead of only after the fetch completes.
+            repo.setRefreshing(true)
+            CommuteWidget().updateAll(appContext)
             try {
                 performRefresh(appContext, trigger)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                val repo = SettingsRepository.get(appContext)
                 val settings = repo.settingsSnapshot()
-                saveFailure(repo, directionNow(settings), e.message ?: "Refresh failed")
+                saveFailure(repo, currentDirectionHint(settings, ZonedDateTime.now()), e.message ?: "Refresh failed")
             } finally {
                 lastCompletedElapsedRealtime = SystemClock.elapsedRealtime()
+                repo.setRefreshing(false)
                 CommuteWidget().updateAll(appContext)
             }
         }
@@ -221,118 +219,159 @@ object CommuteRefresher {
 
         val now = ZonedDateTime.now()
         val nowEpochMillis = System.currentTimeMillis()
-        val isWeekend = now.dayOfWeek == DayOfWeek.SATURDAY || now.dayOfWeek == DayOfWeek.SUNDAY
-        val direction = decideDirection(now.dayOfWeek, now.hour * 60 + now.minute, settings.switchMinuteOfDay)
+        val dayOfWeekIso = now.dayOfWeek.value
+        val minuteOfDay = now.hour * 60 + now.minute
+
+        val widgetMode = resolveWidgetMode(
+            dayOfWeekIso = dayOfWeekIso,
+            minuteOfDay = minuteOfDay,
+            historyDays = settings.historyDays,
+            morningStart = settings.morningSlotStartMinuteOfDay,
+            morningEnd = settings.morningSlotEndMinuteOfDay,
+            eveningStart = settings.eveningSlotStartMinuteOfDay,
+            eveningEnd = settings.eveningSlotEndMinuteOfDay,
+        )
+
+        // A direction is still required unconditionally: it seeds CommuteSnapshot.direction even
+        // in calendar mode (where it is otherwise a don't-care for rendering) and for a favourite
+        // override that happens to land outside both windows.
+        val nextWindowResult = nextWindowFor(settings, dayOfWeekIso, minuteOfDay)
+        val direction = when (widgetMode) {
+            is WidgetMode.Commute -> widgetMode.direction
+            WidgetMode.Calendar -> nextWindowResult?.direction ?: Direction.TO_WORK
+        }
 
         val activeFavourite = repo.activeFavourite(nowEpochMillis)
-        val calendarTarget = if (activeFavourite == null) {
-            resolveCalendarTarget(context, trigger, settings, nowEpochMillis)
-        } else {
-            null
-        }
-        val target = resolveDestinationTarget(settings, activeFavourite, calendarTarget, now)
-
-        val destination: LatLng
-        val destinationLabel: String
-        when (target) {
+        when (val target = resolveDestinationTarget(activeFavourite, direction)) {
             is DestinationTarget.FavouriteTarget -> {
-                destination = LatLng(target.favourite.place.lat, target.favourite.place.lng)
-                destinationLabel = target.favourite.label
-            }
-            is DestinationTarget.CalendarTarget -> {
-                destination = target.destination
-                destinationLabel = target.label
+                performFavouriteRefresh(context, repo, settings, trigger, target.favourite, direction, nowEpochMillis)
             }
             is DestinationTarget.DefaultTarget -> {
-                val destPlace = if (target.direction == Direction.TO_WORK) settings.work else settings.home
-                destination = LatLng(destPlace.lat, destPlace.lng)
-                destinationLabel = if (target.direction == Direction.TO_WORK) "Work" else "Home"
-            }
-        }
-
-        val origin: LatLng = when (target) {
-            is DestinationTarget.FavouriteTarget, is DestinationTarget.CalendarTarget -> {
-                when (val location = currentDeviceLocation(context)) {
-                    is ApiResult.Success -> location.value
-                    is ApiResult.Failure -> {
-                        saveFailure(repo, direction, location.message)
-                        return
+                when (widgetMode) {
+                    is WidgetMode.Commute -> {
+                        performCommuteRefresh(context, repo, settings, trigger, widgetMode.direction, now, nowEpochMillis)
+                    }
+                    WidgetMode.Calendar -> {
+                        performCalendarRefresh(context, repo, settings, direction, nextWindowResult, now, nowEpochMillis)
                     }
                 }
             }
-            is DestinationTarget.DefaultTarget -> {
-                if (isWeekend) {
-                    when (val location = currentDeviceLocation(context)) {
-                        is ApiResult.Success -> location.value
-                        is ApiResult.Failure -> {
-                            saveFailure(repo, direction, location.message)
-                            return
-                        }
-                    }
-                } else if (target.direction == Direction.TO_WORK) {
-                    LatLng(settings.home.lat, settings.home.lng)
-                } else {
-                    LatLng(settings.work.lat, settings.work.lng)
-                }
+        }
+    }
+
+    private fun nextWindowFor(settings: AppSettings, dayOfWeekIso: Int, minuteOfDay: Int): NextWindow? =
+        nextWindow(
+            dayOfWeekIso = dayOfWeekIso,
+            minuteOfDay = minuteOfDay,
+            historyDays = settings.historyDays,
+            morningStart = settings.morningSlotStartMinuteOfDay,
+            morningEnd = settings.morningSlotEndMinuteOfDay,
+            eveningStart = settings.eveningSlotStartMinuteOfDay,
+            eveningEnd = settings.eveningSlotEndMinuteOfDay,
+        )
+
+    private suspend fun performFavouriteRefresh(
+        context: Context,
+        repo: SettingsRepository,
+        settings: AppSettings,
+        trigger: RefreshTrigger,
+        favourite: Favourite,
+        direction: Direction,
+        nowEpochMillis: Long,
+    ) {
+        val destination = LatLng(favourite.place.lat, favourite.place.lng)
+        val destinationLabel = favourite.label
+
+        val origin = when (val location = currentDeviceLocation(context)) {
+            is ApiResult.Success -> location.value
+            is ApiResult.Failure -> {
+                saveFailure(repo, direction, location.message, SnapshotMode.COMMUTE, destinationLabel)
+                return
             }
         }
 
-        val mode = when (settings.travelMode) {
-            TravelMode.DRIVE -> RouteTravelMode.DRIVE
-            TravelMode.TWO_WHEELER -> RouteTravelMode.TWO_WHEELER
-        }
-
-        val route = when (val result = RoutesClient(settings.apiKey).computeRoute(origin, destination, mode)) {
+        val route = when (
+            val result = RoutesClient(settings.apiKey).computeRoute(origin, destination, travelModeFor(settings.travelMode))
+        ) {
             is ApiResult.Success -> result.value
             is ApiResult.Failure -> {
-                saveFailure(repo, direction, result.message)
+                saveFailure(repo, direction, result.message, SnapshotMode.COMMUTE, destinationLabel)
                 return
             }
         }
 
         val previousSnapshot = repo.snapshot()
-
-        val mapImagePath: String? = when (trigger) {
-            RefreshTrigger.SLOT -> {
-                if (previousSnapshot != null &&
-                    shouldReuseSlotMap(
-                        previousDirection = previousSnapshot.direction,
-                        previousDestinationLat = previousSnapshot.destinationLat,
-                        previousDestinationLng = previousSnapshot.destinationLng,
-                        direction = direction,
-                        destination = destination,
-                    )
-                ) {
-                    previousSnapshot.mapImagePath
-                } else {
-                    null
-                }
-            }
-            RefreshTrigger.TAP, RefreshTrigger.AUTO -> {
-                val mapUrl = StaticMapUrl.build(
-                    apiKey = settings.apiKey,
-                    widthPx = MAP_FETCH_WIDTH_PX,
-                    heightPx = MAP_FETCH_HEIGHT_PX,
-                    route = route,
-                    origin = origin,
-                    destination = destination,
-                )
-                val destFile = nextMapFile(context.filesDir, previousSnapshot?.mapImagePath)
-                val mapFile = when (val fetched = MapImageFetcher().fetch(mapUrl, destFile)) {
-                    is ApiResult.Success -> fetched.value
-                    is ApiResult.Failure -> {
-                        saveFailure(repo, direction, fetched.message)
-                        return
-                    }
-                }
-                withContext(Dispatchers.IO) {
-                    downsampleMapFile(mapFile)
-                }
-                mapFile.absolutePath
+        val mapImagePath = when (
+            val mapResult = resolveMapImagePath(context, trigger, previousSnapshot, direction, destination, origin, route, settings.apiKey)
+        ) {
+            is ApiResult.Success -> mapResult.value
+            is ApiResult.Failure -> {
+                saveFailure(repo, direction, mapResult.message, SnapshotMode.COMMUTE, destinationLabel)
+                return
             }
         }
 
-        val leaveByPlan = leaveByPlanFor(settings, target, isWeekend, direction, route.durationSeconds)
+        repo.saveSnapshot(
+            CommuteSnapshot(
+                direction = direction,
+                durationSeconds = route.durationSeconds,
+                durationNoTrafficSeconds = route.staticDurationSeconds,
+                distanceMeters = route.distanceMeters,
+                mapImagePath = mapImagePath,
+                fetchedAtEpochMillis = nowEpochMillis,
+                lastFetchFailed = false,
+                lastErrorMessage = null,
+                destinationLabel = destinationLabel,
+                destinationLat = destination.lat,
+                destinationLng = destination.lng,
+                leaveByMinuteOfDay = null,
+                mode = SnapshotMode.COMMUTE,
+                eventStartEpochMillis = null,
+                nextWindowLabel = null,
+                nextWindowStartMinuteOfDay = null,
+            ),
+        )
+        // Favourite overrides never record history and never drive leave-by, unchanged from v2.
+    }
+
+    private suspend fun performCommuteRefresh(
+        context: Context,
+        repo: SettingsRepository,
+        settings: AppSettings,
+        trigger: RefreshTrigger,
+        direction: Direction,
+        now: ZonedDateTime,
+        nowEpochMillis: Long,
+    ) {
+        val target = DestinationTarget.DefaultTarget(direction)
+        val home = settings.home!!
+        val work = settings.work!!
+        val destinationLabel = if (direction == Direction.TO_WORK) "Work" else "Home"
+        val destination = if (direction == Direction.TO_WORK) LatLng(work.lat, work.lng) else LatLng(home.lat, home.lng)
+        val origin = if (direction == Direction.TO_WORK) LatLng(home.lat, home.lng) else LatLng(work.lat, work.lng)
+
+        val route = when (
+            val result = RoutesClient(settings.apiKey).computeRoute(origin, destination, travelModeFor(settings.travelMode))
+        ) {
+            is ApiResult.Success -> result.value
+            is ApiResult.Failure -> {
+                saveFailure(repo, direction, result.message, SnapshotMode.COMMUTE, destinationLabel)
+                return
+            }
+        }
+
+        val previousSnapshot = repo.snapshot()
+        val mapImagePath = when (
+            val mapResult = resolveMapImagePath(context, trigger, previousSnapshot, direction, destination, origin, route, settings.apiKey)
+        ) {
+            is ApiResult.Success -> mapResult.value
+            is ApiResult.Failure -> {
+                saveFailure(repo, direction, mapResult.message, SnapshotMode.COMMUTE, destinationLabel)
+                return
+            }
+        }
+
+        val leaveByPlan = commuteLeaveByPlanFor(settings, direction, route.durationSeconds)
 
         repo.saveSnapshot(
             CommuteSnapshot(
@@ -348,6 +387,10 @@ object CommuteRefresher {
                 destinationLat = destination.lat,
                 destinationLng = destination.lng,
                 leaveByMinuteOfDay = leaveByPlan?.leaveByMinuteOfDay,
+                mode = SnapshotMode.COMMUTE,
+                eventStartEpochMillis = null,
+                nextWindowLabel = null,
+                nextWindowStartMinuteOfDay = null,
             ),
         )
 
@@ -370,39 +413,177 @@ object CommuteRefresher {
         }
     }
 
-    private suspend fun resolveCalendarTarget(
+    /**
+     * v3 calendar mode. Never records history and never computes leave-by (both remain the
+     * exclusive domain of [performCommuteRefresh]). A located event's route-fetch failure uses
+     * [saveFailure]'s standard preserve-stale-data behavior, but forces `mode`/`destinationLabel`/
+     * `eventStartEpochMillis` to the attempted calendar target so a stale unrelated destination
+     * label never lingers under a CALENDAR_EVENT mode tag.
+     */
+    private suspend fun performCalendarRefresh(
         context: Context,
-        trigger: RefreshTrigger,
+        repo: SettingsRepository,
         settings: AppSettings,
+        direction: Direction,
+        nextWindowResult: NextWindow?,
+        now: ZonedDateTime,
         nowEpochMillis: Long,
-    ): DestinationTarget.CalendarTarget? {
+    ) {
         val calendarReader = CalendarReader(context)
-        if (!shouldAttemptCalendarLookup(trigger, settings, calendarReader.hasPermission())) {
-            return null
-        }
-        val event = calendarReader.nextEventWithLocation(
-            settings.selectedCalendarIds,
-            nowEpochMillis,
-            settings.calendarLookaheadMinutes,
-        ) ?: return null
+        val canReadCalendar = settings.calendarEnabled &&
+            calendarReader.hasPermission() &&
+            settings.selectedCalendarIds.isNotEmpty()
 
-        return when (val geocoded = GeocodingClient(settings.apiKey).geocode(event.location)) {
-            is ApiResult.Success -> {
-                val hit = geocoded.value.firstOrNull() ?: return null
-                DestinationTarget.CalendarTarget(event.title, hit.location)
-            }
-            is ApiResult.Failure -> null
+        val event: TodayEvent? = if (canReadCalendar) {
+            calendarReader.nextEventToday(settings.selectedCalendarIds, nowEpochMillis, now.zone)
+        } else {
+            null
         }
+
+        if (event == null) {
+            repo.saveSnapshot(calendarEmptySnapshot(direction, nowEpochMillis, nextWindowResult))
+            return
+        }
+
+        val location = event.location
+        if (location.isNullOrBlank()) {
+            repo.saveSnapshot(
+                CommuteSnapshot(
+                    direction = direction,
+                    durationSeconds = 0L,
+                    durationNoTrafficSeconds = 0L,
+                    distanceMeters = 0L,
+                    mapImagePath = null,
+                    fetchedAtEpochMillis = nowEpochMillis,
+                    lastFetchFailed = false,
+                    lastErrorMessage = null,
+                    destinationLabel = event.title,
+                    destinationLat = null,
+                    destinationLng = null,
+                    leaveByMinuteOfDay = null,
+                    mode = SnapshotMode.CALENDAR_EMPTY,
+                    eventStartEpochMillis = event.startEpochMillis,
+                    nextWindowLabel = null,
+                    nextWindowStartMinuteOfDay = null,
+                ),
+            )
+            return
+        }
+
+        val geocoded = when (val result = GeocodingClient(settings.apiKey).geocode(location)) {
+            is ApiResult.Success -> result.value.firstOrNull()
+            is ApiResult.Failure -> {
+                saveFailure(repo, direction, result.message, SnapshotMode.CALENDAR_EVENT, event.title, event.startEpochMillis)
+                return
+            }
+        }
+        if (geocoded == null) {
+            saveFailure(
+                repo,
+                direction,
+                "Event location not found",
+                SnapshotMode.CALENDAR_EVENT,
+                event.title,
+                event.startEpochMillis,
+            )
+            return
+        }
+        val destination = geocoded.location
+
+        val origin = when (val deviceLocation = currentDeviceLocation(context)) {
+            is ApiResult.Success -> deviceLocation.value
+            is ApiResult.Failure -> {
+                saveFailure(
+                    repo,
+                    direction,
+                    deviceLocation.message,
+                    SnapshotMode.CALENDAR_EVENT,
+                    event.title,
+                    event.startEpochMillis,
+                )
+                return
+            }
+        }
+
+        val route = when (
+            val result = RoutesClient(settings.apiKey).computeRoute(origin, destination, travelModeFor(settings.travelMode))
+        ) {
+            is ApiResult.Success -> result.value
+            is ApiResult.Failure -> {
+                saveFailure(repo, direction, result.message, SnapshotMode.CALENDAR_EVENT, event.title, event.startEpochMillis)
+                return
+            }
+        }
+
+        val previousSnapshot = repo.snapshot()
+        val mapImagePath = when (
+            val mapResult = fetchFreshMap(context, previousSnapshot?.mapImagePath, settings.apiKey, route, origin, destination)
+        ) {
+            is ApiResult.Success -> mapResult.value
+            is ApiResult.Failure -> {
+                saveFailure(
+                    repo,
+                    direction,
+                    mapResult.message,
+                    SnapshotMode.CALENDAR_EVENT,
+                    event.title,
+                    event.startEpochMillis,
+                )
+                return
+            }
+        }
+
+        repo.saveSnapshot(
+            CommuteSnapshot(
+                direction = direction,
+                durationSeconds = route.durationSeconds,
+                durationNoTrafficSeconds = route.staticDurationSeconds,
+                distanceMeters = route.distanceMeters,
+                mapImagePath = mapImagePath,
+                fetchedAtEpochMillis = nowEpochMillis,
+                lastFetchFailed = false,
+                lastErrorMessage = null,
+                destinationLabel = event.title,
+                destinationLat = destination.lat,
+                destinationLng = destination.lng,
+                leaveByMinuteOfDay = null,
+                mode = SnapshotMode.CALENDAR_EVENT,
+                eventStartEpochMillis = event.startEpochMillis,
+                nextWindowLabel = null,
+                nextWindowStartMinuteOfDay = null,
+            ),
+        )
     }
 
-    private fun leaveByPlanFor(
+    private fun calendarEmptySnapshot(
+        direction: Direction,
+        nowEpochMillis: Long,
+        nextWindowResult: NextWindow?,
+    ): CommuteSnapshot = CommuteSnapshot(
+        direction = direction,
+        durationSeconds = 0L,
+        durationNoTrafficSeconds = 0L,
+        distanceMeters = 0L,
+        mapImagePath = null,
+        fetchedAtEpochMillis = nowEpochMillis,
+        lastFetchFailed = false,
+        lastErrorMessage = null,
+        destinationLabel = null,
+        destinationLat = null,
+        destinationLng = null,
+        leaveByMinuteOfDay = null,
+        mode = SnapshotMode.CALENDAR_EMPTY,
+        eventStartEpochMillis = null,
+        nextWindowLabel = nextWindowResult?.label,
+        nextWindowStartMinuteOfDay = nextWindowResult?.startMinuteOfDay,
+    )
+
+    private fun commuteLeaveByPlanFor(
         settings: AppSettings,
-        target: DestinationTarget,
-        isWeekend: Boolean,
         direction: Direction,
         durationSeconds: Long,
     ): LeaveByPlan? {
-        if (!settings.leaveByEnabled || target !is DestinationTarget.DefaultTarget || isWeekend) {
+        if (!settings.leaveByEnabled) {
             return null
         }
         val arriveBy = if (direction == Direction.TO_WORK) {
@@ -450,6 +631,74 @@ object CommuteRefresher {
     }
 }
 
+private fun travelModeFor(travelMode: TravelMode): RouteTravelMode = when (travelMode) {
+    TravelMode.DRIVE -> RouteTravelMode.DRIVE
+    TravelMode.TWO_WHEELER -> RouteTravelMode.TWO_WHEELER
+}
+
+/**
+ * Resolves the on-disk map path for a trigger-dependent pipeline: [RefreshTrigger.SLOT] only ever
+ * reuses the previous map (per [shouldReuseSlotMap]) and never fetches; [RefreshTrigger.TAP] and
+ * [RefreshTrigger.AUTO] always fetch and downsample a fresh one. Calendar mode's located-event
+ * pipeline does not use this - it always wants a fresh map regardless of trigger, see
+ * [fetchFreshMap].
+ */
+private suspend fun resolveMapImagePath(
+    context: Context,
+    trigger: RefreshTrigger,
+    previousSnapshot: CommuteSnapshot?,
+    direction: Direction,
+    destination: LatLng,
+    origin: LatLng,
+    route: RouteResult,
+    apiKey: String,
+): ApiResult<String?> {
+    return when (trigger) {
+        RefreshTrigger.SLOT -> {
+            val reuse = previousSnapshot != null &&
+                shouldReuseSlotMap(
+                    previousDirection = previousSnapshot.direction,
+                    previousDestinationLat = previousSnapshot.destinationLat,
+                    previousDestinationLng = previousSnapshot.destinationLng,
+                    direction = direction,
+                    destination = destination,
+                )
+            ApiResult.Success(if (reuse) previousSnapshot.mapImagePath else null)
+        }
+        RefreshTrigger.TAP, RefreshTrigger.AUTO -> {
+            fetchFreshMap(context, previousSnapshot?.mapImagePath, apiKey, route, origin, destination)
+        }
+    }
+}
+
+private suspend fun fetchFreshMap(
+    context: Context,
+    previousMapPath: String?,
+    apiKey: String,
+    route: RouteResult,
+    origin: LatLng,
+    destination: LatLng,
+): ApiResult<String> {
+    val mapUrl = StaticMapUrl.build(
+        apiKey = apiKey,
+        widthPx = MAP_FETCH_WIDTH_PX,
+        heightPx = MAP_FETCH_HEIGHT_PX,
+        route = route,
+        origin = origin,
+        destination = destination,
+    )
+    val destFile = nextMapFile(context.filesDir, previousMapPath)
+    return when (val fetched = MapImageFetcher().fetch(mapUrl, destFile)) {
+        is ApiResult.Success -> {
+            withContext(Dispatchers.IO) {
+                downsampleMapFile(fetched.value)
+            }
+            ApiResult.Success(fetched.value.absolutePath)
+        }
+        is ApiResult.Failure -> ApiResult.Failure(fetched.message, fetched.cause)
+    }
+}
+
 private fun postLeaveByNotification(context: Context, plan: LeaveByPlan, destinationLabel: String): Boolean {
     val hasPermission = context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
         PackageManager.PERMISSION_GRANTED
@@ -485,38 +734,113 @@ private fun formatMinuteOfDay(minuteOfDay: Int): String {
     return LocalTime.of(minuteOfDay / 60, minuteOfDay % 60).format(DateTimeFormatter.ofPattern("h:mm a", Locale.US))
 }
 
-private fun directionNow(settings: AppSettings): Direction {
-    val now = ZonedDateTime.now()
-    return decideDirection(now.dayOfWeek, now.hour * 60 + now.minute, settings.switchMinuteOfDay)
+/**
+ * Best-effort direction to attribute an out-of-band failure snapshot to (the exception handler in
+ * [CommuteRefresher.refreshNow] has no [WidgetMode]/[DestinationTarget] in hand, since the
+ * exception may have been thrown before either was computed). Mirrors the same resolution
+ * [CommuteRefresher.performRefresh] uses for its own `direction` value.
+ */
+private fun currentDirectionHint(settings: AppSettings, now: ZonedDateTime): Direction {
+    val dayOfWeekIso = now.dayOfWeek.value
+    val minuteOfDay = now.hour * 60 + now.minute
+    val mode = resolveWidgetMode(
+        dayOfWeekIso = dayOfWeekIso,
+        minuteOfDay = minuteOfDay,
+        historyDays = settings.historyDays,
+        morningStart = settings.morningSlotStartMinuteOfDay,
+        morningEnd = settings.morningSlotEndMinuteOfDay,
+        eveningStart = settings.eveningSlotStartMinuteOfDay,
+        eveningEnd = settings.eveningSlotEndMinuteOfDay,
+    )
+    return when (mode) {
+        is WidgetMode.Commute -> mode.direction
+        WidgetMode.Calendar -> nextWindow(
+            dayOfWeekIso = dayOfWeekIso,
+            minuteOfDay = minuteOfDay,
+            historyDays = settings.historyDays,
+            morningStart = settings.morningSlotStartMinuteOfDay,
+            morningEnd = settings.morningSlotEndMinuteOfDay,
+            eveningStart = settings.eveningSlotStartMinuteOfDay,
+            eveningEnd = settings.eveningSlotEndMinuteOfDay,
+        )?.direction ?: Direction.TO_WORK
+    }
+}
+
+/**
+ * Pure computation of the failure snapshot to save, preserving the previous fetch's data as
+ * last-known-good only when it is safe to do so - i.e. only when [previous] describes the *same
+ * target* as this failed attempt (same [SnapshotMode], same [CommuteSnapshot.destinationLabel]).
+ *
+ * This is the mode/target-transition guard: without it, a plain `copy()` leaves a snapshot's
+ * route/map/leave-by/next-window fields untouched even when [modeOverride] changes the mode, so
+ * (for example) a CALENDAR_EVENT geocode failure right after a COMMUTE window ends would inherit
+ * a stale `leaveByMinuteOfDay` and the old commute's map/coordinates under the new event's label,
+ * and a COMMUTE failure right after a window starts would inherit a stale `nextWindowLabel` (or
+ * `eventStartEpochMillis`) left over from CALENDAR_EMPTY. The same reasoning applies within a
+ * single mode when the destination itself changes (e.g. calendar mode moving on to a different
+ * event, or a favourite override with a different direction) - [destinationLabelOverride] is
+ * passed at every call site that has a concrete new target, so a label mismatch is enough to
+ * detect it without needing to thread destination coordinates through every failure branch too.
+ */
+internal fun failureSnapshot(
+    previous: CommuteSnapshot?,
+    direction: Direction,
+    message: String,
+    modeOverride: SnapshotMode? = null,
+    destinationLabelOverride: String? = null,
+    eventStartEpochMillisOverride: Long? = null,
+): CommuteSnapshot {
+    val mode = modeOverride ?: previous?.mode ?: SnapshotMode.COMMUTE
+    val labelMatches = destinationLabelOverride == null || previous?.destinationLabel == destinationLabelOverride
+    val sameTarget = previous != null && previous.mode == mode && labelMatches
+
+    if (previous != null && sameTarget) {
+        return previous.copy(
+            lastFetchFailed = true,
+            lastErrorMessage = message,
+            destinationLabel = destinationLabelOverride ?: previous.destinationLabel,
+            eventStartEpochMillis = eventStartEpochMillisOverride ?: previous.eventStartEpochMillis,
+        )
+    }
+
+    return CommuteSnapshot(
+        direction = direction,
+        durationSeconds = 0L,
+        durationNoTrafficSeconds = 0L,
+        distanceMeters = 0L,
+        mapImagePath = null,
+        fetchedAtEpochMillis = 0L,
+        lastFetchFailed = true,
+        lastErrorMessage = message,
+        destinationLabel = destinationLabelOverride,
+        destinationLat = null,
+        destinationLng = null,
+        leaveByMinuteOfDay = null,
+        mode = mode,
+        eventStartEpochMillis = eventStartEpochMillisOverride,
+        nextWindowLabel = null,
+        nextWindowStartMinuteOfDay = null,
+    )
 }
 
 private suspend fun saveFailure(
     repo: SettingsRepository,
     direction: Direction,
     message: String,
+    modeOverride: SnapshotMode? = null,
+    destinationLabelOverride: String? = null,
+    eventStartEpochMillisOverride: Long? = null,
 ) {
-    val previous = repo.snapshot()
-    if (previous != null) {
-        repo.saveSnapshot(
-            previous.copy(
-                lastFetchFailed = true,
-                lastErrorMessage = message,
-            ),
-        )
-    } else {
-        repo.saveSnapshot(
-            CommuteSnapshot(
-                direction = direction,
-                durationSeconds = 0L,
-                durationNoTrafficSeconds = 0L,
-                distanceMeters = 0L,
-                mapImagePath = null,
-                fetchedAtEpochMillis = 0L,
-                lastFetchFailed = true,
-                lastErrorMessage = message,
-            ),
-        )
-    }
+    repo.saveSnapshot(
+        failureSnapshot(
+            previous = repo.snapshot(),
+            direction = direction,
+            message = message,
+            modeOverride = modeOverride,
+            destinationLabelOverride = destinationLabelOverride,
+            eventStartEpochMillisOverride = eventStartEpochMillisOverride,
+        ),
+    )
 }
 
 private fun nextMapFile(filesDir: File, previousPath: String?): File {
@@ -539,6 +863,23 @@ private suspend fun currentDeviceLocation(context: Context): ApiResult<LatLng> {
     }
 
     val client = LocationServices.getFusedLocationProviderClient(context)
+
+    // Refresh-lag fix: a fresh cached fix is used as-is, skipping the slower getCurrentLocation
+    // round trip entirely. A stale (or absent) cached fix still isn't discarded - it is kept as
+    // the final fallback below if getCurrentLocation itself times out or fails.
+    val cachedLocation = try {
+        client.lastLocation.awaitNullable()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: SecurityException) {
+        null
+    } catch (_: Exception) {
+        null
+    }
+    if (cachedLocation != null && isLocationFresh(cachedLocation.time, System.currentTimeMillis())) {
+        return ApiResult.Success(LatLng(cachedLocation.latitude, cachedLocation.longitude))
+    }
+
     val cts = CancellationTokenSource()
     try {
         val current = withTimeoutOrNull(LOCATION_TIMEOUT_MS) {
@@ -558,18 +899,8 @@ private suspend fun currentDeviceLocation(context: Context): ApiResult<LatLng> {
         if (current != null) {
             return ApiResult.Success(LatLng(current.latitude, current.longitude))
         }
-
-        val last = try {
-            client.lastLocation.awaitNullable()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: SecurityException) {
-            null
-        } catch (_: Exception) {
-            null
-        }
-        if (last != null) {
-            return ApiResult.Success(LatLng(last.latitude, last.longitude))
+        if (cachedLocation != null) {
+            return ApiResult.Success(LatLng(cachedLocation.latitude, cachedLocation.longitude))
         }
         return ApiResult.Failure("Location unavailable")
     } finally {

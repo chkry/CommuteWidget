@@ -177,26 +177,6 @@ private fun SettingsScreen(onViewStats: () -> Unit) {
                 )
             }
             item {
-                TimesSection(
-                    settings = settings,
-                    onSave = { label, minuteOfDay ->
-                        scope.launch {
-                            when (label) {
-                                TimeSetting.SWITCH -> repository.setSwitchMinuteOfDay(minuteOfDay)
-                                TimeSetting.MORNING -> repository.setMorningRefreshMinuteOfDay(minuteOfDay)
-                                TimeSetting.EVENING -> repository.setEveningRefreshMinuteOfDay(minuteOfDay)
-                            }
-                            // Morning/evening changes move the WorkManager fire time itself, not just
-                            // the value read at the next natural firing, so the pending chain must be
-                            // rebuilt now or the old time keeps firing until one more cycle passes.
-                            CommuteScheduler.ensureScheduled(applicationContext)
-                            refreshWidget(applicationContext)
-                            snackbarHostState.showSnackbar("Time saved")
-                        }
-                    },
-                )
-            }
-            item {
                 FavouritesSection(
                     favourites = settings.favourites,
                     showChips = settings.showFavouriteChips,
@@ -246,7 +226,6 @@ private fun SettingsScreen(onViewStats: () -> Unit) {
                 CalendarSection(
                     enabled = settings.calendarEnabled,
                     selectedIds = settings.selectedCalendarIds,
-                    lookaheadMinutes = settings.calendarLookaheadMinutes,
                     onEnabledChanged = { enabled ->
                         scope.launch {
                             repository.setCalendarEnabled(enabled)
@@ -256,12 +235,6 @@ private fun SettingsScreen(onViewStats: () -> Unit) {
                     onSelectedIdsChanged = { ids ->
                         scope.launch {
                             repository.setSelectedCalendarIds(ids)
-                            refreshWidget(applicationContext)
-                        }
-                    },
-                    onLookaheadChanged = { minutes ->
-                        scope.launch {
-                            repository.setCalendarLookaheadMinutes(minutes)
                             refreshWidget(applicationContext)
                         }
                     },
@@ -285,7 +258,8 @@ private fun SettingsScreen(onViewStats: () -> Unit) {
             }
             item {
                 Text(
-                    "Data refreshes on widget tap and weekday auto-refresh times. History collects every 10 min during your slots on selected days.",
+                    "The widget follows your commute windows; outside them it shows your next calendar event. " +
+                        "History collects every 10 minutes inside windows on selected days.",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -421,43 +395,6 @@ private fun TravelModeSection(travelMode: TravelMode, onSelect: (TravelMode) -> 
                 selected = travelMode == TravelMode.TWO_WHEELER,
                 onClick = { onSelect(TravelMode.TWO_WHEELER) },
                 label = { Text("Two-wheeler") },
-            )
-        }
-    }
-}
-
-private enum class TimeSetting { SWITCH, MORNING, EVENING }
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun TimesSection(settings: AppSettings, onSave: (TimeSetting, Int) -> Unit) {
-    var selected by remember { mutableStateOf<TimeSetting?>(null) }
-    val selectedMinute = when (selected) {
-        TimeSetting.SWITCH -> settings.switchMinuteOfDay
-        TimeSetting.MORNING -> settings.morningRefreshMinuteOfDay
-        TimeSetting.EVENING -> settings.eveningRefreshMinuteOfDay
-        null -> 0
-    }
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text("Times", style = MaterialTheme.typography.titleMedium)
-        TimeRow("Switch to homeward after", settings.switchMinuteOfDay) { selected = TimeSetting.SWITCH }
-        TimeRow("Morning auto-refresh", settings.morningRefreshMinuteOfDay) { selected = TimeSetting.MORNING }
-        TimeRow("Evening auto-refresh", settings.eveningRefreshMinuteOfDay) { selected = TimeSetting.EVENING }
-    }
-    selected?.let { setting ->
-        key(setting, selectedMinute) {
-            val pickerState = rememberTimePickerState(
-                initialHour = selectedMinute / 60,
-                initialMinute = selectedMinute % 60,
-                is24Hour = false,
-            )
-            TimePickerDialog(
-                state = pickerState,
-                onDismiss = { selected = null },
-                onConfirm = {
-                    onSave(setting, pickerState.hour * 60 + pickerState.minute)
-                    selected = null
-                },
             )
         }
     }
@@ -689,6 +626,10 @@ private fun LeaveBySection(
             TimeRow("Arrive at work by", arriveWork) { editingWork = true }
             TimeRow("Arrive home by", arriveHome) { editingWork = false }
         }
+        Text(
+            "Applies inside your To Work and To Home windows.",
+            style = MaterialTheme.typography.bodySmall,
+        )
     }
     editingWork?.let { work ->
         val minute = if (work) arriveWork else arriveHome
@@ -706,10 +647,8 @@ private fun LeaveBySection(
 private fun CalendarSection(
     enabled: Boolean,
     selectedIds: Set<Long>,
-    lookaheadMinutes: Int,
     onEnabledChanged: (Boolean) -> Unit,
     onSelectedIdsChanged: (Set<Long>) -> Unit,
-    onLookaheadChanged: (Int) -> Unit,
 ) {
     val context = LocalContext.current
     var permissionGranted by remember {
@@ -746,16 +685,11 @@ private fun CalendarSection(
                 }
             }
             if (selectedIds.isEmpty()) Text("Select at least one calendar", style = MaterialTheme.typography.bodySmall)
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                listOf(60 to "1h", 120 to "2h", 180 to "3h", 240 to "4h").forEach { (minutes, label) ->
-                    FilterChip(
-                        selected = lookaheadMinutes == minutes,
-                        onClick = { onLookaheadChanged(minutes) },
-                        label = { Text(label) },
-                    )
-                }
-            }
         }
+        Text(
+            "Outside your commute windows, the widget shows the next event from these calendars and routes to it when it has a location.",
+            style = MaterialTheme.typography.bodySmall,
+        )
     }
 }
 
@@ -800,9 +734,20 @@ private fun HistorySection(
     LaunchedEffect(expanded) { if (expanded) refreshHistoryCounts() }
 
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text("Commute history", style = MaterialTheme.typography.titleMedium)
+        Text("Commute windows", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Inside a window the widget shows that commute and collects history every 10 minutes. " +
+                "Outside your windows it shows your next calendar event.",
+            style = MaterialTheme.typography.bodySmall,
+        )
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("Enable commute history")
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Collect commute history")
+                Text(
+                    "Widget modes still follow the windows when this is off",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             Switch(checked = settings.historyEnabled, onCheckedChange = { enabled ->
                 onSettingsChange { it.setHistoryEnabled(enabled) }
             })
@@ -820,10 +765,10 @@ private fun HistorySection(
                 )
             }
         }
-        TimeRow("Morning slot start", settings.morningSlotStartMinuteOfDay) { selectedTime = HistoryTime.MORNING_START }
-        TimeRow("Morning slot end", settings.morningSlotEndMinuteOfDay) { selectedTime = HistoryTime.MORNING_END }
-        TimeRow("Evening slot start", settings.eveningSlotStartMinuteOfDay) { selectedTime = HistoryTime.EVENING_START }
-        TimeRow("Evening slot end", settings.eveningSlotEndMinuteOfDay) { selectedTime = HistoryTime.EVENING_END }
+        TimeRow("To Work window start", settings.morningSlotStartMinuteOfDay) { selectedTime = HistoryTime.MORNING_START }
+        TimeRow("To Work window end", settings.morningSlotEndMinuteOfDay) { selectedTime = HistoryTime.MORNING_END }
+        TimeRow("To Home window start", settings.eveningSlotStartMinuteOfDay) { selectedTime = HistoryTime.EVENING_START }
+        TimeRow("To Home window end", settings.eveningSlotEndMinuteOfDay) { selectedTime = HistoryTime.EVENING_END }
         validationError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
         Button(onClick = onViewStats) { Text("View commute stats") }
         TextButton(onClick = { expanded = !expanded }) {
@@ -859,9 +804,9 @@ private fun HistorySection(
                 }
                 if (!valid) {
                     validationError = if (selection == HistoryTime.MORNING_START || selection == HistoryTime.MORNING_END) {
-                        "Morning slot start must be before end"
+                        "To Work window start must be before end"
                     } else {
-                        "Evening slot start must be before end"
+                        "To Home window start must be before end"
                     }
                 } else {
                     validationError = null

@@ -109,6 +109,97 @@ class StoredValueCodecTest {
         assertNull(decoded.destinationLat)
         assertNull(decoded.destinationLng)
         assertNull(decoded.leaveByMinuteOfDay)
+        assertEquals(SnapshotMode.COMMUTE, decoded.mode)
+        assertNull(decoded.eventStartEpochMillis)
+        assertNull(decoded.nextWindowLabel)
+        assertNull(decoded.nextWindowStartMinuteOfDay)
+    }
+
+    @Test
+    fun commuteSnapshotJson_v2FormatDecodesWithV3FieldDefaults() {
+        val v2Json = """
+            {
+              "direction": "TO_HOME",
+              "durationSeconds": 2400,
+              "durationNoTrafficSeconds": 2100,
+              "distanceMeters": 18000,
+              "mapImagePath": "/cache/map-home.png",
+              "fetchedAtEpochMillis": 1700000000000,
+              "lastFetchFailed": false,
+              "lastErrorMessage": null,
+              "destinationLabel": "Client meeting",
+              "destinationLat": 12.9716,
+              "destinationLng": 77.5946,
+              "leaveByMinuteOfDay": 540
+            }
+        """.trimIndent()
+        val decoded = decodeCommuteSnapshot(v2Json)
+        requireNotNull(decoded)
+        assertEquals(Direction.TO_HOME, decoded.direction)
+        assertEquals(2400L, decoded.durationSeconds)
+        assertEquals(2100L, decoded.durationNoTrafficSeconds)
+        assertEquals(18000L, decoded.distanceMeters)
+        assertEquals("/cache/map-home.png", decoded.mapImagePath)
+        assertEquals(1_700_000_000_000L, decoded.fetchedAtEpochMillis)
+        assertEquals(false, decoded.lastFetchFailed)
+        assertNull(decoded.lastErrorMessage)
+        assertEquals("Client meeting", decoded.destinationLabel)
+        assertEquals(12.9716, decoded.destinationLat!!, 0.0001)
+        assertEquals(77.5946, decoded.destinationLng!!, 0.0001)
+        assertEquals(540, decoded.leaveByMinuteOfDay)
+        assertEquals(SnapshotMode.COMMUTE, decoded.mode)
+        assertNull(decoded.eventStartEpochMillis)
+        assertNull(decoded.nextWindowLabel)
+        assertNull(decoded.nextWindowStartMinuteOfDay)
+    }
+
+    @Test
+    fun snapshotMode_roundTrip() {
+        for (mode in SnapshotMode.entries) {
+            val snapshot = CommuteSnapshot(
+                direction = Direction.TO_WORK,
+                durationSeconds = 900L,
+                durationNoTrafficSeconds = 800L,
+                distanceMeters = 5000L,
+                mapImagePath = null,
+                fetchedAtEpochMillis = 1_000L,
+                lastFetchFailed = false,
+                lastErrorMessage = null,
+                mode = mode,
+            )
+            val encoded = encodeCommuteSnapshot(snapshot)
+            val decoded = decodeCommuteSnapshot(encoded)
+            requireNotNull(decoded)
+            assertEquals(mode, decoded.mode)
+        }
+    }
+
+    @Test
+    fun snapshotMode_corruptFallsBackToCommute() {
+        val json = """
+            {
+              "direction": "TO_WORK",
+              "durationSeconds": 900,
+              "durationNoTrafficSeconds": 800,
+              "distanceMeters": 5000,
+              "mapImagePath": null,
+              "fetchedAtEpochMillis": 1000,
+              "lastFetchFailed": false,
+              "lastErrorMessage": null,
+              "mode": "NOT_A_REAL_MODE"
+            }
+        """.trimIndent()
+        val decoded = decodeCommuteSnapshot(json)
+        requireNotNull(decoded)
+        assertEquals(SnapshotMode.COMMUTE, decoded.mode)
+    }
+
+    @Test
+    fun parseSnapshotMode_validAndCorrupt() {
+        assertEquals(SnapshotMode.CALENDAR_EVENT, parseSnapshotMode("CALENDAR_EVENT"))
+        assertEquals(SnapshotMode.COMMUTE, parseSnapshotMode("UNKNOWN"))
+        assertEquals(SnapshotMode.COMMUTE, parseSnapshotMode(null))
+        assertEquals(SnapshotMode.COMMUTE, parseSnapshotMode(""))
     }
 
     @Test

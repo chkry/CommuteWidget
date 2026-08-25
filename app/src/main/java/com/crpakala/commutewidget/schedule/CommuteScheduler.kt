@@ -12,24 +12,33 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import java.time.DayOfWeek
 import java.time.Duration
 import java.time.ZonedDateTime
 import java.util.concurrent.TimeUnit
 
 object CommuteScheduler {
-    const val MORNING_WORK_NAME = "commute_refresh_morning"
-    const val EVENING_WORK_NAME = "commute_refresh_evening"
     const val SLOT_CHAIN_WORK_NAME = "commute_slot_chain"
+    const val WINDOW_BOUNDARY_WORK_NAME = "commute_window_boundary"
+
+    /**
+     * v2 unique work names for the fixed 8am/5pm [CommuteRefreshWorker]-style refreshes, retired
+     * by the v3 window model in favor of [WINDOW_BOUNDARY_WORK_NAME]. [ensureScheduled] cancels
+     * these explicitly on every call as one-time migration hygiene: WorkManager persists unique
+     * work across app updates, so a device that installed v2 before upgrading would otherwise
+     * keep firing these indefinitely even though the code (and the settings fields driving their
+     * schedule) that enqueued them no longer exists.
+     */
+    private const val LEGACY_MORNING_WORK_NAME = "commute_refresh_morning"
+    private const val LEGACY_EVENING_WORK_NAME = "commute_refresh_evening"
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     suspend fun ensureScheduled(context: Context) {
         val appContext = context.applicationContext
         val settings = SettingsRepository.get(appContext).settingsSnapshot()
-        scheduleSlot(appContext, CommuteRefreshWorker.Slot.MORNING, settings)
-        scheduleSlot(appContext, CommuteRefreshWorker.Slot.EVENING, settings)
+        cancelLegacyRefreshWorks(appContext)
         scheduleSlotChain(appContext, settings)
+        scheduleWindowBoundary(appContext, settings)
     }
 
     fun ensureScheduledAsync(context: Context) {
@@ -39,48 +48,21 @@ object CommuteScheduler {
         }
     }
 
+    private fun cancelLegacyRefreshWorks(context: Context) {
+        val workManager = WorkManager.getInstance(context.applicationContext)
+        workManager.cancelUniqueWork(LEGACY_MORNING_WORK_NAME)
+        workManager.cancelUniqueWork(LEGACY_EVENING_WORK_NAME)
+    }
+
     /**
      * [existingWorkPolicy] defaults to [ExistingWorkPolicy.REPLACE] for external callers (app boot,
      * widget enable, settings changes) so a stale chain is always replaced immediately.
      *
-     * [CommuteRefreshWorker] itself must pass [ExistingWorkPolicy.APPEND_OR_REPLACE] when scheduling
-     * its own successor: REPLACE cancels any pending (uncompleted) work under the same unique name,
-     * and a currently-*running* worker counts as uncompleted, so a worker that REPLACEs its own
-     * unique name cancels itself mid-run (see WorkManager's ExistingWorkPolicy docs). APPEND_OR_REPLACE
-     * instead chains the successor to run after this invocation finishes, regardless of outcome.
-     */
-    internal fun scheduleSlot(
-        context: Context,
-        slot: CommuteRefreshWorker.Slot,
-        settings: AppSettings,
-        existingWorkPolicy: ExistingWorkPolicy = ExistingWorkPolicy.REPLACE,
-    ) {
-        val now = ZonedDateTime.now()
-        val target = nextWeekdayOccurrence(now, slot.minuteOfDay(settings))
-        val delayMillis = Duration.between(now, target).toMillis()
-        val request = OneTimeWorkRequestBuilder<CommuteRefreshWorker>()
-            .setInputData(CommuteRefreshWorker.inputData(slot))
-            .setConstraints(
-                Constraints.Builder()
-                    .setRequiredNetworkType(NetworkType.CONNECTED)
-                    .build(),
-            )
-            .setInitialDelay(delayMillis, TimeUnit.MILLISECONDS)
-            .build()
-
-        WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
-            slot.workName,
-            existingWorkPolicy,
-            request,
-        )
-    }
-
-    /**
-     * (Re)schedules the "commute_slot_chain" unique work to fire at the next slot tick computed
-     * from [settings]. A no-op when history collection is disabled or no valid tick exists (e.g.
-     * empty [AppSettings.historyDays]) - the chain simply ends until [ensureScheduled] runs again
-     * with a config that produces a tick (see [SlotFetchWorker] for the self-reschedule side of
-     * this contract).
+     * A worker scheduling its own successor must instead pass [ExistingWorkPolicy.APPEND_OR_REPLACE]:
+     * REPLACE cancels any pending (uncompleted) work under the same unique name, and a currently
+     * *running* worker counts as uncompleted, so a worker that REPLACEs its own unique name cancels
+     * itself mid-run (see WorkManager's ExistingWorkPolicy docs). APPEND_OR_REPLACE instead chains
+     * the successor to run after this invocation finishes, regardless of outcome.
      */
     internal fun scheduleSlotChain(
         context: Context,
@@ -117,35 +99,54 @@ object CommuteScheduler {
         )
     }
 
+    /**
+     * (Re)schedules the "commute_window_boundary" unique work to fire [WindowBoundaryWorker] at
+     * the next morning/evening window start or end boundary computed by [nextWindowBoundary]. A
+     * no-op when nothing is enabled (mirrors [scheduleSlotChain]'s no-op contract) - the boundary
+     * chain simply ends until [ensureScheduled] runs again with a config that produces a boundary.
+     */
+    internal fun scheduleWindowBoundary(
+        context: Context,
+        settings: AppSettings,
+        existingWorkPolicy: ExistingWorkPolicy = ExistingWorkPolicy.REPLACE,
+    ) {
+        val next = nextWindowBoundary(
+            now = ZonedDateTime.now(),
+            historyDays = settings.historyDays,
+            morningStart = settings.morningSlotStartMinuteOfDay,
+            morningEnd = settings.morningSlotEndMinuteOfDay,
+            eveningStart = settings.eveningSlotStartMinuteOfDay,
+            eveningEnd = settings.eveningSlotEndMinuteOfDay,
+        ) ?: return
+        scheduleWindowBoundaryAt(context, next, existingWorkPolicy)
+    }
+
+    internal fun scheduleWindowBoundaryAt(
+        context: Context,
+        target: ZonedDateTime,
+        existingWorkPolicy: ExistingWorkPolicy,
+    ) {
+        val now = ZonedDateTime.now()
+        val delayMillis = Duration.between(now, target).toMillis().coerceAtLeast(0)
+        val request = OneTimeWorkRequestBuilder<WindowBoundaryWorker>()
+            .setConstraints(
+                Constraints.Builder()
+                    .setRequiredNetworkType(NetworkType.CONNECTED)
+                    .build(),
+            )
+            .setInitialDelay(delayMillis, TimeUnit.MILLISECONDS)
+            .build()
+
+        WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
+            WINDOW_BOUNDARY_WORK_NAME,
+            existingWorkPolicy,
+            request,
+        )
+    }
+
     /** The morning and evening minute-of-day windows history collection samples within. */
     internal fun slotRanges(settings: AppSettings): List<IntRange> = listOf(
         settings.morningSlotStartMinuteOfDay..settings.morningSlotEndMinuteOfDay,
         settings.eveningSlotStartMinuteOfDay..settings.eveningSlotEndMinuteOfDay,
     )
-
-    fun nextWeekdayOccurrence(now: ZonedDateTime, minuteOfDay: Int): ZonedDateTime {
-        require(minuteOfDay in 0 until MINUTES_PER_DAY) {
-            "minuteOfDay must be between 0 and ${MINUTES_PER_DAY - 1}"
-        }
-
-        var target = now
-            .withHour(minuteOfDay / MINUTES_PER_HOUR)
-            .withMinute(minuteOfDay % MINUTES_PER_HOUR)
-            .withSecond(0)
-            .withNano(0)
-        if (!isWeekday(now.dayOfWeek) || !now.isBefore(target)) {
-            target = target.plusDays(1)
-        }
-        while (!isWeekday(target.dayOfWeek)) {
-            target = target.plusDays(1)
-        }
-        return target
-    }
-
-    private fun isWeekday(dayOfWeek: DayOfWeek): Boolean {
-        return dayOfWeek != DayOfWeek.SATURDAY && dayOfWeek != DayOfWeek.SUNDAY
-    }
-
-    private const val MINUTES_PER_HOUR = 60
-    private const val MINUTES_PER_DAY = 24 * MINUTES_PER_HOUR
 }
