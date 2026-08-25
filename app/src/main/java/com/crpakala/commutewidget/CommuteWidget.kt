@@ -403,10 +403,9 @@ private fun WideLayout(
                 .clickable(mapAction),
         ) {
             MapPane(
+                snapshot = snapshot,
                 bitmap = mapBitmap,
                 modifier = GlanceModifier.fillMaxSize(),
-                forcePlaceholder = quiet,
-                placeholderGlyph = if (quiet) "📅" else "🗺",
             )
         }
     }
@@ -429,10 +428,9 @@ private fun LargeLayout(
     }
     Box(modifier = modifier) {
         MapPane(
+            snapshot = snapshot,
             bitmap = mapBitmap,
             modifier = GlanceModifier.fillMaxSize(),
-            forcePlaceholder = quiet,
-            placeholderGlyph = if (quiet) "📅" else "🗺",
         )
         Column(modifier = GlanceModifier.fillMaxSize()) {
             Row(
@@ -800,27 +798,50 @@ private fun FavouriteChip(
 
 @Composable
 private fun MapPane(
+    snapshot: CommuteSnapshot,
     bitmap: Bitmap?,
     modifier: GlanceModifier,
-    forcePlaceholder: Boolean = false,
-    placeholderGlyph: String = "🗺",
 ) {
-    if (!forcePlaceholder && bitmap != null) {
+    val quiet = snapshot.mode == SnapshotMode.CALENDAR_EMPTY
+    if (!quiet && bitmap != null) {
         Image(
             provider = ImageProvider(bitmap),
             contentDescription = "Route map",
             contentScale = ContentScale.Crop,
             modifier = modifier,
         )
-    } else {
-        Box(
-            modifier = modifier.background(GlanceTheme.colors.surfaceVariant),
-            contentAlignment = Alignment.Center,
-        ) {
+        return
+    }
+    // No map to show: use the area for the calendar event (or next window) instead of a bare glyph.
+    val lines = mapAreaPlaceholderLines(snapshot)
+    Box(
+        modifier = modifier.background(GlanceTheme.colors.surfaceVariant).padding(8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.Horizontal.CenterHorizontally) {
             Text(
-                text = placeholderGlyph,
+                text = if (snapshot.mode == SnapshotMode.COMMUTE) "🗺" else "📅",
                 style = TextStyle(fontSize = 22.sp),
             )
+            lines.forEachIndexed { index, line ->
+                Spacer(modifier = GlanceModifier.height(if (index == 0) 4.dp else 2.dp))
+                Text(
+                    text = line,
+                    style = if (index == 0) {
+                        TextStyle(
+                            color = GlanceTheme.colors.onSurface,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    } else {
+                        TextStyle(
+                            color = GlanceTheme.colors.onSurfaceVariant,
+                            fontSize = 11.sp,
+                        )
+                    },
+                    maxLines = if (index == 0) 2 else 1,
+                )
+            }
         }
     }
 }
@@ -916,6 +937,37 @@ internal fun calendarEmptyCase(snapshot: CommuteSnapshot): CalendarEmptyCase {
         return CalendarEmptyCase.NEXT_WINDOW
     }
     return CalendarEmptyCase.NONE
+}
+
+/**
+ * Text lines shown in the map area when no map image is displayed.
+ * First line renders as a title, the rest as captions. Empty for commute mode
+ * (a missing commute map keeps the bare glyph placeholder).
+ */
+internal fun mapAreaPlaceholderLines(
+    snapshot: CommuteSnapshot,
+    zone: ZoneId = ZoneId.systemDefault(),
+): List<String> {
+    return when (snapshot.mode) {
+        SnapshotMode.COMMUTE -> emptyList()
+        SnapshotMode.CALENDAR_EVENT -> buildList {
+            add(calendarEventTitle(snapshot.destinationLabel))
+            snapshot.eventStartEpochMillis?.let { add(formatEventAtTime(it, zone)) }
+        }
+        SnapshotMode.CALENDAR_EMPTY -> when (calendarEmptyCase(snapshot)) {
+            CalendarEmptyCase.UNLOCATED_EVENT -> listOf(
+                calendarEventTitle(snapshot.destinationLabel),
+                formatEventAtTime(snapshot.eventStartEpochMillis!!, zone),
+            )
+            CalendarEmptyCase.NEXT_WINDOW -> listOf(
+                formatNextWindowLine(
+                    snapshot.nextWindowLabel!!,
+                    snapshot.nextWindowStartMinuteOfDay!!,
+                ),
+            )
+            CalendarEmptyCase.NONE -> listOf("No events today")
+        }
+    }
 }
 
 internal fun formatClockTime(minuteOfDay: Int): String {

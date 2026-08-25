@@ -169,6 +169,48 @@ class CommuteWidgetDisplayTest {
         assertEquals("Event", calendarEventTitle("   "))
     }
 
+    @Test
+    fun mapAreaPlaceholderLines_emptyForCommuteMode() {
+        val snapshot = emptySnapshot().copy(mode = SnapshotMode.COMMUTE)
+        assertEquals(emptyList<String>(), mapAreaPlaceholderLines(snapshot))
+    }
+
+    @Test
+    fun mapAreaPlaceholderLines_calendarEventShowsTitleAndTime() {
+        val zone = ZoneId.of("UTC")
+        val start = ZonedDateTime.of(2026, 8, 26, 15, 30, 0, 0, zone).toInstant().toEpochMilli()
+        val snapshot = emptySnapshot(
+            destinationLabel = "Client meeting",
+            eventStartEpochMillis = start,
+        ).copy(mode = SnapshotMode.CALENDAR_EVENT)
+        assertEquals(listOf("Client meeting", "at 3:30 pm"), mapAreaPlaceholderLines(snapshot, zone))
+    }
+
+    @Test
+    fun mapAreaPlaceholderLines_unlocatedEventShowsTitleAndTime() {
+        val zone = ZoneId.of("UTC")
+        val start = ZonedDateTime.of(2026, 8, 26, 9, 5, 0, 0, zone).toInstant().toEpochMilli()
+        val snapshot = emptySnapshot(
+            destinationLabel = "Dentist",
+            eventStartEpochMillis = start,
+        )
+        assertEquals(listOf("Dentist", "at 9:05 am"), mapAreaPlaceholderLines(snapshot, zone))
+    }
+
+    @Test
+    fun mapAreaPlaceholderLines_nextWindowShowsSingleLine() {
+        val snapshot = emptySnapshot(
+            nextWindowLabel = "To Work",
+            nextWindowStartMinuteOfDay = 7 * 60,
+        )
+        assertEquals(listOf("Next: To Work at 7:00 am"), mapAreaPlaceholderLines(snapshot))
+    }
+
+    @Test
+    fun mapAreaPlaceholderLines_noneShowsNoEventsToday() {
+        assertEquals(listOf("No events today"), mapAreaPlaceholderLines(emptySnapshot()))
+    }
+
     private fun favourite(label: String): Favourite {
         return Favourite(label = label, place = Place(address = label, lat = 0.0, lng = 0.0))
     }
