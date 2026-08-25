@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Excludes the commute_settings DataStore file (holds the user's Google Maps API key in
+    plaintext) from cloud backup and device-to-device transfer. Everything else is included
+    by default.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="datastore/commute_settings.preferences_pb" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="datastore/commute_settings.preferences_pb" />
+    </device-transfer>
+</data-extraction-rules>

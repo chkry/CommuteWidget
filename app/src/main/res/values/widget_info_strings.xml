@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="commute_widget_info_description">Commute time and traffic</string>
+</resources>
