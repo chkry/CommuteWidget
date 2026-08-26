@@ -33,6 +33,7 @@ import androidx.glance.appwidget.appWidgetBackground
 import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.provideContent
 import androidx.glance.background
+import androidx.glance.color.ColorProvider as dayNightColorProvider
 import androidx.glance.layout.Alignment
 import androidx.glance.layout.Box
 import androidx.glance.layout.Column
@@ -121,9 +122,16 @@ class CommuteWidget : GlanceAppWidget() {
             null
         }
 
+        val lightScheme = dynamicLightColorScheme(context)
+        val darkScheme = dynamicDarkColorScheme(context)
         val colors = ColorProviders(
-            light = dynamicLightColorScheme(context),
-            dark = dynamicDarkColorScheme(context),
+            light = lightScheme,
+            dark = darkScheme,
+        )
+        val backgroundAlpha = settings.widgetBackgroundOpacityPercent.coerceIn(30, 100) / 100f
+        val background = dayNightColorProvider(
+            day = lightScheme.surface.copy(alpha = backgroundAlpha),
+            night = darkScheme.surface.copy(alpha = backgroundAlpha),
         )
         provideContent {
             GlanceTheme(colors = colors) {
@@ -131,6 +139,7 @@ class CommuteWidget : GlanceAppWidget() {
                     configured = configured,
                     snapshot = snapshot,
                     mapBitmap = mapBitmap,
+                    background = background,
                     extras = WidgetExtras(
                         nowEpochMillis = nowEpochMillis,
                         nowMinuteOfDay = nowMinuteOfDay,
@@ -138,6 +147,7 @@ class CommuteWidget : GlanceAppWidget() {
                         refreshingSince = refreshingSince,
                         bestDepartureLine = bestDepartureLine,
                         pillCorner = settings.mapPillCorner,
+                        textScale = settings.widgetTextScalePercent.coerceIn(70, 150) / 100f,
                     ),
                 )
             }
@@ -201,7 +211,11 @@ private data class WidgetExtras(
     /** Pre-formatted "Best: 3:30 pm" line, null when disabled/stale/slot passed. */
     val bestDepartureLine: String? = null,
     val pillCorner: MapPillCorner = MapPillCorner.TOP_START,
+    val textScale: Float = 1f,
 )
+
+/** Owner-configurable text scaling applied to every user-visible size on the widget. */
+private fun scaledSp(base: Int, scale: Float): TextUnit = (base * scale).sp
 
 private data class InfoStyle(
     val destinationFontSize: TextUnit,
@@ -223,23 +237,24 @@ private fun WidgetScaffold(
     configured: Boolean,
     snapshot: CommuteSnapshot?,
     mapBitmap: Bitmap?,
+    background: ColorProvider,
     extras: WidgetExtras,
 ) {
     val root = GlanceModifier
         .fillMaxSize()
         .appWidgetBackground()
-        .background(GlanceTheme.colors.widgetBackground)
+        .background(background)
         .cornerRadius(16.dp)
 
     when {
-        !configured -> UnconfiguredContent(root)
-        snapshot == null -> EmptySnapshotContent(root)
+        !configured -> UnconfiguredContent(root, extras.textScale)
+        snapshot == null -> EmptySnapshotContent(root, extras.textScale)
         else -> ConfiguredContent(root, snapshot, mapBitmap, extras)
     }
 }
 
 @Composable
-private fun UnconfiguredContent(modifier: GlanceModifier) {
+private fun UnconfiguredContent(modifier: GlanceModifier, textScale: Float = 1f) {
     val context = LocalContext.current
     val openSettings = actionStartActivity(
         Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
@@ -252,7 +267,7 @@ private fun UnconfiguredContent(modifier: GlanceModifier) {
             text = "Open to set up",
             style = TextStyle(
                 color = GlanceTheme.colors.onSurface,
-                fontSize = 14.sp,
+                fontSize = scaledSp(14, textScale),
                 fontWeight = FontWeight.Medium,
             ),
         )
@@ -260,7 +275,7 @@ private fun UnconfiguredContent(modifier: GlanceModifier) {
 }
 
 @Composable
-private fun EmptySnapshotContent(modifier: GlanceModifier) {
+private fun EmptySnapshotContent(modifier: GlanceModifier, textScale: Float = 1f) {
     Box(
         modifier = modifier.clickable(actionRunCallback<RefreshAction>()).padding(12.dp),
         contentAlignment = Alignment.Center,
@@ -269,7 +284,7 @@ private fun EmptySnapshotContent(modifier: GlanceModifier) {
             text = "Tap to load",
             style = TextStyle(
                 color = GlanceTheme.colors.onSurface,
-                fontSize = 14.sp,
+                fontSize = scaledSp(14, textScale),
                 fontWeight = FontWeight.Medium,
             ),
         )
@@ -284,7 +299,7 @@ private fun ConfiguredContent(
     extras: WidgetExtras,
 ) {
     if (snapshot.mode == SnapshotMode.CALENDAR_EMPTY) {
-        CalendarEmptyCard(modifier, snapshot, extras.bestDepartureLine)
+        CalendarEmptyCard(modifier, snapshot, extras.bestDepartureLine, extras.textScale)
         return
     }
     val size = LocalSize.current
@@ -318,9 +333,9 @@ private fun SmallLayout(
             extras = extras,
             accent = accent,
             style = InfoStyle(
-                destinationFontSize = 11.sp,
-                etaFontSize = 24.sp,
-                leaveByFontSize = 11.sp,
+                destinationFontSize = scaledSp(11, extras.textScale),
+                etaFontSize = scaledSp(24, extras.textScale),
+                leaveByFontSize = scaledSp(11, extras.textScale),
                 inlineEta = false,
                 showRoutedCaption = false,
             ),
@@ -357,9 +372,9 @@ private fun WideLayout(
                 extras = extras,
                 accent = accent,
                 style = InfoStyle(
-                    destinationFontSize = 11.sp,
-                    etaFontSize = 22.sp,
-                    leaveByFontSize = 12.sp,
+                    destinationFontSize = scaledSp(11, extras.textScale),
+                    etaFontSize = scaledSp(22, extras.textScale),
+                    leaveByFontSize = scaledSp(12, extras.textScale),
                     inlineEta = false,
                     showRoutedCaption = true,
                     showLeaveBy = false,
@@ -389,13 +404,13 @@ private fun WideLayout(
                     verticalAlignment = Alignment.Vertical.CenterVertically,
                 ) {
                     if (showLeaveByPill) {
-                        LeaveByPill(snapshot.leaveByMinuteOfDay!!, extras.nowMinuteOfDay)
+                        LeaveByPill(snapshot.leaveByMinuteOfDay!!, extras.nowMinuteOfDay, extras.textScale)
                     }
                     if (extras.bestDepartureLine != null) {
                         if (showLeaveByPill) {
                             Spacer(modifier = GlanceModifier.width(4.dp))
                         }
-                        MapTextPill(extras.bestDepartureLine)
+                        MapTextPill(extras.bestDepartureLine, extras.textScale)
                     }
                 }
             }
@@ -440,9 +455,9 @@ private fun LargeLayout(
                     extras = extras,
                     accent = accent,
                     style = InfoStyle(
-                        destinationFontSize = 16.sp,
-                        etaFontSize = 16.sp,
-                        leaveByFontSize = 11.sp,
+                        destinationFontSize = scaledSp(16, extras.textScale),
+                        etaFontSize = scaledSp(16, extras.textScale),
+                        leaveByFontSize = scaledSp(11, extras.textScale),
                         inlineEta = true,
                         showRoutedCaption = true,
                         showBestDeparture = true,
@@ -464,6 +479,7 @@ private fun CalendarEmptyCard(
     modifier: GlanceModifier,
     snapshot: CommuteSnapshot,
     bestDepartureLine: String? = null,
+    textScale: Float = 1f,
 ) {
     Box(
         modifier = modifier.clickable(actionRunCallback<RefreshAction>()).padding(12.dp),
@@ -476,7 +492,7 @@ private fun CalendarEmptyCard(
                         text = calendarEventTitle(snapshot.destinationLabel),
                         style = TextStyle(
                             color = GlanceTheme.colors.onSurface,
-                            fontSize = 14.sp,
+                            fontSize = scaledSp(14, textScale),
                             fontWeight = FontWeight.Medium,
                         ),
                         maxLines = 1,
@@ -485,7 +501,7 @@ private fun CalendarEmptyCard(
                         text = formatEventClockTime(snapshot.eventStartEpochMillis!!),
                         style = TextStyle(
                             color = GlanceTheme.colors.onSurface,
-                            fontSize = 28.sp,
+                            fontSize = scaledSp(28, textScale),
                             fontWeight = FontWeight.Bold,
                         ),
                         maxLines = 1,
@@ -496,7 +512,7 @@ private fun CalendarEmptyCard(
                         text = "Next up",
                         style = TextStyle(
                             color = GlanceTheme.colors.onSurfaceVariant,
-                            fontSize = 11.sp,
+                            fontSize = scaledSp(11, textScale),
                             fontWeight = FontWeight.Medium,
                         ),
                         maxLines = 1,
@@ -505,7 +521,7 @@ private fun CalendarEmptyCard(
                         text = snapshot.nextWindowLabel!!,
                         style = TextStyle(
                             color = GlanceTheme.colors.onSurface,
-                            fontSize = 18.sp,
+                            fontSize = scaledSp(18, textScale),
                             fontWeight = FontWeight.Medium,
                         ),
                         maxLines = 1,
@@ -514,7 +530,7 @@ private fun CalendarEmptyCard(
                         text = formatClockTime(snapshot.nextWindowStartMinuteOfDay!!),
                         style = TextStyle(
                             color = GlanceTheme.colors.onSurface,
-                            fontSize = 28.sp,
+                            fontSize = scaledSp(28, textScale),
                             fontWeight = FontWeight.Bold,
                         ),
                         maxLines = 1,
@@ -525,7 +541,7 @@ private fun CalendarEmptyCard(
                         text = "No commute or events scheduled",
                         style = TextStyle(
                             color = GlanceTheme.colors.onSurface,
-                            fontSize = 14.sp,
+                            fontSize = scaledSp(14, textScale),
                             fontWeight = FontWeight.Medium,
                         ),
                         maxLines = 3,
@@ -538,7 +554,7 @@ private fun CalendarEmptyCard(
                     text = bestDepartureLine,
                     style = TextStyle(
                         color = GlanceTheme.colors.onSurfaceVariant,
-                        fontSize = 11.sp,
+                        fontSize = scaledSp(11, textScale),
                         fontWeight = FontWeight.Medium,
                     ),
                     maxLines = 1,
@@ -571,13 +587,13 @@ private fun RoutedInfo(
             text = formatDistanceKm(snapshot.distanceMeters),
             style = TextStyle(
                 color = GlanceTheme.colors.onSurfaceVariant,
-                fontSize = 11.sp,
+                fontSize = scaledSp(11, extras.textScale),
             ),
             maxLines = 1,
         )
     }
     if (shouldShowRoutedCaption(snapshot, style.showRoutedCaption)) {
-        RoutedCaption()
+        RoutedCaption(extras.textScale)
     }
     if (style.showLeaveBy && shouldShowLeaveBy(snapshot, extras.leaveByEnabled)) {
         LeaveByLine(snapshot.leaveByMinuteOfDay!!, extras.nowMinuteOfDay, style.leaveByFontSize)
@@ -587,7 +603,7 @@ private fun RoutedInfo(
             text = extras.bestDepartureLine,
             style = TextStyle(
                 color = GlanceTheme.colors.onSurfaceVariant,
-                fontSize = 10.sp,
+                fontSize = scaledSp(10, extras.textScale),
             ),
             maxLines = 1,
         )
@@ -708,7 +724,7 @@ private fun LeaveByLine(minuteOfDay: Int, nowMinuteOfDay: Int, fontSize: TextUni
 
 /** Opaque leave-by pill for the WIDE map overlay; legible over map tiles. */
 @Composable
-private fun LeaveByPill(minuteOfDay: Int, nowMinuteOfDay: Int) {
+private fun LeaveByPill(minuteOfDay: Int, nowMinuteOfDay: Int, textScale: Float = 1f) {
     val late = isLeaveByPast(minuteOfDay, nowMinuteOfDay)
     Box(
         modifier = GlanceModifier
@@ -720,7 +736,7 @@ private fun LeaveByPill(minuteOfDay: Int, nowMinuteOfDay: Int) {
             text = formatLeaveByLine(minuteOfDay),
             style = TextStyle(
                 color = if (late) ColorProvider(LEAVE_BY_LATE_COLOR) else GlanceTheme.colors.onSurfaceVariant,
-                fontSize = 12.sp,
+                fontSize = scaledSp(12, textScale),
                 fontWeight = FontWeight.Medium,
             ),
             maxLines = 1,
@@ -730,7 +746,7 @@ private fun LeaveByPill(minuteOfDay: Int, nowMinuteOfDay: Int) {
 
 /** Opaque generic text pill for the map overlay stack (e.g. "Best: 3:30 pm"). */
 @Composable
-private fun MapTextPill(text: String) {
+private fun MapTextPill(text: String, textScale: Float = 1f) {
     Box(
         modifier = GlanceModifier
             .background(GlanceTheme.colors.surfaceVariant)
@@ -741,7 +757,7 @@ private fun MapTextPill(text: String) {
             text = text,
             style = TextStyle(
                 color = GlanceTheme.colors.onSurfaceVariant,
-                fontSize = 12.sp,
+                fontSize = scaledSp(12, textScale),
                 fontWeight = FontWeight.Medium,
             ),
             maxLines = 1,
@@ -751,12 +767,12 @@ private fun MapTextPill(text: String) {
 
 /** FIX-9: a "Routed" caption under/beside a CALENDAR_EVENT title when it won the 30-minute located-event preference. */
 @Composable
-private fun RoutedCaption() {
+private fun RoutedCaption(textScale: Float = 1f) {
     Text(
         text = "Routed",
         style = TextStyle(
             color = GlanceTheme.colors.onSurfaceVariant,
-            fontSize = 10.sp,
+            fontSize = scaledSp(10, textScale),
         ),
         maxLines = 1,
     )

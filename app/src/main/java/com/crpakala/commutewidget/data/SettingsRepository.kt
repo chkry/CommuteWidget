@@ -47,6 +47,8 @@ private object PreferenceKeys {
     val MAP_RENDER_KEY = stringPreferencesKey("map_render_key")
     val GEOCODE_CACHE_JSON = stringPreferencesKey("geocode_cache_json")
     val MAP_PILL_CORNER = stringPreferencesKey("map_pill_corner")
+    val WIDGET_BACKGROUND_OPACITY_PERCENT = intPreferencesKey("widget_background_opacity_percent")
+    val WIDGET_TEXT_SCALE_PERCENT = intPreferencesKey("widget_text_scale_percent")
     val BEST_DEPARTURE_ENABLED = booleanPreferencesKey("best_departure_enabled")
     val BEST_DEPARTURE_JSON = stringPreferencesKey("best_departure_json")
 }
@@ -65,6 +67,8 @@ private fun Preferences.toAppSettings(): AppSettings {
         eventRealtimeThresholdMinutes = this[PreferenceKeys.EVENT_REALTIME_THRESHOLD_MINUTES] ?: 60,
         eventTakeoverMinutes = this[PreferenceKeys.EVENT_TAKEOVER_MINUTES] ?: 120,
         mapPillCorner = parseMapPillCorner(this[PreferenceKeys.MAP_PILL_CORNER]),
+        widgetBackgroundOpacityPercent = this[PreferenceKeys.WIDGET_BACKGROUND_OPACITY_PERCENT] ?: 100,
+        widgetTextScalePercent = this[PreferenceKeys.WIDGET_TEXT_SCALE_PERCENT] ?: 100,
         bestDepartureEnabled = this[PreferenceKeys.BEST_DEPARTURE_ENABLED] ?: true,
         calendarEnabled = this[PreferenceKeys.CALENDAR_ENABLED] ?: false,
         selectedCalendarIds = decodeLongSet(this[PreferenceKeys.SELECTED_CALENDAR_IDS_JSON]),
@@ -197,6 +201,18 @@ class SettingsRepository private constructor(
     suspend fun setMapPillCorner(corner: MapPillCorner) {
         dataStore.edit { preferences ->
             preferences[PreferenceKeys.MAP_PILL_CORNER] = corner.name
+        }
+    }
+
+    suspend fun setWidgetBackgroundOpacityPercent(percent: Int) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.WIDGET_BACKGROUND_OPACITY_PERCENT] = percent
+        }
+    }
+
+    suspend fun setWidgetTextScalePercent(percent: Int) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.WIDGET_TEXT_SCALE_PERCENT] = percent
         }
     }
 

@@ -15,6 +15,10 @@ data class AppSettings(
     val eventTakeoverMinutes: Int = 120,
     /** Which map corner hosts the overlay pills (leave-by, best departure) on the 4x2 widget. */
     val mapPillCorner: MapPillCorner = MapPillCorner.TOP_START,
+    /** Widget background opacity percent (100 = solid); One UI-style translucency around 70-85. */
+    val widgetBackgroundOpacityPercent: Int = 100,
+    /** Widget text scale percent: 85 = small, 100 = default, 115 = large. */
+    val widgetTextScalePercent: Int = 100,
     /**
      * Best-departure advisor: samples predicted traffic across the CURRENT commute window (morning
      * = home to work, evening = work to home, auto-switching) and shows the cheapest time.
