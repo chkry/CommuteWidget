@@ -25,6 +25,12 @@ class CommuteWidgetDisplayTest {
     }
 
     @Test
+    fun formatDistanceKm_oneDecimal() {
+        assertEquals("12.4 km", formatDistanceKm(12_400L))
+        assertEquals("0.5 km", formatDistanceKm(500L))
+    }
+
+    @Test
     fun destinationDisplayLabel_fallsBackToWorkWhenSnapshotLabelMissing() {
         assertEquals("To Work", destinationDisplayLabel(Direction.TO_WORK, null))
         assertEquals("To Work", destinationDisplayLabel(Direction.TO_WORK, ""))

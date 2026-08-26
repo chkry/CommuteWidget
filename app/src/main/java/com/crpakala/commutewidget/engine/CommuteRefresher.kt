@@ -38,6 +38,7 @@ import com.google.android.gms.tasks.CancellationTokenSource
 import com.google.android.gms.tasks.Task
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -232,8 +233,13 @@ object CommuteRefresher {
                     try {
                         delay(TAP_COOLDOWN_PENDING_FRAME_MS)
                     } finally {
-                        repo.setRefreshing(false)
-                        CommuteWidget().updateAll(appContext)
+                        // NonCancellable: a cancelled coroutine cannot suspend, so without it the
+                        // DataStore write and the render would throw immediately inside finally
+                        // and strand the pending-alpha ETA on screen.
+                        withContext(NonCancellable) {
+                            repo.setRefreshing(false)
+                            CommuteWidget().updateAll(appContext)
+                        }
                     }
                 }
                 return
@@ -268,10 +274,15 @@ object CommuteRefresher {
                 saveFailure(repo, currentDirectionHint(settings, ZonedDateTime.now()), e.message ?: "Refresh failed")
             } finally {
                 lastCompletedElapsedRealtime = SystemClock.elapsedRealtime()
-                if (shouldRenderEarlyBeforeFetch(trigger)) {
-                    repo.setRefreshing(false)
+                // NonCancellable: Glance action coroutines get cancelled after ~10s; a slow
+                // route+map fetch reaching this finally in a cancelled coroutine must still be
+                // able to clear the pending flag and render, or the ETA strands at 45% alpha.
+                withContext(NonCancellable) {
+                    if (shouldRenderEarlyBeforeFetch(trigger)) {
+                        repo.setRefreshing(false)
+                    }
+                    CommuteWidget().updateAll(appContext)
                 }
-                CommuteWidget().updateAll(appContext)
             }
         }
     }

@@ -181,6 +181,8 @@ private data class InfoStyle(
     val showRoutedCaption: Boolean,
     /** WIDE renders leave-by as a pill on the map instead of a panel line; the panel is too narrow. */
     val showLeaveBy: Boolean = true,
+    /** WIDE shows the route distance under the ETA; SMALL and LARGE stay two-line for space. */
+    val showDistance: Boolean = false,
 )
 
 @Composable
@@ -328,6 +330,7 @@ private fun WideLayout(
                     inlineEta = false,
                     showRoutedCaption = true,
                     showLeaveBy = false,
+                    showDistance = true,
                 ),
             )
         }
@@ -496,6 +499,16 @@ private fun RoutedInfo(
     } else {
         DestinationLine(title, style.destinationFontSize, snapshot.lastFetchFailed)
         EtaText(snapshot, extras, accent, style.etaFontSize)
+    }
+    if (style.showDistance && snapshot.distanceMeters > 0L) {
+        Text(
+            text = formatDistanceKm(snapshot.distanceMeters),
+            style = TextStyle(
+                color = GlanceTheme.colors.onSurfaceVariant,
+                fontSize = 11.sp,
+            ),
+            maxLines = 1,
+        )
     }
     if (shouldShowRoutedCaption(snapshot, style.showRoutedCaption)) {
         RoutedCaption()
@@ -848,6 +861,10 @@ internal fun formatEventClockTime(eventStartEpochMillis: Long, zone: ZoneId = Zo
 
 internal fun isLeaveByPast(leaveByMinuteOfDay: Int, nowMinuteOfDay: Int): Boolean {
     return nowMinuteOfDay > leaveByMinuteOfDay
+}
+
+internal fun formatDistanceKm(distanceMeters: Long): String {
+    return String.format(Locale.US, "%.1f km", distanceMeters / 1000.0)
 }
 
 internal fun formatEta(durationSeconds: Long): String {
