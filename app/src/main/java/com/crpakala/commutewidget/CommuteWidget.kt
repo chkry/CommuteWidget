@@ -33,7 +33,6 @@ import androidx.glance.appwidget.appWidgetBackground
 import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.provideContent
 import androidx.glance.background
-import androidx.glance.color.ColorProvider as dayNightColorProvider
 import androidx.glance.layout.Alignment
 import androidx.glance.layout.Box
 import androidx.glance.layout.Column
@@ -652,13 +651,13 @@ private fun EtaText(
     accent: Color,
     fontSize: TextUnit,
 ) {
-    // White (theme onSurface) ETA with a traffic-colored dot beside it: the colored-text approach
-    // made amber traffic read as "dimmed" on dark backgrounds, hiding the pending-alpha signal.
+    // Traffic-colored ETA plus the traffic dot: the dot keeps congestion legible even while the
+    // text carries a state (pending alpha, stale grey), and vice versa.
     Row(verticalAlignment = Alignment.Vertical.CenterVertically) {
         Text(
             text = formatEta(snapshot.durationSeconds),
             style = TextStyle(
-                color = etaColorProvider(extras, snapshot.fetchedAtEpochMillis),
+                color = etaColorProvider(accent, extras, snapshot.fetchedAtEpochMillis),
                 fontSize = fontSize,
                 fontWeight = FontWeight.Bold,
             ),
@@ -676,6 +675,7 @@ private fun EtaText(
 
 @Composable
 private fun etaColorProvider(
+    accent: Color,
     extras: WidgetExtras,
     fetchedAtEpochMillis: Long,
 ): ColorProvider {
@@ -686,12 +686,9 @@ private fun etaColorProvider(
             extras.nowEpochMillis,
         )
     ) {
-        EtaDisplayState.PENDING -> dayNightColorProvider(
-            day = Color.Black.copy(alpha = ETA_PENDING_ALPHA),
-            night = Color.White.copy(alpha = ETA_PENDING_ALPHA),
-        )
+        EtaDisplayState.PENDING -> ColorProvider(accent.copy(alpha = ETA_PENDING_ALPHA))
         EtaDisplayState.STALE -> GlanceTheme.colors.onSurfaceVariant
-        EtaDisplayState.FRESH -> GlanceTheme.colors.onSurface
+        EtaDisplayState.FRESH -> ColorProvider(accent)
     }
 }
 
