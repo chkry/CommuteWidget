@@ -12,6 +12,19 @@ import java.time.ZonedDateTime
 
 class CommuteWidgetDisplayTest {
     @Test
+    fun formatEta_minutesKeepFullSuffix() {
+        assertEquals("46 min", formatEta(46 * 60L))
+        assertEquals("1 min", formatEta(30L))
+        assertEquals("0 min", formatEta(0L))
+    }
+
+    @Test
+    fun formatEta_hoursUseCompactForm() {
+        assertEquals("1h 15m", formatEta((75 * 60).toLong()))
+        assertEquals("2h", formatEta((120 * 60).toLong()))
+    }
+
+    @Test
     fun destinationDisplayLabel_fallsBackToWorkWhenSnapshotLabelMissing() {
         assertEquals("To Work", destinationDisplayLabel(Direction.TO_WORK, null))
         assertEquals("To Work", destinationDisplayLabel(Direction.TO_WORK, ""))

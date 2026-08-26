@@ -179,6 +179,8 @@ private data class InfoStyle(
     val inlineEta: Boolean,
     /** FIX-9: WIDE and LARGE show the "Routed" caption when applicable; SMALL skips it for space. */
     val showRoutedCaption: Boolean,
+    /** WIDE renders leave-by as a pill on the map instead of a panel line; the panel is too narrow. */
+    val showLeaveBy: Boolean = true,
 )
 
 @Composable
@@ -305,7 +307,7 @@ private fun WideLayout(
     extras: WidgetExtras,
 ) {
     val accent = trafficAccentColor(snapshot.durationSeconds, snapshot.durationNoTrafficSeconds)
-    val infoWidth = LocalSize.current.width * 0.4f
+    val infoWidth = LocalSize.current.width * 0.45f
     Row(modifier = modifier) {
         Column(
             modifier = GlanceModifier
@@ -321,21 +323,34 @@ private fun WideLayout(
                 accent = accent,
                 style = InfoStyle(
                     destinationFontSize = 11.sp,
-                    etaFontSize = 28.sp,
+                    etaFontSize = 22.sp,
                     leaveByFontSize = 12.sp,
                     inlineEta = false,
                     showRoutedCaption = true,
+                    showLeaveBy = false,
                 ),
             )
         }
-        MapPane(
-            snapshot = snapshot,
-            bitmap = mapBitmap,
+        Box(
             modifier = GlanceModifier
                 .defaultWeight()
                 .fillMaxHeight()
                 .clickable(actionRunCallback<NavigateAction>()),
-        )
+            contentAlignment = Alignment.TopStart,
+        ) {
+            MapPane(
+                snapshot = snapshot,
+                bitmap = mapBitmap,
+                modifier = GlanceModifier.fillMaxSize(),
+            )
+            // Leave-by rides on the map as a pill; the panel is too narrow for the full string.
+            // Deliberately NOT gated on the bitmap so it can never vanish with a failed map fetch.
+            if (shouldShowLeaveBy(snapshot, extras.leaveByEnabled)) {
+                Box(modifier = GlanceModifier.padding(6.dp)) {
+                    LeaveByPill(snapshot.leaveByMinuteOfDay!!, extras.nowMinuteOfDay)
+                }
+            }
+        }
     }
 }
 
@@ -485,7 +500,7 @@ private fun RoutedInfo(
     if (shouldShowRoutedCaption(snapshot, style.showRoutedCaption)) {
         RoutedCaption()
     }
-    if (shouldShowLeaveBy(snapshot, extras.leaveByEnabled)) {
+    if (style.showLeaveBy && shouldShowLeaveBy(snapshot, extras.leaveByEnabled)) {
         LeaveByLine(snapshot.leaveByMinuteOfDay!!, extras.nowMinuteOfDay, style.leaveByFontSize)
     }
 }
@@ -589,6 +604,28 @@ private fun LeaveByLine(minuteOfDay: Int, nowMinuteOfDay: Int, fontSize: TextUni
         ),
         maxLines = 1,
     )
+}
+
+/** Opaque leave-by pill for the WIDE map overlay; legible over map tiles. */
+@Composable
+private fun LeaveByPill(minuteOfDay: Int, nowMinuteOfDay: Int) {
+    val late = isLeaveByPast(minuteOfDay, nowMinuteOfDay)
+    Box(
+        modifier = GlanceModifier
+            .background(GlanceTheme.colors.surfaceVariant)
+            .cornerRadius(10.dp)
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+    ) {
+        Text(
+            text = formatLeaveByLine(minuteOfDay),
+            style = TextStyle(
+                color = if (late) ColorProvider(LEAVE_BY_LATE_COLOR) else GlanceTheme.colors.onSurfaceVariant,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+            ),
+            maxLines = 1,
+        )
+    }
 }
 
 /** FIX-9: a "Routed" caption under/beside a CALENDAR_EVENT title when it won the 30-minute located-event preference. */
@@ -813,7 +850,7 @@ internal fun isLeaveByPast(leaveByMinuteOfDay: Int, nowMinuteOfDay: Int): Boolea
     return nowMinuteOfDay > leaveByMinuteOfDay
 }
 
-private fun formatEta(durationSeconds: Long): String {
+internal fun formatEta(durationSeconds: Long): String {
     val totalMinutes = if (durationSeconds <= 0L) {
         0
     } else {
@@ -822,7 +859,8 @@ private fun formatEta(durationSeconds: Long): String {
     if (totalMinutes < 60) return "$totalMinutes min"
     val hours = totalMinutes / 60
     val minutes = totalMinutes % 60
-    return if (minutes == 0) "$hours hr" else "$hours hr $minutes min"
+    // Compact form: the WIDE panel cannot fit "1 hr 15 min" at hero size.
+    return if (minutes == 0) "${hours}h" else "${hours}h ${minutes}m"
 }
 
 private fun trafficAccentColor(durationSeconds: Long, durationNoTrafficSeconds: Long): Color {
