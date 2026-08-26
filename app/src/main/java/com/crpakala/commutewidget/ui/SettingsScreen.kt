@@ -225,12 +225,14 @@ private fun SettingsScreen() {
                     onEnabledChanged = { enabled ->
                         scope.launch {
                             repository.setCalendarEnabled(enabled)
+                            CommuteScheduler.ensureScheduled(applicationContext)
                             refreshWidget(applicationContext)
                         }
                     },
                     onSelectedIdsChanged = { ids ->
                         scope.launch {
                             repository.setSelectedCalendarIds(ids)
+                            CommuteScheduler.ensureScheduled(applicationContext)
                             refreshWidget(applicationContext)
                         }
                     },

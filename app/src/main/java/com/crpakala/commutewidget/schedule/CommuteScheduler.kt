@@ -50,6 +50,11 @@ object CommuteScheduler {
         val settings = SettingsRepository.get(appContext).settingsSnapshot()
         cancelLegacyRefreshWorks(appContext)
         scheduleWindowBoundary(appContext, settings)
+        if (shouldObserveCalendar(settings.calendarEnabled, settings.selectedCalendarIds.isNotEmpty())) {
+            CalendarChangeScheduler.schedule(appContext)
+        } else {
+            CalendarChangeScheduler.cancel(appContext)
+        }
     }
 
     fun ensureScheduledAsync(context: Context) {

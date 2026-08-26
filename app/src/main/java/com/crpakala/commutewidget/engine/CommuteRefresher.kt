@@ -795,12 +795,14 @@ private fun travelModeFor(travelMode: TravelMode): RouteTravelMode = when (trave
 }
 
 /**
- * Resolves the on-disk map path for a trigger-dependent pipeline: [RefreshTrigger.TICK] only ever
- * reuses the previous map (per [shouldReuseSlotMap]) and never fetches; [RefreshTrigger.TAP] and
- * [RefreshTrigger.AUTO] fetch a fresh one UNLESS the render-content hash matches what is already
- * on disk (FIX-10: the audit's single CRITICAL waste finding was re-downloading an unchanged map
- * on every tap). The hash covers everything that draws: polyline geometry, per-segment traffic
- * speeds, both endpoints, and the requested dimensions.
+ * Resolves the on-disk map path for a trigger-dependent pipeline. [RefreshTrigger.TICK] reuses
+ * the previous map while the destination is unchanged (per [shouldReuseSlotMap], accepting stale
+ * traffic colors as the tick's designed cost saving) and only fetches on a destination change,
+ * where the old map would be for the wrong place. [RefreshTrigger.TAP] and [RefreshTrigger.AUTO]
+ * fetch a fresh one UNLESS the render-content hash matches what is already on disk (FIX-10: the
+ * audit's single CRITICAL waste finding was re-downloading an unchanged map on every tap). The
+ * hash covers everything that draws: polyline geometry, per-segment traffic speeds, both
+ * endpoints, and the requested dimensions.
  */
 private suspend fun resolveMapImagePath(
     context: Context,
@@ -823,25 +825,45 @@ private suspend fun resolveMapImagePath(
                     direction = direction,
                     destination = destination,
                 )
-            ApiResult.Success(if (reuse) previousSnapshot.mapImagePath else null)
+            if (reuse) {
+                ApiResult.Success(previousSnapshot?.mapImagePath)
+            } else {
+                // Destination changed under a tick (e.g. the displayed event was deleted and the
+                // tick flipped the mode back): the old map is for the wrong place, so this is the
+                // one TICK case that fetches rather than leaving the widget mapless until the
+                // next tap. Same hash-cache path as TAP/AUTO.
+                fetchMapViaRenderCache(context, repo, previousSnapshot?.mapImagePath, apiKey, route, origin, destination)
+            }
         }
         RefreshTrigger.TAP, RefreshTrigger.AUTO -> {
-            val renderKey = mapRenderKey(route, origin, destination, MAP_FETCH_WIDTH_PX, MAP_FETCH_HEIGHT_PX)
-            val previousPath = previousSnapshot?.mapImagePath
-            if (previousPath != null &&
-                renderKey == repo.mapRenderKey() &&
-                withContext(Dispatchers.IO) { File(previousPath).isFile }
-            ) {
-                return ApiResult.Success(previousPath)
-            }
-            when (val fetched = fetchFreshMap(context, previousPath, apiKey, route, origin, destination)) {
-                is ApiResult.Success -> {
-                    repo.setMapRenderKey(renderKey)
-                    ApiResult.Success(fetched.value)
-                }
-                is ApiResult.Failure -> ApiResult.Failure(fetched.message, fetched.cause)
-            }
+            fetchMapViaRenderCache(context, repo, previousSnapshot?.mapImagePath, apiKey, route, origin, destination)
         }
+    }
+}
+
+/** FIX-10 shared path: reuse the on-disk map when the render hash matches, else fetch and record. */
+private suspend fun fetchMapViaRenderCache(
+    context: Context,
+    repo: SettingsRepository,
+    previousPath: String?,
+    apiKey: String,
+    route: RouteResult,
+    origin: LatLng,
+    destination: LatLng,
+): ApiResult<String?> {
+    val renderKey = mapRenderKey(route, origin, destination, MAP_FETCH_WIDTH_PX, MAP_FETCH_HEIGHT_PX)
+    if (previousPath != null &&
+        renderKey == repo.mapRenderKey() &&
+        withContext(Dispatchers.IO) { File(previousPath).isFile }
+    ) {
+        return ApiResult.Success(previousPath)
+    }
+    return when (val fetched = fetchFreshMap(context, previousPath, apiKey, route, origin, destination)) {
+        is ApiResult.Success -> {
+            repo.setMapRenderKey(renderKey)
+            ApiResult.Success(fetched.value)
+        }
+        is ApiResult.Failure -> ApiResult.Failure(fetched.message, fetched.cause)
     }
 }
 
