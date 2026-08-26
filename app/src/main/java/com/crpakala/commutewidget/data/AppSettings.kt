@@ -11,6 +11,8 @@ data class AppSettings(
     val arriveHomeByMinuteOfDay: Int = 1170,
     val eventLeaveByBufferMinutes: Int = 10,
     val eventRealtimeThresholdMinutes: Int = 60,
+    /** A located event starting within this many minutes takes over the widget even inside commute windows. */
+    val eventTakeoverMinutes: Int = 120,
     val calendarEnabled: Boolean = false,
     val selectedCalendarIds: Set<Long> = emptySet(),
     /**

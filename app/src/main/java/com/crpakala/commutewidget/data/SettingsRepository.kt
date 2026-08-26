@@ -40,6 +40,7 @@ private object PreferenceKeys {
     val LEAVE_BY_NOTIFIED_TO_HOME = stringPreferencesKey("leave_by_notified_to_home")
     val EVENT_LEAVE_BY_BUFFER_MINUTES = intPreferencesKey("event_leave_by_buffer_minutes")
     val EVENT_REALTIME_THRESHOLD_MINUTES = intPreferencesKey("event_realtime_threshold_minutes")
+    val EVENT_TAKEOVER_MINUTES = intPreferencesKey("event_takeover_minutes")
     val EVENT_LEAVE_BY_NOTIFIED_KEY = stringPreferencesKey("event_leave_by_notified_key")
     val CALENDAR_TICK_ENABLED = booleanPreferencesKey("calendar_tick_enabled")
     val REFRESHING_SINCE_EPOCH_MILLIS = longPreferencesKey("refreshing_since_epoch_millis")
@@ -57,6 +58,7 @@ private fun Preferences.toAppSettings(): AppSettings {
         arriveHomeByMinuteOfDay = this[PreferenceKeys.ARRIVE_HOME_BY_MINUTE_OF_DAY] ?: 1170,
         eventLeaveByBufferMinutes = this[PreferenceKeys.EVENT_LEAVE_BY_BUFFER_MINUTES] ?: 10,
         eventRealtimeThresholdMinutes = this[PreferenceKeys.EVENT_REALTIME_THRESHOLD_MINUTES] ?: 60,
+        eventTakeoverMinutes = this[PreferenceKeys.EVENT_TAKEOVER_MINUTES] ?: 120,
         calendarEnabled = this[PreferenceKeys.CALENDAR_ENABLED] ?: false,
         selectedCalendarIds = decodeLongSet(this[PreferenceKeys.SELECTED_CALENDAR_IDS_JSON]),
         commuteDays = decodeIntSet(this[PreferenceKeys.HISTORY_DAYS_JSON], setOf(1, 2, 3, 4, 5)),
@@ -157,6 +159,12 @@ class SettingsRepository private constructor(
     suspend fun setEventRealtimeThresholdMinutes(minutes: Int) {
         dataStore.edit { preferences ->
             preferences[PreferenceKeys.EVENT_REALTIME_THRESHOLD_MINUTES] = minutes
+        }
+    }
+
+    suspend fun setEventTakeoverMinutes(minutes: Int) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.EVENT_TAKEOVER_MINUTES] = minutes
         }
     }
 

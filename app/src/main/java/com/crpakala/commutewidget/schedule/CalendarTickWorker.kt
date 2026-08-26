@@ -12,9 +12,6 @@ import com.crpakala.commutewidget.data.SettingsRepository
 import com.crpakala.commutewidget.data.SnapshotMode
 import com.crpakala.commutewidget.engine.CommuteRefresher
 import com.crpakala.commutewidget.engine.RefreshTrigger
-import com.crpakala.commutewidget.engine.WidgetMode
-import com.crpakala.commutewidget.engine.resolveWidgetMode
-import java.time.ZonedDateTime
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -28,10 +25,11 @@ private const val CALENDAR_TICK_DELAY_MINUTES = 20L
  * the sole place that (re)schedules or cancels [CalendarTickScheduler.WORK_NAME]; this worker
  * never self-reschedules.
  *
- * Re-checks [com.crpakala.commutewidget.data.AppSettings.calendarTickEnabled], that the current
- * snapshot mode is still [SnapshotMode.CALENDAR_EVENT], and that [resolveWidgetMode] for right now
- * still resolves to [WidgetMode.Calendar] - a tick landing just after a commute window opened
- * must no-op rather than forcing an unwanted calendar-mode fetch mid-window.
+ * Re-checks [com.crpakala.commutewidget.data.AppSettings.calendarTickEnabled] and that the current
+ * snapshot mode is still [SnapshotMode.CALENDAR_EVENT]. It deliberately does NOT gate on being
+ * outside a commute window anymore: an event-takeover CALENDAR_EVENT displayed inside a window
+ * wants freshness too, and the refresh itself re-resolves takeover-vs-commute and then schedules
+ * or cancels the next tick correctly for whichever mode won.
  */
 class CalendarTickWorker(
     context: Context,
@@ -42,20 +40,6 @@ class CalendarTickWorker(
         val settings = repo.settingsSnapshot()
         val snapshot = repo.snapshot()
         if (snapshot == null || !shouldScheduleCalendarTick(snapshot.mode, settings.calendarTickEnabled)) {
-            return Result.success()
-        }
-
-        val now = ZonedDateTime.now()
-        val widgetMode = resolveWidgetMode(
-            dayOfWeekIso = now.dayOfWeek.value,
-            minuteOfDay = now.hour * 60 + now.minute,
-            commuteDays = settings.commuteDays,
-            morningStart = settings.morningSlotStartMinuteOfDay,
-            morningEnd = settings.morningSlotEndMinuteOfDay,
-            eveningStart = settings.eveningSlotStartMinuteOfDay,
-            eveningEnd = settings.eveningSlotEndMinuteOfDay,
-        )
-        if (widgetMode != WidgetMode.Calendar) {
             return Result.success()
         }
 

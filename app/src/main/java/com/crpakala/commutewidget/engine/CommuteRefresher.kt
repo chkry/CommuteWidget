@@ -109,6 +109,20 @@ internal fun eventDepartureProbe(
 }
 
 /**
+ * Event takeover: a LOCATED event (route drawable) whose start is within [takeoverMinutes] of now
+ * outranks the window commute. Already-started events also qualify (start - now is negative),
+ * matching the calendar reader's own grace-window semantics.
+ */
+internal fun eventTakeoverApplies(
+    eventStartEpochMillis: Long,
+    eventHasLocation: Boolean,
+    nowEpochMillis: Long,
+    takeoverMinutes: Int,
+): Boolean {
+    return eventHasLocation && eventStartEpochMillis - nowEpochMillis <= takeoverMinutes * 60_000L
+}
+
+/**
  * v4 event advisor: leaveBy = eventStart - buffer - route duration, in epoch millis. The same
  * arithmetic applies whether [durationSeconds] came from a PREDICTED or real-time route (the
  * traffic model used to obtain it is [eventDepartureProbe]'s concern, not this one's).
@@ -319,11 +333,34 @@ object CommuteRefresher {
 
         when (widgetMode) {
             is WidgetMode.Commute -> {
-                performCommuteRefresh(context, repo, settings, trigger, widgetMode.direction, now, nowEpochMillis)
+                // Event takeover: a located event starting within eventTakeoverMinutes outranks
+                // the window commute (owner decision after the v5 audit). The calendar pipeline
+                // re-selects the same event deterministically and handles routing, leave-by,
+                // tick scheduling, and commute-alarm cancellation.
+                if (eventTakeoverCandidate(context, settings, nowEpochMillis) != null) {
+                    performCalendarRefresh(context, repo, settings, trigger, direction, nextWindowResult, now, nowEpochMillis)
+                } else {
+                    performCommuteRefresh(context, repo, settings, trigger, widgetMode.direction, now, nowEpochMillis)
+                }
             }
             WidgetMode.Calendar -> {
                 performCalendarRefresh(context, repo, settings, trigger, direction, nextWindowResult, now, nowEpochMillis)
             }
+        }
+    }
+
+    private fun eventTakeoverCandidate(
+        context: Context,
+        settings: AppSettings,
+        nowEpochMillis: Long,
+    ): TodayEvent? {
+        if (!settings.calendarEnabled || settings.selectedCalendarIds.isEmpty()) return null
+        val reader = CalendarReader(context)
+        if (!reader.hasPermission()) return null
+        val event = reader.nextEventToday(settings.selectedCalendarIds, nowEpochMillis, ZoneId.systemDefault())
+            ?: return null
+        return event.takeIf {
+            eventTakeoverApplies(it.startEpochMillis, it.location != null, nowEpochMillis, settings.eventTakeoverMinutes)
         }
     }
 

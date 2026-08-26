@@ -221,6 +221,7 @@ private fun SettingsScreen() {
                     enabled = settings.calendarEnabled,
                     selectedIds = settings.selectedCalendarIds,
                     calendarTickEnabled = settings.calendarTickEnabled,
+                    eventTakeoverMinutes = settings.eventTakeoverMinutes,
                     onEnabledChanged = { enabled ->
                         scope.launch {
                             repository.setCalendarEnabled(enabled)
@@ -237,6 +238,12 @@ private fun SettingsScreen() {
                         scope.launch {
                             repository.setCalendarTickEnabled(enabled)
                             CommuteScheduler.ensureScheduled(applicationContext)
+                            refreshWidget(applicationContext)
+                        }
+                    },
+                    onEventTakeoverMinutesChanged = { minutes ->
+                        scope.launch {
+                            repository.setEventTakeoverMinutes(minutes)
                             refreshWidget(applicationContext)
                         }
                     },
@@ -702,11 +709,14 @@ private fun CalendarSection(
     enabled: Boolean,
     selectedIds: Set<Long>,
     calendarTickEnabled: Boolean,
+    eventTakeoverMinutes: Int,
     onEnabledChanged: (Boolean) -> Unit,
     onSelectedIdsChanged: (Set<Long>) -> Unit,
     onCalendarTickEnabledChanged: (Boolean) -> Unit,
+    onEventTakeoverMinutesChanged: (Int) -> Unit,
 ) {
     val context = LocalContext.current
+    var editingTakeover by remember { mutableStateOf(false) }
     var permissionGranted by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CALENDAR) ==
@@ -738,6 +748,13 @@ private fun CalendarSection(
             }
             Switch(checked = calendarTickEnabled, onCheckedChange = onCalendarTickEnabledChanged)
         }
+        if (enabled) {
+            DurationRow("Event takes over within", eventTakeoverMinutes) { editingTakeover = true }
+            Text(
+                "A located event starting within this window replaces the commute view, even inside commute windows",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
         if (enabled && !permissionGranted) {
             Text("Calendar permission needed", color = MaterialTheme.colorScheme.error)
             TextButton(onClick = { permissionLauncher.launch(Manifest.permission.READ_CALENDAR) }) {
@@ -753,8 +770,21 @@ private fun CalendarSection(
             if (selectedIds.isEmpty()) Text("Select at least one calendar", style = MaterialTheme.typography.bodySmall)
         }
         Text(
-            "Outside your commute windows, the widget shows the next event from these calendars and routes to it when it has a location.",
+            "Outside your commute windows, the widget shows the next event from these calendars and routes to it when it has a location. A located event starting soon also takes over during commute windows.",
             style = MaterialTheme.typography.bodySmall,
+        )
+    }
+    if (editingTakeover) {
+        DurationDialog(
+            initialMinutes = eventTakeoverMinutes,
+            title = "Event takes over within",
+            minMinutes = 15,
+            maxMinutes = 480,
+            onDismiss = { editingTakeover = false },
+            onSave = { minutes ->
+                onEventTakeoverMinutesChanged(minutes)
+                editingTakeover = false
+            },
         )
     }
 }
