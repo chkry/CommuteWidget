@@ -391,6 +391,184 @@ class CommuteWidgetDisplayTest {
         )
     }
 
+    @Test
+    fun isWindDown_trueWhenTitleAndStartPresent() {
+        val snapshot = emptySnapshot().copy(
+            tomorrowEventTitle = "Standup",
+            tomorrowEventStartEpochMillis = 1L,
+        )
+        assertTrue(isWindDown(snapshot))
+    }
+
+    @Test
+    fun isWindDown_falseWhenTitleMissing() {
+        val snapshot = emptySnapshot().copy(tomorrowEventStartEpochMillis = 1L)
+        assertFalse(isWindDown(snapshot))
+    }
+
+    @Test
+    fun isWindDown_falseWhenStartMissing() {
+        val snapshot = emptySnapshot().copy(tomorrowEventTitle = "Standup")
+        assertFalse(isWindDown(snapshot))
+    }
+
+    @Test
+    fun isWindDown_falseWhenBothMissing() {
+        assertFalse(isWindDown(emptySnapshot()))
+    }
+
+    @Test
+    fun formatCountdown_hoursAndMinutes() {
+        assertEquals("in 2h 10m", formatCountdown(2 * 60 + 10))
+        assertEquals("in 1h 45m", formatCountdown(60 + 45))
+    }
+
+    @Test
+    fun formatCountdown_minutesOnly() {
+        assertEquals("in 45m", formatCountdown(45))
+    }
+
+    @Test
+    fun formatCountdown_exactHours() {
+        assertEquals("in 2h", formatCountdown(120))
+    }
+
+    @Test
+    fun formatFreeFor_hoursAndMinutes() {
+        assertEquals("Free for 2h 10m", formatFreeFor(2 * 60 + 10))
+        assertEquals("Free for 1h 45m", formatFreeFor(60 + 45))
+    }
+
+    @Test
+    fun formatFreeFor_minutesOnly() {
+        assertEquals("Free for 45m", formatFreeFor(45))
+    }
+
+    @Test
+    fun formatFreeFor_exactHours() {
+        assertEquals("Free for 2h", formatFreeFor(120))
+    }
+
+    @Test
+    fun eventCountdownMinutes_nullWhenStartMissing() {
+        assertEquals(null, eventCountdownMinutes(null, nowEpochMillis = 1_000L))
+    }
+
+    @Test
+    fun eventCountdownMinutes_nullWhenAlreadyStarted() {
+        val now = 10_000L
+        assertEquals(null, eventCountdownMinutes(now, now))
+        assertEquals(null, eventCountdownMinutes(now - 1L, now))
+    }
+
+    @Test
+    fun eventCountdownMinutes_nullWhenLessThanOneMinuteAway() {
+        val now = 10_000L
+        assertEquals(null, eventCountdownMinutes(now + 59_999L, now))
+    }
+
+    @Test
+    fun eventCountdownMinutes_floorsWholeMinutes() {
+        val now = 10_000L
+        assertEquals(1, eventCountdownMinutes(now + 60_000L, now))
+        assertEquals(105, eventCountdownMinutes(now + 105L * 60_000L, now))
+    }
+
+    @Test
+    fun formatTodayBrief_pluralWithFirstStart() {
+        val zone = ZoneId.of("UTC")
+        val first = ZonedDateTime.of(2026, 8, 26, 10, 0, 0, 0, zone).toInstant().toEpochMilli()
+        assertEquals("3 meetings · first 10:00 am", formatTodayBrief(3, first, zone))
+    }
+
+    @Test
+    fun formatTodayBrief_singular() {
+        val zone = ZoneId.of("UTC")
+        val first = ZonedDateTime.of(2026, 8, 26, 9, 5, 0, 0, zone).toInstant().toEpochMilli()
+        assertEquals("1 meeting · first 9:05 am", formatTodayBrief(1, first, zone))
+    }
+
+    @Test
+    fun formatTodayBrief_nullFirstStartOmitsTime() {
+        assertEquals("3 meetings", formatTodayBrief(3, null))
+        assertEquals("1 meeting", formatTodayBrief(1, null))
+    }
+
+    @Test
+    fun formatAlarmLine_prefixesGlyphAndClockTime() {
+        val zone = ZoneId.of("UTC")
+        val epoch = ZonedDateTime.of(2026, 8, 26, 6, 30, 0, 0, zone).toInstant().toEpochMilli()
+        assertEquals("⏰ Alarm 6:30 am", formatAlarmLine(epoch, zone))
+    }
+
+    @Test
+    fun shouldShowEventCountdown_calendarEventWhenSizeAllows() {
+        val snapshot = emptySnapshot().copy(mode = SnapshotMode.CALENDAR_EVENT)
+        assertTrue(shouldShowEventCountdown(snapshot, captionAllowedForSize = true))
+    }
+
+    @Test
+    fun shouldShowEventCountdown_hiddenWhenSizeDoesNotAllowIt() {
+        val snapshot = emptySnapshot().copy(mode = SnapshotMode.CALENDAR_EVENT)
+        assertFalse(shouldShowEventCountdown(snapshot, captionAllowedForSize = false))
+    }
+
+    @Test
+    fun shouldShowEventCountdown_hiddenForNonCalendarEventModes() {
+        val commute = emptySnapshot().copy(mode = SnapshotMode.COMMUTE)
+        val calendarEmpty = emptySnapshot().copy(mode = SnapshotMode.CALENDAR_EMPTY)
+        assertFalse(shouldShowEventCountdown(commute, captionAllowedForSize = true))
+        assertFalse(shouldShowEventCountdown(calendarEmpty, captionAllowedForSize = true))
+    }
+
+    @Test
+    fun shouldShowTodayBrief_commuteToWorkWithPositiveCountWhenSizeAllows() {
+        val snapshot = emptySnapshot().copy(
+            mode = SnapshotMode.COMMUTE,
+            direction = Direction.TO_WORK,
+            todayEventCount = 3,
+        )
+        assertTrue(shouldShowTodayBrief(snapshot, captionAllowedForSize = true))
+    }
+
+    @Test
+    fun shouldShowTodayBrief_hiddenWhenSizeDoesNotAllowIt() {
+        val snapshot = emptySnapshot().copy(
+            mode = SnapshotMode.COMMUTE,
+            direction = Direction.TO_WORK,
+            todayEventCount = 3,
+        )
+        assertFalse(shouldShowTodayBrief(snapshot, captionAllowedForSize = false))
+    }
+
+    @Test
+    fun shouldShowTodayBrief_hiddenWhenCountNullOrZero() {
+        val missing = emptySnapshot().copy(mode = SnapshotMode.COMMUTE, direction = Direction.TO_WORK)
+        val zero = emptySnapshot().copy(
+            mode = SnapshotMode.COMMUTE,
+            direction = Direction.TO_WORK,
+            todayEventCount = 0,
+        )
+        assertFalse(shouldShowTodayBrief(missing, captionAllowedForSize = true))
+        assertFalse(shouldShowTodayBrief(zero, captionAllowedForSize = true))
+    }
+
+    @Test
+    fun shouldShowTodayBrief_hiddenForToHomeAndNonCommute() {
+        val toHome = emptySnapshot().copy(
+            mode = SnapshotMode.COMMUTE,
+            direction = Direction.TO_HOME,
+            todayEventCount = 3,
+        )
+        val calendarEvent = emptySnapshot().copy(
+            mode = SnapshotMode.CALENDAR_EVENT,
+            direction = Direction.TO_WORK,
+            todayEventCount = 3,
+        )
+        assertFalse(shouldShowTodayBrief(toHome, captionAllowedForSize = true))
+        assertFalse(shouldShowTodayBrief(calendarEvent, captionAllowedForSize = true))
+    }
+
     private fun emptySnapshot(
         destinationLabel: String? = null,
         eventStartEpochMillis: Long? = null,

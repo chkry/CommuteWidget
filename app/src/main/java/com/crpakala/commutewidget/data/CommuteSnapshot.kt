@@ -43,4 +43,24 @@ data class CommuteSnapshot(
      * pre-FIX-9 stored snapshot JSON decodes as `false` rather than failing.
      */
     val routedOverEarlier: Boolean = false,
+    /**
+     * Title of the first event tomorrow. Populated only on no-events-remaining-today
+     * [SnapshotMode.CALENDAR_EMPTY] snapshots, for the wind-down card.
+     */
+    val tomorrowEventTitle: String? = null,
+    /**
+     * Start time of [tomorrowEventTitle] in epoch millis. Populated only on no-events-remaining-
+     * today [SnapshotMode.CALENDAR_EMPTY] snapshots, for the wind-down card.
+     */
+    val tomorrowEventStartEpochMillis: Long? = null,
+    /**
+     * Count of events remaining today. Populated only on [SnapshotMode.COMMUTE] snapshots, for
+     * the morning-brief line.
+     */
+    val todayEventCount: Int? = null,
+    /**
+     * Earliest start time among [todayEventCount]'s events, in epoch millis. Populated only on
+     * [SnapshotMode.COMMUTE] snapshots, for the morning-brief line.
+     */
+    val todayFirstEventStartEpochMillis: Long? = null,
 )

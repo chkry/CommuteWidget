@@ -32,3 +32,13 @@ data class TodayEvent(
      */
     val preferredOverEarlierEvent: Boolean = false,
 )
+
+data class TomorrowEvent(
+    val title: String,
+    val startEpochMillis: Long,
+)
+
+data class TodaySummary(
+    val remainingCount: Int,
+    val firstStartEpochMillis: Long?,
+)

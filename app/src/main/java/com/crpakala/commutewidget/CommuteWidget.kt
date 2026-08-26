@@ -1,5 +1,6 @@
 package com.crpakala.commutewidget
 
+import android.app.AlarmManager
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
@@ -121,6 +122,12 @@ class CommuteWidget : GlanceAppWidget() {
         } else {
             null
         }
+        val nextAlarmLine = runCatching {
+            val triggerTime = (context.getSystemService(Context.ALARM_SERVICE) as AlarmManager)
+                .nextAlarmClock
+                ?.triggerTime
+            triggerTime?.let { formatAlarmLine(it) }
+        }.getOrNull()
 
         val lightScheme = dynamicLightColorScheme(context)
         val darkScheme = dynamicDarkColorScheme(context)
@@ -146,6 +153,7 @@ class CommuteWidget : GlanceAppWidget() {
                         leaveByEnabled = settings.leaveByEnabled,
                         refreshingSince = refreshingSince,
                         bestDepartureLine = bestDepartureLine,
+                        nextAlarmLine = nextAlarmLine,
                         pillCorner = settings.mapPillCorner,
                         textScale = settings.widgetTextScalePercent.coerceIn(70, 150) / 100f,
                     ),
@@ -210,6 +218,8 @@ private data class WidgetExtras(
     val refreshingSince: Long?,
     /** Pre-formatted "Best: 3:30 pm" line, null when disabled/stale/slot passed. */
     val bestDepartureLine: String? = null,
+    /** Pre-formatted "⏰ Alarm 7:00 am" line, null when no next alarm is set. */
+    val nextAlarmLine: String? = null,
     val pillCorner: MapPillCorner = MapPillCorner.TOP_START,
     val textScale: Float = 1f,
 )
@@ -230,6 +240,11 @@ private data class InfoStyle(
     val showDistance: Boolean = false,
     /** WIDE and LARGE show the best-departure line; SMALL skips it for space. */
     val showBestDeparture: Boolean = false,
+    /**
+     * WIDE and LARGE show idle-state captions (event countdown, morning brief);
+     * SMALL skips them for space. Mirrors [showRoutedCaption] size gating.
+     */
+    val showExtendedCaptions: Boolean = false,
 )
 
 @Composable
@@ -299,7 +314,7 @@ private fun ConfiguredContent(
     extras: WidgetExtras,
 ) {
     if (snapshot.mode == SnapshotMode.CALENDAR_EMPTY) {
-        CalendarEmptyCard(modifier, snapshot, extras.bestDepartureLine, extras.textScale)
+        CalendarEmptyCard(modifier, snapshot, extras)
         return
     }
     val size = LocalSize.current
@@ -379,6 +394,7 @@ private fun WideLayout(
                     showRoutedCaption = true,
                     showLeaveBy = false,
                     showDistance = true,
+                    showExtendedCaptions = true,
                 ),
             )
         }
@@ -461,6 +477,7 @@ private fun LargeLayout(
                         inlineEta = true,
                         showRoutedCaption = true,
                         showBestDeparture = true,
+                        showExtendedCaptions = true,
                     ),
                 )
             }
@@ -478,14 +495,39 @@ private fun LargeLayout(
 private fun CalendarEmptyCard(
     modifier: GlanceModifier,
     snapshot: CommuteSnapshot,
-    bestDepartureLine: String? = null,
-    textScale: Float = 1f,
+    extras: WidgetExtras,
 ) {
+    val textScale = extras.textScale
+    val windDown = isWindDown(snapshot)
     Box(
         modifier = modifier.clickable(actionRunCallback<RefreshAction>()).padding(12.dp),
         contentAlignment = Alignment.CenterStart,
     ) {
         Column {
+            if (windDown) {
+                Text(
+                    text = "Tomorrow",
+                    style = TextStyle(
+                        color = GlanceTheme.colors.onSurfaceVariant,
+                        fontSize = scaledSp(11, textScale),
+                        fontWeight = FontWeight.Medium,
+                    ),
+                    maxLines = 1,
+                )
+                Text(
+                    text = "${snapshot.tomorrowEventTitle} at ${formatEventClockTime(snapshot.tomorrowEventStartEpochMillis!!)}",
+                    style = TextStyle(
+                        color = GlanceTheme.colors.onSurface,
+                        fontSize = scaledSp(16, textScale),
+                        fontWeight = FontWeight.Medium,
+                    ),
+                    maxLines = 1,
+                )
+                if (extras.nextAlarmLine != null) {
+                    AlarmLine(extras.nextAlarmLine, textScale)
+                }
+                Spacer(modifier = GlanceModifier.height(4.dp))
+            }
             when (calendarEmptyCase(snapshot)) {
                 CalendarEmptyCase.UNLOCATED_EVENT -> {
                     Text(
@@ -506,6 +548,20 @@ private fun CalendarEmptyCard(
                         ),
                         maxLines = 1,
                     )
+                    val freeMinutes = eventCountdownMinutes(
+                        snapshot.eventStartEpochMillis,
+                        extras.nowEpochMillis,
+                    )
+                    if (freeMinutes != null) {
+                        Text(
+                            text = formatFreeFor(freeMinutes),
+                            style = TextStyle(
+                                color = GlanceTheme.colors.onSurfaceVariant,
+                                fontSize = scaledSp(11, textScale),
+                            ),
+                            maxLines = 1,
+                        )
+                    }
                 }
                 CalendarEmptyCase.NEXT_WINDOW -> {
                     Text(
@@ -530,7 +586,7 @@ private fun CalendarEmptyCard(
                         text = formatClockTime(snapshot.nextWindowStartMinuteOfDay!!),
                         style = TextStyle(
                             color = GlanceTheme.colors.onSurface,
-                            fontSize = scaledSp(28, textScale),
+                            fontSize = if (windDown) scaledSp(18, textScale) else scaledSp(28, textScale),
                             fontWeight = FontWeight.Bold,
                         ),
                         maxLines = 1,
@@ -546,12 +602,15 @@ private fun CalendarEmptyCard(
                         ),
                         maxLines = 3,
                     )
+                    if (!windDown && extras.nextAlarmLine != null) {
+                        AlarmLine(extras.nextAlarmLine, textScale)
+                    }
                 }
             }
-            if (bestDepartureLine != null) {
+            if (extras.bestDepartureLine != null) {
                 Spacer(modifier = GlanceModifier.height(4.dp))
                 Text(
-                    text = bestDepartureLine,
+                    text = extras.bestDepartureLine,
                     style = TextStyle(
                         color = GlanceTheme.colors.onSurfaceVariant,
                         fontSize = scaledSp(11, textScale),
@@ -581,6 +640,27 @@ private fun RoutedInfo(
     } else {
         DestinationLine(title, style.destinationFontSize, snapshot.lastFetchFailed)
         EtaText(snapshot, extras, accent, style.etaFontSize)
+    }
+    val countdownMinutes = eventCountdownMinutes(snapshot.eventStartEpochMillis, extras.nowEpochMillis)
+    if (shouldShowEventCountdown(snapshot, style.showExtendedCaptions) && countdownMinutes != null) {
+        Text(
+            text = formatCountdown(countdownMinutes),
+            style = TextStyle(
+                color = GlanceTheme.colors.onSurfaceVariant,
+                fontSize = scaledSp(10, extras.textScale),
+            ),
+            maxLines = 1,
+        )
+    }
+    if (shouldShowTodayBrief(snapshot, style.showExtendedCaptions)) {
+        Text(
+            text = formatTodayBrief(snapshot.todayEventCount!!, snapshot.todayFirstEventStartEpochMillis),
+            style = TextStyle(
+                color = GlanceTheme.colors.onSurfaceVariant,
+                fontSize = scaledSp(10, extras.textScale),
+            ),
+            maxLines = 1,
+        )
     }
     if (style.showDistance && snapshot.distanceMeters > 0L) {
         Text(
@@ -765,6 +845,18 @@ private fun MapTextPill(text: String, textScale: Float = 1f) {
     }
 }
 
+@Composable
+private fun AlarmLine(text: String, textScale: Float) {
+    Text(
+        text = text,
+        style = TextStyle(
+            color = GlanceTheme.colors.onSurfaceVariant,
+            fontSize = scaledSp(11, textScale),
+        ),
+        maxLines = 1,
+    )
+}
+
 /** FIX-9: a "Routed" caption under/beside a CALENDAR_EVENT title when it won the 30-minute located-event preference. */
 @Composable
 private fun RoutedCaption(textScale: Float = 1f) {
@@ -887,6 +979,39 @@ internal fun shouldShowRoutedCaption(snapshot: CommuteSnapshot, captionAllowedFo
     return captionAllowedForSize && snapshot.mode == SnapshotMode.CALENDAR_EVENT && snapshot.routedOverEarlier
 }
 
+/** WIDE/LARGE event-countdown caption under a CALENDAR_EVENT title; omit when started or start is null. */
+internal fun shouldShowEventCountdown(snapshot: CommuteSnapshot, captionAllowedForSize: Boolean): Boolean {
+    return captionAllowedForSize && snapshot.mode == SnapshotMode.CALENDAR_EVENT
+}
+
+/**
+ * Morning-brief caption on a To Work COMMUTE snapshot when today's remaining event count is
+ * populated and positive. Size-gated the same way as [shouldShowRoutedCaption] (WIDE/LARGE).
+ */
+internal fun shouldShowTodayBrief(snapshot: CommuteSnapshot, captionAllowedForSize: Boolean): Boolean {
+    val count = snapshot.todayEventCount
+    return captionAllowedForSize &&
+        snapshot.mode == SnapshotMode.COMMUTE &&
+        snapshot.direction == Direction.TO_WORK &&
+        count != null &&
+        count > 0
+}
+
+/** True when both tomorrow-event fields are present on a calendar-empty snapshot. */
+internal fun isWindDown(snapshot: CommuteSnapshot): Boolean {
+    return snapshot.tomorrowEventTitle != null && snapshot.tomorrowEventStartEpochMillis != null
+}
+
+/**
+ * Whole minutes until [startEpochMillis], or null when the start is missing, already reached,
+ * or less than one full minute away. Used only for positive-minute countdown captions.
+ */
+internal fun eventCountdownMinutes(startEpochMillis: Long?, nowEpochMillis: Long): Int? {
+    if (startEpochMillis == null) return null
+    val minutes = ((startEpochMillis - nowEpochMillis) / 60_000L).toInt()
+    return minutes.takeIf { it > 0 }
+}
+
 /**
  * Three-way ETA treatment: a TAP-pending refresh dims the accent, a settled but
  * old snapshot greys the number, and a fresh settled snapshot keeps full accent.
@@ -985,6 +1110,38 @@ internal fun bestDepartureLineText(minuteOfDay: Int): String {
 internal fun formatEventClockTime(eventStartEpochMillis: Long, zone: ZoneId = ZoneId.systemDefault()): String {
     val zoned = Instant.ofEpochMilli(eventStartEpochMillis).atZone(zone)
     return formatClockTime(zoned.hour * 60 + zoned.minute)
+}
+
+internal fun formatCountdown(minutesUntil: Int): String {
+    return "in ${formatCompactHoursMinutes(minutesUntil)}"
+}
+
+internal fun formatFreeFor(minutesUntil: Int): String {
+    return "Free for ${formatCompactHoursMinutes(minutesUntil)}"
+}
+
+internal fun formatTodayBrief(
+    count: Int,
+    firstStartEpochMillis: Long?,
+    zone: ZoneId = ZoneId.systemDefault(),
+): String {
+    val meetings = if (count == 1) "1 meeting" else "$count meetings"
+    if (firstStartEpochMillis == null) return meetings
+    return "$meetings · first ${formatEventClockTime(firstStartEpochMillis, zone)}"
+}
+
+internal fun formatAlarmLine(triggerTimeEpochMillis: Long, zone: ZoneId = ZoneId.systemDefault()): String {
+    return "⏰ Alarm ${formatEventClockTime(triggerTimeEpochMillis, zone)}"
+}
+
+private fun formatCompactHoursMinutes(minutesUntil: Int): String {
+    val hours = minutesUntil / 60
+    val minutes = minutesUntil % 60
+    return when {
+        hours <= 0 -> "${minutes}m"
+        minutes == 0 -> "${hours}h"
+        else -> "${hours}h ${minutes}m"
+    }
 }
 
 internal fun isLeaveByPast(leaveByMinuteOfDay: Int, nowMinuteOfDay: Int): Boolean {

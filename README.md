@@ -15,6 +15,10 @@ The audit and design rulings driving these changes are documented in `UX-AUDIT.m
 - Non-text status signals: semi-transparent ETA during in-flight refreshes and cooldown taps, grey ETA for data older than 10 minutes, and error warning glyphs without loading text.
 - Clean calendar-empty fallback cards without map areas: large title and start time for unlocated events, "Next up - To Work at 7:00 am" when no events remain, and quiet message cards when no schedule exists.
 - Small "Routed" caption when the widget prioritizes a located calendar event over a chronologically earlier unlocated event.
+- Wind-down card displaying tomorrow's first calendar event and next device alarm when no events remain today.
+- Contextual countdown captions showing time until routed event start or available free time before unlocated events.
+- Morning brief caption during the morning commute view summarizing total meetings and first event start time.
+- Next scheduled system alarm readout on the bare no-events card.
 - Saved places management in settings with direct Google Maps navigation launch buttons.
 - Commute and calendar event leave-by advisor computing dynamic departure targets with early arrival buffers and firing precise local high-priority alarm notifications.
 - Automatic calendar mode outside commute windows displaying the next remaining event today using live or predicted traffic.
@@ -94,6 +98,7 @@ CommuteWidget requests runtime permissions based on configured features:
   The app prompts for this permission when turning on the advisor toggle in settings.
 - **Calendar (`READ_CALENDAR`)**: Required if the Calendar feature is enabled.
   The app prompts for this permission when turning on calendar integration in settings.
+- **System Alarm**: Reading the next scheduled device alarm from the system alarm clock operates on-device and requires no permissions.
 
 ## In-App Setup
 
@@ -138,16 +143,18 @@ The widget selects its active display mode according to configured schedules and
 
 1. **Commute Windows**: Active during configured To Work and To Home hours on enabled Commute days.
    - **To Work window** (default 7:00 AM - 10:00 AM): Displays route from Home to Work with large traffic-colored ETA and leave-by departure time.
+   - During the morning commute view, a morning brief caption summarizes the day (for example, "3 meetings - first 10:00 am") using selected calendar events.
    - **To Home window** (default 5:00 PM - 8:00 PM): Displays route from Work to Home with large traffic-colored ETA and leave-by departure time.
-   - Inside windows, widget refreshes are pure commute updates and do not check calendar events.
+   - Inside windows, widget refreshes are pure commute updates and do not check calendar events for routing.
 2. **Calendar Mode**: Default outside commute windows (midday, evenings, weekends, and unselected commute days).
    - Displays the next remaining non-all-day event scheduled for today from selected device calendars.
    - If an event has a location, the widget renders a clean route map from current device location with destination, start time, large traffic-colored ETA, and calculated leave-by departure time.
+   - A routed calendar event displays a countdown caption until its start (for example, "in 1h 45m").
    - Tapping the map opens Google Maps turn-by-turn navigation to the event location.
    - If no routed event exists, the widget displays a single full-width card without a map area.
-   - An unlocated event displays a card showing its event title and start time in large text.
-   - When no events remain today, the card displays "Next up - To Work at 7:00 am" (or the next upcoming window).
-   - When no schedule exists, the card displays a quiet empty message.
+   - An unlocated event displays a card showing its event title, start time, and a free-time countdown caption (for example, "Free for 2h 10m").
+   - When no events remain today, the wind-down card displays "Next up - To Work at 7:00 am" (or the next upcoming window), tomorrow's first calendar event (for example, "Standup at 9:00 am"), and the next scheduled device alarm (for example, "Alarm 6:45 am").
+   - When no schedule exists, the bare no-events card displays a quiet empty message along with the next scheduled device alarm line.
    - A small "Routed" caption appears when the widget prioritizes a located event over a chronologically earlier unlocated event.
 
 ### Non-Text Status Signals and Responsiveness
@@ -213,6 +220,8 @@ The widget selects its active display mode according to configured schedules and
 | Leave-by notification did not fire | Notification permission is missing or the Leave-by advisor toggle is disabled. | Grant notification permission in system settings and ensure the Leave-by advisor toggle is enabled. |
 | Leave-by time seems off for far-away events | Far-away events use Google predicted traffic rather than live road conditions. | Predicted traffic is queried outside the live traffic threshold and automatically refines with real-time data on refreshes closer to event start. |
 | Weekend shows wrong origin | Background location permission is missing or restricted. | Grant "Allow all the time" location permission in system app settings. |
+| Tomorrow event line missing on wind-down card | Calendar feature is disabled or calendars are not selected in settings. | Verify calendar integration is enabled and relevant calendars are selected in app settings. |
+| Alarm line missing on wind-down or empty card | No alarm is currently set on the device. | Set an upcoming alarm in the system clock application. |
 
 ## Testing
 

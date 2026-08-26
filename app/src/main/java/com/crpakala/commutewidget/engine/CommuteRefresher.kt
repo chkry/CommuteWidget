@@ -424,6 +424,11 @@ object CommuteRefresher {
         }
 
         val leaveByPlan = commuteLeaveByPlanFor(settings, direction, route.durationSeconds)
+        val todaySummary = CalendarReader(context).takeIf {
+            settings.calendarEnabled &&
+                it.hasPermission() &&
+                settings.selectedCalendarIds.isNotEmpty()
+        }?.todaySummary(settings.selectedCalendarIds, nowEpochMillis, now.zone)
 
         repo.saveSnapshot(
             CommuteSnapshot(
@@ -443,6 +448,8 @@ object CommuteRefresher {
                 eventStartEpochMillis = null,
                 nextWindowLabel = null,
                 nextWindowStartMinuteOfDay = null,
+                todayEventCount = todaySummary?.remainingCount,
+                todayFirstEventStartEpochMillis = todaySummary?.firstStartEpochMillis,
             ),
         )
 
@@ -493,7 +500,20 @@ object CommuteRefresher {
         }
 
         if (event == null) {
-            repo.saveSnapshot(calendarEmptySnapshot(direction, nowEpochMillis, nextWindowResult))
+            val tomorrowEvent = if (canReadCalendar) {
+                calendarReader.firstEventTomorrow(settings.selectedCalendarIds, nowEpochMillis, now.zone)
+            } else {
+                null
+            }
+            repo.saveSnapshot(
+                calendarEmptySnapshot(
+                    direction = direction,
+                    nowEpochMillis = nowEpochMillis,
+                    nextWindowResult = nextWindowResult,
+                    tomorrowEventTitle = tomorrowEvent?.title,
+                    tomorrowEventStartEpochMillis = tomorrowEvent?.startEpochMillis,
+                ),
+            )
             return
         }
 
@@ -673,6 +693,8 @@ object CommuteRefresher {
         direction: Direction,
         nowEpochMillis: Long,
         nextWindowResult: NextWindow?,
+        tomorrowEventTitle: String? = null,
+        tomorrowEventStartEpochMillis: Long? = null,
     ): CommuteSnapshot = CommuteSnapshot(
         direction = direction,
         durationSeconds = 0L,
@@ -690,6 +712,8 @@ object CommuteRefresher {
         eventStartEpochMillis = null,
         nextWindowLabel = nextWindowResult?.label,
         nextWindowStartMinuteOfDay = nextWindowResult?.startMinuteOfDay,
+        tomorrowEventTitle = tomorrowEventTitle,
+        tomorrowEventStartEpochMillis = tomorrowEventStartEpochMillis,
     )
 
     private fun commuteLeaveByPlanFor(

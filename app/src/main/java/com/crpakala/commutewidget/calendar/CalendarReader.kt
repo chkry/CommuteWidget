@@ -138,6 +138,61 @@ class CalendarReader(private val context: Context) {
         return selectTodayEvent(rows, selectedCalendarIds, nowEpochMillis)
     }
 
+    fun firstEventTomorrow(
+        selectedCalendarIds: Set<Long>,
+        nowEpochMillis: Long,
+        zone: ZoneId,
+    ): TomorrowEvent? {
+        if (!hasPermission() || selectedCalendarIds.isEmpty()) {
+            return null
+        }
+
+        val tomorrowStart = Instant.ofEpochMilli(nowEpochMillis)
+            .atZone(zone)
+            .toLocalDate()
+            .plusDays(1)
+            .atStartOfDay(zone)
+            .toInstant()
+            .toEpochMilli()
+        val dayAfterTomorrowStart = Instant.ofEpochMilli(tomorrowStart)
+            .atZone(zone)
+            .toLocalDate()
+            .plusDays(1)
+            .atStartOfDay(zone)
+            .toInstant()
+            .toEpochMilli()
+        val instancesUri = CalendarContract.Instances.CONTENT_URI.buildUpon()
+            .appendPath(tomorrowStart.toString())
+            .appendPath(dayAfterTomorrowStart.toString())
+            .build()
+
+        return selectFirstEventTomorrow(queryInstances(instancesUri), selectedCalendarIds)
+    }
+
+    fun todaySummary(
+        selectedCalendarIds: Set<Long>,
+        nowEpochMillis: Long,
+        zone: ZoneId,
+    ): TodaySummary? {
+        if (!hasPermission() || selectedCalendarIds.isEmpty()) {
+            return null
+        }
+
+        val endOfDayMillis = Instant.ofEpochMilli(nowEpochMillis)
+            .atZone(zone)
+            .toLocalDate()
+            .plusDays(1)
+            .atStartOfDay(zone)
+            .toInstant()
+            .toEpochMilli()
+        val instancesUri = CalendarContract.Instances.CONTENT_URI.buildUpon()
+            .appendPath(nowEpochMillis.toString())
+            .appendPath(endOfDayMillis.toString())
+            .build()
+
+        return selectTodaySummary(queryInstances(instancesUri), selectedCalendarIds, nowEpochMillis)
+    }
+
     private fun queryInstances(instancesUri: Uri): List<RawInstance> {
         return runCatching {
             context.contentResolver.query(
@@ -288,3 +343,40 @@ internal fun selectEvent(
                 calendarId = row.calendarId,
             )
         }
+
+internal fun selectFirstEventTomorrow(
+    rows: List<RawInstance>,
+    selectedCalendarIds: Set<Long>,
+): TomorrowEvent? =
+    rows.asSequence()
+        .filter { it.calendarId in selectedCalendarIds }
+        .filter { !it.allDay }
+        .filter { it.status != CalendarContract.Events.STATUS_CANCELED }
+        .filter { it.selfAttendeeStatus != CalendarContract.Attendees.ATTENDEE_STATUS_DECLINED }
+        .minWithOrNull(compareBy<RawInstance>({ it.beginEpochMillis }, { it.endEpochMillis }))
+        ?.let { row ->
+            TomorrowEvent(
+                title = row.title?.trim().takeUnless { it.isNullOrEmpty() } ?: "Event",
+                startEpochMillis = row.beginEpochMillis,
+            )
+        }
+
+internal fun selectTodaySummary(
+    rows: List<RawInstance>,
+    selectedCalendarIds: Set<Long>,
+    nowEpochMillis: Long,
+): TodaySummary {
+    val eligible = rows.asSequence()
+        .filter { it.calendarId in selectedCalendarIds }
+        .filter { !it.allDay }
+        .filter { it.status != CalendarContract.Events.STATUS_CANCELED }
+        .filter { it.selfAttendeeStatus != CalendarContract.Attendees.ATTENDEE_STATUS_DECLINED }
+        .filter { it.endEpochMillis > nowEpochMillis }
+        .toList()
+    return TodaySummary(
+        remainingCount = eligible.size,
+        firstStartEpochMillis = eligible.minWithOrNull(
+            compareBy<RawInstance>({ it.beginEpochMillis }, { it.endEpochMillis }),
+        )?.beginEpochMillis,
+    )
+}

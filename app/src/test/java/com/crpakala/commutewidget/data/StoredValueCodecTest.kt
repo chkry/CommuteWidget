@@ -185,6 +185,38 @@ class StoredValueCodecTest {
     }
 
     @Test
+    fun commuteSnapshotJson_currentFormatDecodesWithRoutineAutomationFieldDefaults() {
+        val currentJson = """
+            {
+              "direction": "TO_WORK",
+              "durationSeconds": 1200,
+              "durationNoTrafficSeconds": 1000,
+              "distanceMeters": 8000,
+              "mapImagePath": "/cache/commute-map.png",
+              "fetchedAtEpochMillis": 1700000000000,
+              "lastFetchFailed": false,
+              "lastErrorMessage": null,
+              "destinationLabel": "Work",
+              "destinationLat": 12.9716,
+              "destinationLng": 77.5946,
+              "leaveByMinuteOfDay": 540,
+              "mode": "COMMUTE",
+              "eventStartEpochMillis": null,
+              "nextWindowLabel": null,
+              "nextWindowStartMinuteOfDay": null,
+              "routedOverEarlier": false
+            }
+        """.trimIndent()
+
+        val decoded = decodeCommuteSnapshot(currentJson)
+        requireNotNull(decoded)
+        assertNull(decoded.tomorrowEventTitle)
+        assertNull(decoded.tomorrowEventStartEpochMillis)
+        assertNull(decoded.todayEventCount)
+        assertNull(decoded.todayFirstEventStartEpochMillis)
+    }
+
+    @Test
     fun commuteSnapshotJson_routedOverEarlierRoundTrips() {
         val snapshot = CommuteSnapshot(
             direction = Direction.TO_WORK,
