@@ -287,6 +287,8 @@ object CommuteRefresher {
             }
             try {
                 performRefresh(appContext, trigger)
+                // Fire-and-forget: at most one sampling run per day, never on the pixel path.
+                BestDepartureAdvisor.maybeComputeAsync(appContext)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -789,7 +791,7 @@ object CommuteRefresher {
     }
 }
 
-private fun travelModeFor(travelMode: TravelMode): RouteTravelMode = when (travelMode) {
+internal fun travelModeFor(travelMode: TravelMode): RouteTravelMode = when (travelMode) {
     TravelMode.DRIVE -> RouteTravelMode.DRIVE
     TravelMode.TWO_WHEELER -> RouteTravelMode.TWO_WHEELER
 }

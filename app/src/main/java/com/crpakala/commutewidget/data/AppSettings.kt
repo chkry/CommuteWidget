@@ -13,6 +13,11 @@ data class AppSettings(
     val eventRealtimeThresholdMinutes: Int = 60,
     /** A located event starting within this many minutes takes over the widget even inside commute windows. */
     val eventTakeoverMinutes: Int = 120,
+    /** Best-departure advisor: sample predicted traffic across the departure slot, show the cheapest time. */
+    val bestDepartureEnabled: Boolean = true,
+    val departureSlotStartMinuteOfDay: Int = 840,
+    val departureSlotEndMinuteOfDay: Int = 1080,
+    val departureSlotDirection: Direction = Direction.TO_WORK,
     val calendarEnabled: Boolean = false,
     val selectedCalendarIds: Set<Long> = emptySet(),
     /**

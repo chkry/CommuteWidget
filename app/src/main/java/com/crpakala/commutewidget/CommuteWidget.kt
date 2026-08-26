@@ -60,6 +60,7 @@ import com.crpakala.commutewidget.data.TravelMode
 import com.crpakala.commutewidget.data.isRefreshingActive
 import com.crpakala.commutewidget.engine.CommuteRefresher
 import com.crpakala.commutewidget.engine.mapInSampleSize
+import com.crpakala.commutewidget.engine.shouldShowBestDeparture
 import com.crpakala.commutewidget.schedule.CommuteScheduler
 import java.io.File
 import java.time.Instant
@@ -96,6 +97,20 @@ class CommuteWidget : GlanceAppWidget() {
         val nowMinuteOfDay = now.hour * 60 + now.minute
         val configured = settings.apiKey.isNotBlank() && settings.home != null && settings.work != null
         val refreshingSince = repo.refreshingSince()
+        val bestDeparture = repo.bestDeparture()
+        val bestDepartureLine = if (
+            shouldShowBestDeparture(
+                result = bestDeparture,
+                enabled = settings.bestDepartureEnabled,
+                today = now.toLocalDate().toString(),
+                nowMinuteOfDay = nowMinuteOfDay,
+                slotEndMinuteOfDay = settings.departureSlotEndMinuteOfDay,
+            )
+        ) {
+            "Best: leave ${formatClockTime(bestDeparture!!.bestMinuteOfDay)} (${formatEta(bestDeparture.bestDurationSeconds)})"
+        } else {
+            null
+        }
 
         val colors = ColorProviders(
             light = dynamicLightColorScheme(context),
@@ -112,6 +127,7 @@ class CommuteWidget : GlanceAppWidget() {
                         nowMinuteOfDay = nowMinuteOfDay,
                         leaveByEnabled = settings.leaveByEnabled,
                         refreshingSince = refreshingSince,
+                        bestDepartureLine = bestDepartureLine,
                     ),
                 )
             }
@@ -172,6 +188,8 @@ private data class WidgetExtras(
     val nowMinuteOfDay: Int,
     val leaveByEnabled: Boolean,
     val refreshingSince: Long?,
+    /** Pre-formatted "Best: leave 3:30 pm (38 min)" line, null when disabled/stale/slot passed. */
+    val bestDepartureLine: String? = null,
 )
 
 private data class InfoStyle(
@@ -185,6 +203,8 @@ private data class InfoStyle(
     val showLeaveBy: Boolean = true,
     /** WIDE shows the route distance under the ETA; SMALL and LARGE stay two-line for space. */
     val showDistance: Boolean = false,
+    /** WIDE and LARGE show the best-departure line; SMALL skips it for space. */
+    val showBestDeparture: Boolean = false,
 )
 
 @Composable
@@ -253,7 +273,7 @@ private fun ConfiguredContent(
     extras: WidgetExtras,
 ) {
     if (snapshot.mode == SnapshotMode.CALENDAR_EMPTY) {
-        CalendarEmptyCard(modifier, snapshot)
+        CalendarEmptyCard(modifier, snapshot, extras.bestDepartureLine)
         return
     }
     val size = LocalSize.current
@@ -333,6 +353,7 @@ private fun WideLayout(
                     showRoutedCaption = true,
                     showLeaveBy = false,
                     showDistance = true,
+                    showBestDeparture = true,
                 ),
             )
         }
@@ -393,6 +414,7 @@ private fun LargeLayout(
                         leaveByFontSize = 11.sp,
                         inlineEta = true,
                         showRoutedCaption = true,
+                        showBestDeparture = true,
                     ),
                 )
             }
@@ -410,14 +432,15 @@ private fun LargeLayout(
 private fun CalendarEmptyCard(
     modifier: GlanceModifier,
     snapshot: CommuteSnapshot,
+    bestDepartureLine: String? = null,
 ) {
     Box(
         modifier = modifier.clickable(actionRunCallback<RefreshAction>()).padding(12.dp),
         contentAlignment = Alignment.CenterStart,
     ) {
-        when (calendarEmptyCase(snapshot)) {
-            CalendarEmptyCase.UNLOCATED_EVENT -> {
-                Column {
+        Column {
+            when (calendarEmptyCase(snapshot)) {
+                CalendarEmptyCase.UNLOCATED_EVENT -> {
                     Text(
                         text = calendarEventTitle(snapshot.destinationLabel),
                         style = TextStyle(
@@ -437,9 +460,7 @@ private fun CalendarEmptyCard(
                         maxLines = 1,
                     )
                 }
-            }
-            CalendarEmptyCase.NEXT_WINDOW -> {
-                Column {
+                CalendarEmptyCase.NEXT_WINDOW -> {
                     Text(
                         text = "Next up",
                         style = TextStyle(
@@ -468,16 +489,28 @@ private fun CalendarEmptyCard(
                         maxLines = 1,
                     )
                 }
+                CalendarEmptyCase.NONE -> {
+                    Text(
+                        text = "No commute or events scheduled",
+                        style = TextStyle(
+                            color = GlanceTheme.colors.onSurface,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium,
+                        ),
+                        maxLines = 3,
+                    )
+                }
             }
-            CalendarEmptyCase.NONE -> {
+            if (bestDepartureLine != null) {
+                Spacer(modifier = GlanceModifier.height(4.dp))
                 Text(
-                    text = "No commute or events scheduled",
+                    text = bestDepartureLine,
                     style = TextStyle(
-                        color = GlanceTheme.colors.onSurface,
-                        fontSize = 14.sp,
+                        color = GlanceTheme.colors.onSurfaceVariant,
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.Medium,
                     ),
-                    maxLines = 3,
+                    maxLines = 1,
                 )
             }
         }
@@ -517,6 +550,16 @@ private fun RoutedInfo(
     }
     if (style.showLeaveBy && shouldShowLeaveBy(snapshot, extras.leaveByEnabled)) {
         LeaveByLine(snapshot.leaveByMinuteOfDay!!, extras.nowMinuteOfDay, style.leaveByFontSize)
+    }
+    if (style.showBestDeparture && extras.bestDepartureLine != null) {
+        Text(
+            text = extras.bestDepartureLine,
+            style = TextStyle(
+                color = GlanceTheme.colors.onSurfaceVariant,
+                fontSize = 10.sp,
+            ),
+            maxLines = 1,
+        )
     }
 }
 
