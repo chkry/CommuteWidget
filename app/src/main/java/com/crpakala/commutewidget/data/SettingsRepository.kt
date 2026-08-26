@@ -44,6 +44,8 @@ private object PreferenceKeys {
     val EVENT_LEAVE_BY_NOTIFIED_KEY = stringPreferencesKey("event_leave_by_notified_key")
     val CALENDAR_TICK_ENABLED = booleanPreferencesKey("calendar_tick_enabled")
     val REFRESHING_SINCE_EPOCH_MILLIS = longPreferencesKey("refreshing_since_epoch_millis")
+    val MAP_RENDER_KEY = stringPreferencesKey("map_render_key")
+    val GEOCODE_CACHE_JSON = stringPreferencesKey("geocode_cache_json")
 }
 
 private fun Preferences.toAppSettings(): AppSettings {
@@ -165,6 +167,25 @@ class SettingsRepository private constructor(
     suspend fun setEventTakeoverMinutes(minutes: Int) {
         dataStore.edit { preferences ->
             preferences[PreferenceKeys.EVENT_TAKEOVER_MINUTES] = minutes
+        }
+    }
+
+    /** Render-content hash of the map image currently on disk; drives the tap-path map cache. */
+    suspend fun mapRenderKey(): String? = dataStore.data.first()[PreferenceKeys.MAP_RENDER_KEY]
+
+    suspend fun setMapRenderKey(key: String) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.MAP_RENDER_KEY] = key
+        }
+    }
+
+    /** Single-entry geocode cache: [Place.address] holds the raw event-location query text. */
+    suspend fun geocodeCache(): Place? =
+        decodePlace(dataStore.data.first()[PreferenceKeys.GEOCODE_CACHE_JSON])
+
+    suspend fun setGeocodeCache(place: Place) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.GEOCODE_CACHE_JSON] = encodePlace(place)
         }
     }
 

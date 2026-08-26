@@ -23,6 +23,7 @@ import com.crpakala.commutewidget.calendar.TodayEvent
 import com.crpakala.commutewidget.data.AppSettings
 import com.crpakala.commutewidget.data.CommuteSnapshot
 import com.crpakala.commutewidget.data.Direction
+import com.crpakala.commutewidget.data.Place
 import com.crpakala.commutewidget.data.SettingsRepository
 import com.crpakala.commutewidget.data.SnapshotMode
 import com.crpakala.commutewidget.data.TravelMode
@@ -40,6 +41,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -48,6 +51,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import java.security.MessageDigest
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -59,8 +63,10 @@ import kotlin.coroutines.resumeWithException
 import kotlin.math.ceil
 import kotlin.math.roundToInt
 
-private const val MAP_FETCH_WIDTH_PX = 640
-private const val MAP_FETCH_HEIGHT_PX = 640
+// FIX-12: 600 at scale=2 yields 1200px from the server directly, matching MAP_MAX_LONG_EDGE_PX so
+// the decode/resize/re-encode downsample step becomes a no-op instead of running on every fetch.
+private const val MAP_FETCH_WIDTH_PX = 600
+private const val MAP_FETCH_HEIGHT_PX = 600
 private const val MAP_MAX_LONG_EDGE_PX = 1200
 private const val LOCATION_TIMEOUT_MS = 15_000L
 private const val LOCATION_WARM_UP_TIMEOUT_MS = 10_000L
@@ -406,7 +412,7 @@ object CommuteRefresher {
 
         val previousSnapshot = repo.snapshot()
         val mapImagePath = when (
-            val mapResult = resolveMapImagePath(context, trigger, previousSnapshot, direction, destination, origin, route, settings.apiKey)
+            val mapResult = resolveMapImagePath(context, repo, trigger, previousSnapshot, direction, destination, origin, route, settings.apiKey)
         ) {
             is ApiResult.Success -> mapResult.value
             is ApiResult.Failure -> {
@@ -514,33 +520,44 @@ object CommuteRefresher {
             return
         }
 
-        val geocoded = when (val result = GeocodingClient(settings.apiKey).geocode(location)) {
-            is ApiResult.Success -> result.value.firstOrNull()
+        // FIX-11: geocoding and device location are independent - run them concurrently, and skip
+        // the geocode network call entirely when the single-entry cache still matches this event's
+        // location text (only one event is ever displayed, so one entry is the whole cache).
+        val cachedGeocode = repo.geocodeCache()
+        val (destinationResult, originResult) = coroutineScope {
+            val originDeferred = async { currentDeviceLocation(context) }
+            val destResult: ApiResult<LatLng> = if (cachedGeocode != null && cachedGeocode.address == location) {
+                ApiResult.Success(LatLng(cachedGeocode.lat, cachedGeocode.lng))
+            } else {
+                when (val result = GeocodingClient(settings.apiKey).geocode(location)) {
+                    is ApiResult.Success -> {
+                        val hit = result.value.firstOrNull()
+                        if (hit == null) {
+                            ApiResult.Failure("Event location not found")
+                        } else {
+                            repo.setGeocodeCache(Place(address = location, lat = hit.location.lat, lng = hit.location.lng))
+                            ApiResult.Success(hit.location)
+                        }
+                    }
+                    is ApiResult.Failure -> ApiResult.Failure(result.message, result.cause)
+                }
+            }
+            destResult to originDeferred.await()
+        }
+        val destination = when (destinationResult) {
+            is ApiResult.Success -> destinationResult.value
             is ApiResult.Failure -> {
-                saveFailure(repo, direction, result.message, SnapshotMode.CALENDAR_EVENT, event.title, event.startEpochMillis)
+                saveFailure(repo, direction, destinationResult.message, SnapshotMode.CALENDAR_EVENT, event.title, event.startEpochMillis)
                 return
             }
         }
-        if (geocoded == null) {
-            saveFailure(
-                repo,
-                direction,
-                "Event location not found",
-                SnapshotMode.CALENDAR_EVENT,
-                event.title,
-                event.startEpochMillis,
-            )
-            return
-        }
-        val destination = geocoded.location
-
-        val origin = when (val deviceLocation = currentDeviceLocation(context)) {
-            is ApiResult.Success -> deviceLocation.value
+        val origin = when (originResult) {
+            is ApiResult.Success -> originResult.value
             is ApiResult.Failure -> {
                 saveFailure(
                     repo,
                     direction,
-                    deviceLocation.message,
+                    originResult.message,
                     SnapshotMode.CALENDAR_EVENT,
                     event.title,
                     event.startEpochMillis,
@@ -587,7 +604,7 @@ object CommuteRefresher {
         // rather than paying for a fresh Static Maps fetch on every 20-minute staleness tick.
         val previousSnapshot = repo.snapshot()
         val mapImagePath = when (
-            val mapResult = resolveMapImagePath(context, trigger, previousSnapshot, direction, destination, origin, route, settings.apiKey)
+            val mapResult = resolveMapImagePath(context, repo, trigger, previousSnapshot, direction, destination, origin, route, settings.apiKey)
         ) {
             is ApiResult.Success -> mapResult.value
             is ApiResult.Failure -> {
@@ -780,12 +797,14 @@ private fun travelModeFor(travelMode: TravelMode): RouteTravelMode = when (trave
 /**
  * Resolves the on-disk map path for a trigger-dependent pipeline: [RefreshTrigger.TICK] only ever
  * reuses the previous map (per [shouldReuseSlotMap]) and never fetches; [RefreshTrigger.TAP] and
- * [RefreshTrigger.AUTO] always fetch and downsample a fresh one. Shared by both the commute
- * pipeline and calendar mode's located-event pipeline - the same "same direction, same resolved
- * destination coordinates" reuse test applies equally to a calendar event that has not moved.
+ * [RefreshTrigger.AUTO] fetch a fresh one UNLESS the render-content hash matches what is already
+ * on disk (FIX-10: the audit's single CRITICAL waste finding was re-downloading an unchanged map
+ * on every tap). The hash covers everything that draws: polyline geometry, per-segment traffic
+ * speeds, both endpoints, and the requested dimensions.
  */
 private suspend fun resolveMapImagePath(
     context: Context,
+    repo: SettingsRepository,
     trigger: RefreshTrigger,
     previousSnapshot: CommuteSnapshot?,
     direction: Direction,
@@ -807,9 +826,54 @@ private suspend fun resolveMapImagePath(
             ApiResult.Success(if (reuse) previousSnapshot.mapImagePath else null)
         }
         RefreshTrigger.TAP, RefreshTrigger.AUTO -> {
-            fetchFreshMap(context, previousSnapshot?.mapImagePath, apiKey, route, origin, destination)
+            val renderKey = mapRenderKey(route, origin, destination, MAP_FETCH_WIDTH_PX, MAP_FETCH_HEIGHT_PX)
+            val previousPath = previousSnapshot?.mapImagePath
+            if (previousPath != null &&
+                renderKey == repo.mapRenderKey() &&
+                withContext(Dispatchers.IO) { File(previousPath).isFile }
+            ) {
+                return ApiResult.Success(previousPath)
+            }
+            when (val fetched = fetchFreshMap(context, previousPath, apiKey, route, origin, destination)) {
+                is ApiResult.Success -> {
+                    repo.setMapRenderKey(renderKey)
+                    ApiResult.Success(fetched.value)
+                }
+                is ApiResult.Failure -> ApiResult.Failure(fetched.message, fetched.cause)
+            }
         }
     }
+}
+
+/**
+ * Deterministic content hash of everything that affects the rendered Static Maps image. Traffic
+ * speed intervals are included deliberately: an unchanged polyline with changed congestion colors
+ * is a different image (the audit's stated risk for naive polyline-only caching).
+ */
+internal fun mapRenderKey(
+    route: RouteResult,
+    origin: LatLng,
+    destination: LatLng,
+    widthPx: Int,
+    heightPx: Int,
+): String {
+    val material = buildString {
+        append(route.encodedPolyline)
+        append('|')
+        route.speedIntervals.forEach { interval ->
+            append(interval.startPolylinePointIndex)
+            append(':')
+            append(interval.endPolylinePointIndex)
+            append(':')
+            append(interval.speed.name)
+            append(';')
+        }
+        append('|').append(origin.lat).append(',').append(origin.lng)
+        append('|').append(destination.lat).append(',').append(destination.lng)
+        append('|').append(widthPx).append('x').append(heightPx)
+    }
+    val digest = MessageDigest.getInstance("SHA-256").digest(material.toByteArray(Charsets.UTF_8))
+    return digest.joinToString("") { "%02x".format(it) }
 }
 
 private suspend fun fetchFreshMap(
