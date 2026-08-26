@@ -1,10 +1,18 @@
 package com.crpakala.commutewidget.api
 
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RoutesClientParsingTest {
+    private val origin = LatLng(37.7749, -122.4194)
+    private val destination = LatLng(37.3382, -121.8863)
+
     private fun assertSuccess(result: ApiResult<RouteResult>): RouteResult {
         if (result !is ApiResult.Success) {
             throw AssertionError("expected Success but was $result")
@@ -123,6 +131,67 @@ class RoutesClientParsingTest {
         assertEquals(SpeedClass.TRAFFIC_JAM, parseSpeedClass("TRAFFIC_JAM"))
         assertEquals(SpeedClass.UNKNOWN, parseSpeedClass("SPEED_UNSPECIFIED"))
         assertEquals(SpeedClass.UNKNOWN, parseSpeedClass(null))
+    }
+
+    @Test
+    fun departureTimeFieldValue_nullInputReturnsNull() {
+        assertNull(departureTimeFieldValue(null, nowEpochMillis = 1_000_000L))
+    }
+
+    @Test
+    fun departureTimeFieldValue_pastInputReturnsNull() {
+        assertNull(departureTimeFieldValue(999_999L, nowEpochMillis = 1_000_000L))
+    }
+
+    @Test
+    fun departureTimeFieldValue_underThirtySecondGuardReturnsNull() {
+        assertNull(departureTimeFieldValue(1_010_000L, nowEpochMillis = 1_000_000L))
+    }
+
+    @Test
+    fun departureTimeFieldValue_twoHoursInFutureReturnsRfc3339Utc() {
+        assertEquals(
+            "2026-08-26T10:00:00Z",
+            departureTimeFieldValue(1_787_738_400_000L, nowEpochMillis = 1_787_731_200_000L),
+        )
+    }
+
+    @Test
+    fun departureTimeFieldValue_knownEpochFormatsExactly() {
+        assertEquals(
+            "1970-01-01T00:00:00Z",
+            departureTimeFieldValue(0L, nowEpochMillis = -30_000L),
+        )
+    }
+
+    @Test
+    fun buildComputeRoutesRequestBody_futureDepartureIncludesDepartureTime() {
+        val request = Json.parseToJsonElement(
+            buildComputeRoutesRequestBody(
+                origin = origin,
+                destination = destination,
+                mode = RouteTravelMode.DRIVE,
+                departureTimeEpochMillis = 1_787_738_400_000L,
+                nowEpochMillis = 1_787_731_200_000L,
+            ),
+        ).jsonObject
+
+        assertEquals("2026-08-26T10:00:00Z", request["departureTime"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun buildComputeRoutesRequestBody_invalidDepartureOmitsDepartureTime() {
+        val request = Json.parseToJsonElement(
+            buildComputeRoutesRequestBody(
+                origin = origin,
+                destination = destination,
+                mode = RouteTravelMode.DRIVE,
+                departureTimeEpochMillis = 1_787_731_210_000L,
+                nowEpochMillis = 1_787_731_200_000L,
+            ),
+        ).jsonObject
+
+        assertFalse(request.containsKey("departureTime"))
     }
 
     @Test

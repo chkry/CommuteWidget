@@ -96,3 +96,6 @@ fun decodeIntSet(json: String?, default: Set<Int> = emptySet()): Set<Int> {
         commuteJson.decodeFromString(intListSerializer, json).toSet()
     }.getOrElse { default }
 }
+
+fun eventIdentityKey(eventStartEpochMillis: Long, title: String): String =
+    "$eventStartEpochMillis|${title.trim()}"

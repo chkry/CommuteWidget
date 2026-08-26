@@ -11,6 +11,8 @@ data class AppSettings(
     val leaveByEnabled: Boolean = false,
     val arriveWorkByMinuteOfDay: Int = 570,
     val arriveHomeByMinuteOfDay: Int = 1170,
+    val eventLeaveByBufferMinutes: Int = 10,
+    val eventRealtimeThresholdMinutes: Int = 60,
     val calendarEnabled: Boolean = false,
     val selectedCalendarIds: Set<Long> = emptySet(),
     val historyEnabled: Boolean = true,

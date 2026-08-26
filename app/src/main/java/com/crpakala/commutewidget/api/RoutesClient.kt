@@ -9,12 +9,17 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Request
 import okhttp3.Response
 import java.io.IOException
+import java.time.Instant
 
-private val routesJson = Json { ignoreUnknownKeys = true }
+private val routesJson = Json {
+    ignoreUnknownKeys = true
+    explicitNulls = false
+}
 private val routesJsonMediaType = "application/json".toMediaType()
 private const val COMPUTE_ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
 private const val ROUTES_FIELD_MASK = "routes.duration,routes.staticDuration,routes.distanceMeters," +
     "routes.polyline.encodedPolyline,routes.travelAdvisory.speedReadingIntervals"
+private const val MINIMUM_FUTURE_DEPARTURE_OFFSET_MILLIS = 30_000L
 
 enum class SpeedClass { NORMAL, SLOW, TRAFFIC_JAM, UNKNOWN }
 
@@ -40,18 +45,14 @@ class RoutesClient(
         origin: LatLng,
         destination: LatLng,
         mode: RouteTravelMode,
+        departureTimeEpochMillis: Long? = null,
     ): ApiResult<RouteResult> {
-        val requestJson = routesJson.encodeToString(
-            ComputeRoutesRequest.serializer(),
-            ComputeRoutesRequest(
-                origin = RouteWaypoint(WaypointLocation(LatLngProto(origin.lat, origin.lng))),
-                destination = RouteWaypoint(WaypointLocation(LatLngProto(destination.lat, destination.lng))),
-                travelMode = mode.name,
-                routingPreference = "TRAFFIC_AWARE_OPTIMAL",
-                extraComputations = listOf("TRAFFIC_ON_POLYLINE"),
-                languageCode = "en",
-                units = "METRIC",
-            ),
+        val requestJson = buildComputeRoutesRequestBody(
+            origin = origin,
+            destination = destination,
+            mode = mode,
+            departureTimeEpochMillis = departureTimeEpochMillis,
+            nowEpochMillis = System.currentTimeMillis(),
         )
 
         val httpRequest = Request.Builder()
@@ -76,6 +77,38 @@ class RoutesClient(
         }
         return parseComputeRoutesBody(body)
     }
+}
+
+internal fun buildComputeRoutesRequestBody(
+    origin: LatLng,
+    destination: LatLng,
+    mode: RouteTravelMode,
+    departureTimeEpochMillis: Long?,
+    nowEpochMillis: Long,
+): String = routesJson.encodeToString(
+    ComputeRoutesRequest.serializer(),
+    ComputeRoutesRequest(
+        origin = RouteWaypoint(WaypointLocation(LatLngProto(origin.lat, origin.lng))),
+        destination = RouteWaypoint(WaypointLocation(LatLngProto(destination.lat, destination.lng))),
+        travelMode = mode.name,
+        routingPreference = "TRAFFIC_AWARE_OPTIMAL",
+        extraComputations = listOf("TRAFFIC_ON_POLYLINE"),
+        languageCode = "en",
+        units = "METRIC",
+        departureTime = departureTimeFieldValue(departureTimeEpochMillis, nowEpochMillis),
+    ),
+)
+
+internal fun departureTimeFieldValue(
+    departureTimeEpochMillis: Long?,
+    nowEpochMillis: Long,
+): String? {
+    if (departureTimeEpochMillis == null ||
+        departureTimeEpochMillis - nowEpochMillis < MINIMUM_FUTURE_DEPARTURE_OFFSET_MILLIS
+    ) {
+        return null
+    }
+    return Instant.ofEpochMilli(departureTimeEpochMillis).toString()
 }
 
 internal fun parseComputeRoutesBody(body: String): ApiResult<RouteResult> {
@@ -154,6 +187,7 @@ private data class ComputeRoutesRequest(
     val extraComputations: List<String>,
     val languageCode: String,
     val units: String,
+    val departureTime: String? = null,
 )
 
 @Serializable

@@ -36,6 +36,7 @@ import com.crpakala.commutewidget.data.SnapshotMode
 import com.crpakala.commutewidget.data.TravelMode
 import com.crpakala.commutewidget.history.CommuteSample
 import com.crpakala.commutewidget.history.HistoryStore
+import com.crpakala.commutewidget.schedule.EventLeaveByScheduler
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
@@ -47,7 +48,10 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import java.time.Instant
+import java.time.LocalDate
 import java.time.LocalTime
+import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -64,8 +68,11 @@ private const val LOCATION_TIMEOUT_MS = 15_000L
 private const val MIN_REFRESH_GAP_MS = 5_000L
 private const val MAP_FILE_A = "map_a.png"
 private const val MAP_FILE_B = "map_b.png"
-private const val LEAVE_BY_CHANNEL_ID = "leave_by"
-private const val LEAVE_BY_CHANNEL_NAME = "Leave-by advisor"
+// Shared with EventLeaveByScheduler/EventLeaveByWorker (schedule/) - the v4 event advisor posts
+// on this same channel, per spec, so it is exposed at internal (module) visibility rather than
+// duplicated as a second identical string literal in that package.
+internal const val LEAVE_BY_CHANNEL_ID = "leave_by"
+internal const val LEAVE_BY_CHANNEL_NAME = "Leave-by advisor"
 private const val LEAVE_BY_NOTIFICATION_ID = 1001
 private const val DEFAULT_LOCATION_MAX_AGE_MILLIS = 120_000L
 
@@ -115,6 +122,59 @@ internal fun shouldRecordHistorySample(historyEnabled: Boolean, target: Destinat
 internal fun computeLeaveByMinuteOfDay(arriveByMinuteOfDay: Int, durationSeconds: Long): Int {
     val travelMinutes = ceil(durationSeconds / 60.0).toInt()
     return (arriveByMinuteOfDay - travelMinutes).coerceAtLeast(0)
+}
+
+/**
+ * v4 event advisor: departure-time probe for the located-event route request. Strictly more than
+ * [thresholdMinutes] before [eventStartEpochMillis], PREDICTED traffic is requested by asking
+ * [com.crpakala.commutewidget.api.RoutesClient.computeRoute] to depart at `eventStart - buffer` -
+ * Google then returns traffic conditions predicted around the event's arrival time rather than
+ * right now. At or within the threshold, real-time traffic is used instead (null - a nearby event
+ * does not benefit from a prediction window and the current road conditions are the better
+ * signal). Exactly at the threshold resolves to real-time (the boundary is exclusive on the
+ * predicted side), matching [RoutesClient]'s own "> " floor semantics for its unrelated 30s
+ * near-future guard.
+ */
+internal fun eventDepartureProbe(
+    eventStartEpochMillis: Long,
+    nowEpochMillis: Long,
+    thresholdMinutes: Int,
+    bufferMinutes: Int,
+): Long? {
+    val millisUntilStart = eventStartEpochMillis - nowEpochMillis
+    if (millisUntilStart <= thresholdMinutes * 60_000L) {
+        return null
+    }
+    return eventStartEpochMillis - bufferMinutes * 60_000L
+}
+
+/**
+ * v4 event advisor: leaveBy = eventStart - buffer - route duration, in epoch millis. The same
+ * arithmetic applies whether [durationSeconds] came from a PREDICTED or real-time route (the
+ * traffic model used to obtain it is [eventDepartureProbe]'s concern, not this one's).
+ */
+internal fun eventLeaveByEpochMillis(
+    eventStartEpochMillis: Long,
+    bufferMinutes: Int,
+    durationSeconds: Long,
+): Long = eventStartEpochMillis - bufferMinutes * 60_000L - durationSeconds * 1_000L
+
+/**
+ * Local minute-of-day of [leaveByEpochMillis] for display on [CommuteSnapshot.leaveByMinuteOfDay].
+ * Events are same-day by construction, so the only clamp needed is a pathologically long drive
+ * pushing the computed leave-by instant before local midnight of [todayLocalDate] - that case
+ * clamps to 0 (start of today) rather than producing a negative or wrapped-around minute-of-day.
+ */
+internal fun eventLeaveByMinuteOfDay(
+    leaveByEpochMillis: Long,
+    zoneId: ZoneId,
+    todayLocalDate: LocalDate,
+): Int {
+    val leaveByZoned = Instant.ofEpochMilli(leaveByEpochMillis).atZone(zoneId)
+    if (leaveByZoned.toLocalDate().isBefore(todayLocalDate)) {
+        return 0
+    }
+    return leaveByZoned.hour * 60 + leaveByZoned.minute
 }
 
 /**
@@ -410,11 +470,18 @@ object CommuteRefresher {
     }
 
     /**
-     * v3 calendar mode. Never records history and never computes leave-by (both remain the
-     * exclusive domain of [performCommuteRefresh]). A located event's route-fetch failure uses
-     * [saveFailure]'s standard preserve-stale-data behavior, but forces `mode`/`destinationLabel`/
-     * `eventStartEpochMillis` to the attempted calendar target so a stale unrelated destination
-     * label never lingers under a CALENDAR_EVENT mode tag.
+     * v3 calendar mode; v4 adds the event leave-by advisor for a located event with a start time.
+     * Never records history (that remains the exclusive domain of [performCommuteRefresh]).
+     * A located event's route-fetch failure uses [saveFailure]'s standard preserve-stale-data
+     * behavior, but forces `mode`/`destinationLabel`/`eventStartEpochMillis` to the attempted
+     * calendar target so a stale unrelated destination label never lingers under a CALENDAR_EVENT
+     * mode tag.
+     *
+     * Every branch that does not end in a located event with a freshly computed leave-by cancels
+     * [EventLeaveByScheduler]'s pending one-shot work (no event, unlocated event, leave-by
+     * disabled, or any route/geocode/map failure) - the previously scheduled event may have moved
+     * or been cancelled outright, so a stale wake-up must not survive to fire. Only the final
+     * located-event success path schedules (or immediately posts) instead of cancelling.
      */
     private suspend fun performCalendarRefresh(
         context: Context,
@@ -438,6 +505,7 @@ object CommuteRefresher {
 
         if (event == null) {
             repo.saveSnapshot(calendarEmptySnapshot(direction, nowEpochMillis, nextWindowResult))
+            EventLeaveByScheduler.cancel(context)
             return
         }
 
@@ -463,6 +531,7 @@ object CommuteRefresher {
                     nextWindowStartMinuteOfDay = null,
                 ),
             )
+            EventLeaveByScheduler.cancel(context)
             return
         }
 
@@ -470,6 +539,7 @@ object CommuteRefresher {
             is ApiResult.Success -> result.value.firstOrNull()
             is ApiResult.Failure -> {
                 saveFailure(repo, direction, result.message, SnapshotMode.CALENDAR_EVENT, event.title, event.startEpochMillis)
+                EventLeaveByScheduler.cancel(context)
                 return
             }
         }
@@ -482,6 +552,7 @@ object CommuteRefresher {
                 event.title,
                 event.startEpochMillis,
             )
+            EventLeaveByScheduler.cancel(context)
             return
         }
         val destination = geocoded.location
@@ -497,16 +568,39 @@ object CommuteRefresher {
                     event.title,
                     event.startEpochMillis,
                 )
+                EventLeaveByScheduler.cancel(context)
                 return
             }
         }
 
+        // v4: more than settings.eventRealtimeThresholdMinutes before the event, request PREDICTED
+        // traffic around the event's arrival time instead of real-time (null keeps the existing
+        // real-time behavior, which is also what RoutesClient falls back to on its own near-future
+        // floor). Computed only when the advisor is enabled - a disabled advisor keeps the plain
+        // real-time route request calendar mode has always made.
+        val departureProbe = if (settings.leaveByEnabled) {
+            eventDepartureProbe(
+                eventStartEpochMillis = event.startEpochMillis,
+                nowEpochMillis = nowEpochMillis,
+                thresholdMinutes = settings.eventRealtimeThresholdMinutes,
+                bufferMinutes = settings.eventLeaveByBufferMinutes,
+            )
+        } else {
+            null
+        }
+
         val route = when (
-            val result = RoutesClient(settings.apiKey).computeRoute(origin, destination, travelModeFor(settings.travelMode))
+            val result = RoutesClient(settings.apiKey).computeRoute(
+                origin,
+                destination,
+                travelModeFor(settings.travelMode),
+                departureProbe,
+            )
         ) {
             is ApiResult.Success -> result.value
             is ApiResult.Failure -> {
                 saveFailure(repo, direction, result.message, SnapshotMode.CALENDAR_EVENT, event.title, event.startEpochMillis)
+                EventLeaveByScheduler.cancel(context)
                 return
             }
         }
@@ -525,9 +619,17 @@ object CommuteRefresher {
                     event.title,
                     event.startEpochMillis,
                 )
+                EventLeaveByScheduler.cancel(context)
                 return
             }
         }
+
+        val leaveByEpochMillis = if (settings.leaveByEnabled) {
+            eventLeaveByEpochMillis(event.startEpochMillis, settings.eventLeaveByBufferMinutes, route.durationSeconds)
+        } else {
+            null
+        }
+        val leaveByMinuteOfDay = leaveByEpochMillis?.let { eventLeaveByMinuteOfDay(it, now.zone, now.toLocalDate()) }
 
         repo.saveSnapshot(
             CommuteSnapshot(
@@ -542,13 +644,26 @@ object CommuteRefresher {
                 destinationLabel = event.title,
                 destinationLat = destination.lat,
                 destinationLng = destination.lng,
-                leaveByMinuteOfDay = null,
+                leaveByMinuteOfDay = leaveByMinuteOfDay,
                 mode = SnapshotMode.CALENDAR_EVENT,
                 eventStartEpochMillis = event.startEpochMillis,
                 nextWindowLabel = null,
                 nextWindowStartMinuteOfDay = null,
             ),
         )
+
+        if (leaveByEpochMillis != null) {
+            EventLeaveByScheduler.scheduleOrPost(
+                context = context,
+                eventTitle = event.title,
+                eventStartEpochMillis = event.startEpochMillis,
+                leaveByEpochMillis = leaveByEpochMillis,
+                durationSeconds = route.durationSeconds,
+                nowEpochMillis = nowEpochMillis,
+            )
+        } else {
+            EventLeaveByScheduler.cancel(context)
+        }
     }
 
     private fun calendarEmptySnapshot(

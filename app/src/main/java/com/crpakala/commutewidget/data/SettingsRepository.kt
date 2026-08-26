@@ -39,6 +39,9 @@ private object PreferenceKeys {
     val ACTIVE_FAVOURITE_JSON = stringPreferencesKey("active_favourite_json")
     val LEAVE_BY_NOTIFIED_TO_WORK = stringPreferencesKey("leave_by_notified_to_work")
     val LEAVE_BY_NOTIFIED_TO_HOME = stringPreferencesKey("leave_by_notified_to_home")
+    val EVENT_LEAVE_BY_BUFFER_MINUTES = intPreferencesKey("event_leave_by_buffer_minutes")
+    val EVENT_REALTIME_THRESHOLD_MINUTES = intPreferencesKey("event_realtime_threshold_minutes")
+    val EVENT_LEAVE_BY_NOTIFIED_KEY = stringPreferencesKey("event_leave_by_notified_key")
 }
 
 private fun Preferences.toAppSettings(): AppSettings {
@@ -53,6 +56,8 @@ private fun Preferences.toAppSettings(): AppSettings {
         leaveByEnabled = this[PreferenceKeys.LEAVE_BY_ENABLED] ?: false,
         arriveWorkByMinuteOfDay = this[PreferenceKeys.ARRIVE_WORK_BY_MINUTE_OF_DAY] ?: 570,
         arriveHomeByMinuteOfDay = this[PreferenceKeys.ARRIVE_HOME_BY_MINUTE_OF_DAY] ?: 1170,
+        eventLeaveByBufferMinutes = this[PreferenceKeys.EVENT_LEAVE_BY_BUFFER_MINUTES] ?: 10,
+        eventRealtimeThresholdMinutes = this[PreferenceKeys.EVENT_REALTIME_THRESHOLD_MINUTES] ?: 60,
         calendarEnabled = this[PreferenceKeys.CALENDAR_ENABLED] ?: false,
         selectedCalendarIds = decodeLongSet(this[PreferenceKeys.SELECTED_CALENDAR_IDS_JSON]),
         historyEnabled = this[PreferenceKeys.HISTORY_ENABLED] ?: true,
@@ -155,6 +160,18 @@ class SettingsRepository private constructor(
         }
     }
 
+    suspend fun setEventLeaveByBufferMinutes(minutes: Int) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.EVENT_LEAVE_BY_BUFFER_MINUTES] = minutes
+        }
+    }
+
+    suspend fun setEventRealtimeThresholdMinutes(minutes: Int) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.EVENT_REALTIME_THRESHOLD_MINUTES] = minutes
+        }
+    }
+
     suspend fun setCalendarEnabled(enabled: Boolean) {
         dataStore.edit { preferences ->
             preferences[PreferenceKeys.CALENDAR_ENABLED] = enabled
@@ -240,6 +257,16 @@ class SettingsRepository private constructor(
         }
         dataStore.edit { preferences ->
             preferences[key] = localDate
+        }
+    }
+
+    suspend fun eventLeaveByNotifiedKey(): String? {
+        return dataStore.data.first()[PreferenceKeys.EVENT_LEAVE_BY_NOTIFIED_KEY]
+    }
+
+    suspend fun markEventLeaveByNotified(eventKey: String) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.EVENT_LEAVE_BY_NOTIFIED_KEY] = eventKey
         }
     }
 

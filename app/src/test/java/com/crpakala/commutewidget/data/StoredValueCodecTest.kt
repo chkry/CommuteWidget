@@ -294,4 +294,33 @@ class StoredValueCodecTest {
         assertEquals(emptySet<Int>(), decodeIntSet(null))
         assertEquals(setOf(1, 2, 3, 4, 5), decodeIntSet("{bad}", default = setOf(1, 2, 3, 4, 5)))
     }
+
+    @Test
+    fun appSettings_eventLeaveByFieldsDefaultOnEmptyStore() {
+        val settings = AppSettings()
+        assertEquals(10, settings.eventLeaveByBufferMinutes)
+        assertEquals(60, settings.eventRealtimeThresholdMinutes)
+    }
+
+    @Test
+    fun eventIdentityKey_trimsTitle() {
+        assertEquals(
+            "1756257000000|Client meeting",
+            eventIdentityKey(1_756_257_000_000L, "  Client meeting  "),
+        )
+    }
+
+    @Test
+    fun eventIdentityKey_emptyTitle() {
+        assertEquals("1756257000000|", eventIdentityKey(1_756_257_000_000L, ""))
+        assertEquals("1756257000000|", eventIdentityKey(1_756_257_000_000L, "   "))
+    }
+
+    @Test
+    fun eventIdentityKey_isDeterministic() {
+        val first = eventIdentityKey(1_756_257_000_000L, "Client meeting")
+        val second = eventIdentityKey(1_756_257_000_000L, "Client meeting")
+        assertEquals(first, second)
+        assertEquals("1756257000000|Client meeting", first)
+    }
 }

@@ -12,13 +12,14 @@ The application is built and installed entirely via the command line without req
 - Theme-aware surfaces following system light and dark modes with Material dynamic colors.
 - Sub-second tap responsiveness with instant "Updating..." visual feedback and two-minute location caching.
 - Favourite destination chips with temporary routing overrides and one-tap restore.
-- Leave-by advisor displaying dynamic departure targets and high-priority departure notifications inside active commute windows.
-- Automatic calendar mode outside commute windows displaying the next remaining event today with route map or quiet card.
+- Commute and calendar event leave-by advisor computing dynamic departure targets with early arrival buffers and firing local high-priority notifications.
+- Automatic calendar mode outside commute windows displaying the next remaining event today with route map, quiet card, and leave-by calculations using live or predicted traffic.
+- Leave-by indicator rendering across all widget sizes and fallback text cards, highlighting red once departure time has passed.
 - Background commute history tracking with time-of-day traffic curves and weekday statistics in local SQLite storage.
 - Interactive tap zones for data refresh, favourite switching, and direct Google Maps turn-by-turn navigation.
 - Scheduled automatic background updates at window boundaries and 10-minute commute sampling slots powered by Android WorkManager across device reboots.
 - Graceful offline and failure state caching with relative timestamp tracking and automatic 60-second recovery.
-- In-app configuration for addresses, favourites, commute windows, leave-by targets, geocoding selection, transit modes, and calendar selection.
+- In-app configuration for addresses, favourites, commute windows, leave-by targets, early arrival buffers, live traffic thresholds, geocoding selection, transit modes, and calendar selection.
 
 ## Google Cloud API Key Setup
 
@@ -47,6 +48,8 @@ Total Routes API usage remains under 1,000 requests per month, well within the 5
 Slot sampling requests fetch duration and routing polyline data without requesting static map images, keeping Maps Static API usage essentially unchanged.
 Window boundary auto-refreshes replace fixed daily refreshes, adding roughly 4 background calls per enabled day.
 Calendar mode refreshes for located events use one Routes API call and one Maps Static API call, matching manual tap refreshes.
+Event leave-by traffic predictions ride on the same single Routes API request by supplying a future departure timestamp when outside the live traffic threshold, maintaining an unchanged API usage profile.
+Local leave-by notifications are scheduled entirely on device and consume zero extra API calls.
 Geocoding API requests occur only when searching and saving addresses in settings.
 
 ## Build from Source
@@ -84,7 +87,7 @@ CommuteWidget requests runtime permissions based on configured features:
 
 - **Location (`ACCESS_FINE_LOCATION` and `ACCESS_COARSE_LOCATION`)**: Required for determining current device origin for calendar event routes, favourite destinations, and map refreshes.
   Select **Allow all the time** in system settings so background slot updates can fetch accurate location data.
-- **Notifications (`POST_NOTIFICATIONS`)**: Required if the Leave-By Advisor notification feature is enabled.
+- **Notifications (`POST_NOTIFICATIONS`)**: Required if the Leave-By Advisor notification feature is enabled for commute windows or calendar events.
   The app prompts for this permission when turning on the advisor toggle in settings.
 - **Calendar (`READ_CALENDAR`)**: Required if the Calendar feature is enabled.
   The app prompts for this permission when turning on calendar integration in settings.
@@ -99,8 +102,9 @@ Launch the CommuteWidget app on your device to configure initial settings before
 4. Select your preferred travel mode (Car or Two-Wheeler).
 5. Configure **Commute windows** by selecting active days of the week and setting time intervals for the To Work window (default 7:00 AM - 10:00 AM) and To Home window (default 5:00 PM - 8:00 PM).
 6. Configure favourite destinations by adding up to 4 saved locations with custom labels and geocoded addresses.
-7. Configure the Leave-By Advisor by setting target arrival times for work (default 9:30 AM) and home (default 7:30 PM).
-   Note that the advisor applies inside your To Work and To Home windows.
+7. Configure the Leave-By Advisor by enabling the toggle and setting target arrival times for work (default 9:30 AM) and home (default 7:30 PM).
+   Set the "Arrive early by" buffer (0-60 minutes, default 10 minutes) and "Use live traffic within" threshold (15-180 minutes, default 60 minutes).
+   The advisor applies to active commute windows as well as calendar events with a location, scheduling one notification per event.
 8. Enable calendar integration if desired, and choose which device calendars to scan for event locations.
 9. Grant runtime permissions as needed for location, notifications, and calendar access.
 
@@ -111,10 +115,11 @@ Launch the CommuteWidget app on your device to configure initial settings before
 3. Locate and tap **CommuteWidget**.
 4. Touch and hold the widget preview, then drag it onto your home screen.
 5. Use the resize handles to set your preferred size:
-   - **2x2**: Compact view showing a large ETA, leave-by status, and quick refresh controls without a map or favourite chips.
+   - **2x2**: Compact view showing a large ETA, leave-by status for commute and event modes, and quick refresh controls without a map or favourite chips.
    - **4x2**: Split layout with commute or calendar info, leave-by indicator, a vertical column of up to 4 slim favourite chips between the info panel and the map, and a congestion map.
    - **4x4**: Full-size map view with commute or calendar information, leave-by indicator, and all saved favourite chips (up to 4).
    Intermediate dimensions automatically snap to the nearest standard layout.
+   The leave-by line renders across all widget sizes in commute and event modes, turns red once past the departure time, and appears in the map-area text when no map image is shown.
    All chip, leave-by, and overlay surfaces adapt to the system light and dark theme using Material dynamic colors.
 
 ## Daily Behavior
@@ -132,7 +137,7 @@ The widget evaluates multiple potential destinations and chooses the active rout
 3. **Calendar Mode**: Default outside commute windows.
    - Active outside configured windows during midday, evenings, weekends, and unselected days.
    - Displays the next remaining event scheduled for today from selected device calendars.
-   - If an event has a location, the widget renders a route map from current device location with event title, start time, and ETA.
+   - If an event has a location, the widget renders a route map from current device location with event title, start time, ETA, and a calculated leave-by departure target.
    - Tapping the map opens Google Maps turn-by-turn navigation to the event location.
    - If an event lacks a location, the widget displays a quiet card showing the title and scheduled time.
    - If no events remain today, the widget displays a card indicating the next upcoming commute window (for example, "Next: To Work at 7:00 am").
@@ -150,13 +155,24 @@ The widget evaluates multiple potential destinations and chooses the active rout
 
 ### Leave-By Advisor
 
-- The Leave-By Advisor calculates dynamic departure times by subtracting the current live travel ETA from your target arrival time.
-- The advisor applies inside your To Work and To Home windows.
-- Configured in settings with separate target arrival times for arriving at work (default 9:30 AM) and arriving home (default 7:30 PM).
-- Displays a formatted leave-by indicator on the widget (for example, "Leave by 8:42 am"), which turns red once the calculated departure moment has passed.
-- Sends a high-priority system notification once per direction per day when the departure moment arrives.
-- The notification requires `POST_NOTIFICATIONS` permission, requested when enabling the feature.
-- If notification permission is denied, the leave-by status indicator still functions on the widget.
+- The Leave-By Advisor calculates dynamic departure times for commute windows and located calendar events.
+- In commute windows, departure times are computed by subtracting current live travel ETA from configured target arrival times (work default 9:30 AM, home default 7:30 PM).
+- In calendar mode, when displaying an event with a location, the advisor computes and shows a departure target (for example, "Leave by 2:40 pm") to arrive early by the configured buffer given traffic.
+- Settings provide an "Arrive early by" buffer slider (0-60 minutes, default 10 minutes) and a "Use live traffic within" threshold slider (15-180 minutes, default 60 minutes).
+- Traffic routing strategy for calendar events adapts dynamically based on time remaining until event start.
+- If the event starts within the live traffic threshold (default 60 minutes), the route request queries real-time traffic conditions.
+- If the event starts further out than the threshold, the route request includes a future departure timestamp so Google Routes API returns predicted traffic for that time of day.
+- Calculation accuracy refines automatically as the event approaches and periodic background or manual refreshes occur.
+- The leave-by line renders across all widget sizes (2x2, 4x2, and 4x4) in commute and event modes.
+- The indicator turns red once the calculated departure moment has passed.
+- The leave-by line also appears in the map-area text layout when no map image is displayed.
+- The advisor fires high-priority departure notifications scheduled locally on the device with zero extra API calls.
+- Commute mode sends one notification per direction per day when the departure moment arrives.
+- Event mode sends one notification per event at the leave-by moment (for example, "Leave by 2:40 pm for Client meeting - 35 min drive").
+- Event notifications are rescheduled whenever a widget refresh recomputes the departure target.
+- If an event is deleted or disappears from the calendar, its pending notification is automatically cancelled on the next refresh.
+- Notifications require `POST_NOTIFICATIONS` permission and are governed by the main "Leave-by advisor" toggle in settings.
+- If notification permission is denied, the visual leave-by status indicator on the widget remains fully operational.
 - The feature is disabled by default and can be toggled in settings.
 
 ### Calendar Mode
@@ -165,9 +181,13 @@ The widget evaluates multiple potential destinations and chooses the active rout
 - The feature requires the `READ_CALENDAR` permission.
 - After granting permission, select which synced calendars CommuteWidget should monitor.
 - The widget scans selected calendars for the next remaining non-all-day event scheduled for today.
-- For an event with a location, the widget renders a route map from current location to the event with event title, start time, and ETA.
+- For an event with a location, the widget renders a route map from current location to the event with event title, start time, travel ETA, and a calculated leave-by departure target.
+- The leave-by calculation subtracts travel duration and the configurable early arrival buffer (default 10 minutes) from event start time.
+- Traffic data switches automatically from predicted traffic for distant events to live traffic within the configured threshold (default 60 minutes).
 - Tapping the map image for a located event opens Google Maps turn-by-turn navigation directly to the event address.
 - For an event without a location, the widget renders a quiet title-and-time card.
+- When map rendering is unavailable, the leave-by indicator displays directly within the map-area text view.
+- If the Leave-By Advisor is enabled, the app schedules a local departure notification for the event and cancels it if the event is removed from the calendar.
 - If no events remain today, the widget displays the next upcoming commute window (for example, "Next: To Work at 7:00 am").
 - Inside active commute windows, calendar mode is inactive and the widget displays pure commute routing.
 
@@ -221,7 +241,10 @@ The widget evaluates multiple potential destinations and chooses the active rout
 | Widget stuck on "Updating..." for over a minute | Network stalled or background worker encountered a transient delay. | Tap the widget again to retry; the state self-clears automatically after 60 seconds. |
 | Widget shows calendar or next-window card during commute time | Current day is not selected or current time is outside configured windows. | Check in settings that the current day of the week is enabled and the time falls inside the To Work or To Home window. |
 | No calendar event shown outside windows | Calendar feature disabled, permission missing, calendars unselected, or event is all-day or not today. | Verify calendar integration is enabled, grant calendar permission, select synced calendars in settings, and ensure the event is scheduled for today and is not an all-day event. |
-| Leave-by not appearing or sending notifications | Current time is outside active commute windows or notification permission is denied. | Leave-by only applies inside To Work and To Home windows; verify notification permissions in system settings and ensure arrival targets are configured. |
+| Commute leave-by not appearing | Feature is disabled or current time is outside active commute windows. | Enable the Leave-by advisor toggle in settings, check active window schedules, and ensure arrival targets are set. |
+| Event leave-by missing | Advisor toggle is disabled, calendar event lacks a location, or widget needs a refresh. | Enable the Leave-by advisor in settings, ensure the calendar event contains a routable address, and tap the widget to refresh. |
+| Leave-by notification did not fire | Notification permission is missing or departure time changed after the last refresh. | Grant notification permission in system settings, and tap the widget to recompute departure time if schedule or traffic changed. |
+| Leave-by time seems off for far-away events | Far-away events use Google predicted traffic rather than live road conditions. | Predicted traffic is queried outside the live traffic threshold and automatically refines with real-time data on refreshes closer to event start. |
 | Favourite chips missing from widget | Chip display toggle is disabled or widget size is 2x2. | Enable "Show favourite chips" in settings, and note that chips are not displayed on the 2x2 compact size. |
 | Weekend or favourite shows wrong origin | Background location permission is missing or restricted. | Grant "Allow all the time" location permission in system app settings. |
 | Commute stats are empty | Commute history is disabled, windows or days are unconfigured, or no windows have passed. | Verify history tracking is enabled in settings, ensure active days and windows are configured, and wait for a collection window to pass. |

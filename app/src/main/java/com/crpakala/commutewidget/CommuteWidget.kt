@@ -493,7 +493,7 @@ private fun ModeInfo(
 ) {
     when (snapshot.mode) {
         SnapshotMode.COMMUTE -> CommuteInfo(snapshot, extras, accent, style)
-        SnapshotMode.CALENDAR_EVENT -> CalendarEventInfo(snapshot, accent, style)
+        SnapshotMode.CALENDAR_EVENT -> CalendarEventInfo(snapshot, extras, accent, style)
         SnapshotMode.CALENDAR_EMPTY -> CalendarEmptyInfo(snapshot, style)
     }
 }
@@ -527,6 +527,7 @@ private fun CommuteInfo(
 @Composable
 private fun CalendarEventInfo(
     snapshot: CommuteSnapshot,
+    extras: WidgetExtras,
     accent: Color,
     style: InfoStyle,
 ) {
@@ -540,6 +541,10 @@ private fun CalendarEventInfo(
     }
     snapshot.eventStartEpochMillis?.let { start ->
         CaptionText(formatEventAtTime(start), style.captionFontSize)
+    }
+    if (shouldShowLeaveBy(snapshot, extras.leaveByEnabled)) {
+        Spacer(modifier = GlanceModifier.height(2.dp))
+        LeaveByChip(snapshot.leaveByMinuteOfDay!!, extras.nowMinuteOfDay, style.captionFontSize)
     }
     if (style.showDistance) {
         DistanceText(snapshot.distanceMeters)
@@ -892,8 +897,8 @@ private fun launchNavigation(context: Context, lat: Double, lng: Double, modeCha
     }
 }
 
-private fun shouldShowLeaveBy(snapshot: CommuteSnapshot, leaveByEnabled: Boolean): Boolean {
-    return snapshot.mode == SnapshotMode.COMMUTE &&
+internal fun shouldShowLeaveBy(snapshot: CommuteSnapshot, leaveByEnabled: Boolean): Boolean {
+    return (snapshot.mode == SnapshotMode.COMMUTE || snapshot.mode == SnapshotMode.CALENDAR_EVENT) &&
         leaveByEnabled &&
         snapshot.leaveByMinuteOfDay != null
 }
@@ -943,6 +948,11 @@ internal fun calendarEmptyCase(snapshot: CommuteSnapshot): CalendarEmptyCase {
  * Text lines shown in the map area when no map image is displayed.
  * First line renders as a title, the rest as captions. Empty for commute mode
  * (a missing commute map keeps the bare glyph placeholder).
+ *
+ * For [SnapshotMode.CALENDAR_EVENT], appends [formatLeaveByLine] when
+ * [CommuteSnapshot.leaveByMinuteOfDay] is non-null. This function has no access
+ * to the leave-by setting toggle; the engine only populates that field when the
+ * advisor is enabled, so a non-null value is treated as displayable.
  */
 internal fun mapAreaPlaceholderLines(
     snapshot: CommuteSnapshot,
@@ -953,6 +963,7 @@ internal fun mapAreaPlaceholderLines(
         SnapshotMode.CALENDAR_EVENT -> buildList {
             add(calendarEventTitle(snapshot.destinationLabel))
             snapshot.eventStartEpochMillis?.let { add(formatEventAtTime(it, zone)) }
+            snapshot.leaveByMinuteOfDay?.let { add(formatLeaveByLine(it)) }
         }
         SnapshotMode.CALENDAR_EMPTY -> when (calendarEmptyCase(snapshot)) {
             CalendarEmptyCase.UNLOCATED_EVENT -> listOf(

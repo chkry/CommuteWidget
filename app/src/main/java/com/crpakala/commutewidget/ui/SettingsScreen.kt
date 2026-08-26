@@ -207,6 +207,8 @@ private fun SettingsScreen(onViewStats: () -> Unit) {
                     enabled = settings.leaveByEnabled,
                     arriveWork = settings.arriveWorkByMinuteOfDay,
                     arriveHome = settings.arriveHomeByMinuteOfDay,
+                    eventLeaveByBufferMinutes = settings.eventLeaveByBufferMinutes,
+                    eventRealtimeThresholdMinutes = settings.eventRealtimeThresholdMinutes,
                     onEnabledChanged = { enabled ->
                         scope.launch {
                             repository.setLeaveByEnabled(enabled)
@@ -218,6 +220,20 @@ private fun SettingsScreen(onViewStats: () -> Unit) {
                             if (work) repository.setArriveWorkByMinuteOfDay(minute)
                             else repository.setArriveHomeByMinuteOfDay(minute)
                             refreshWidget(applicationContext)
+                        }
+                    },
+                    onEventLeaveByBufferChanged = { minutes ->
+                        scope.launch {
+                            repository.setEventLeaveByBufferMinutes(minutes)
+                            refreshWidget(applicationContext)
+                            snackbarHostState.showSnackbar("Arrive early buffer saved")
+                        }
+                    },
+                    onEventRealtimeThresholdChanged = { minutes ->
+                        scope.launch {
+                            repository.setEventRealtimeThresholdMinutes(minutes)
+                            refreshWidget(applicationContext)
+                            snackbarHostState.showSnackbar("Live traffic threshold saved")
                         }
                     },
                 )
@@ -490,6 +506,9 @@ private fun FavouritesSection(
     if (editWindow) {
         DurationDialog(
             initialMinutes = windowMinutes,
+            title = "Favourite active for",
+            minMinutes = 15,
+            maxMinutes = 240,
             onDismiss = { editWindow = false },
             onSave = {
                 onWindowChanged(it)
@@ -565,24 +584,31 @@ private fun AddFavouriteForm(
 }
 
 @Composable
-private fun DurationDialog(initialMinutes: Int, onDismiss: () -> Unit, onSave: (Int) -> Unit) {
+private fun DurationDialog(
+    initialMinutes: Int,
+    title: String,
+    minMinutes: Int,
+    maxMinutes: Int,
+    onDismiss: () -> Unit,
+    onSave: (Int) -> Unit,
+) {
     var value by remember { mutableStateOf(initialMinutes.toString()) }
     val minutes = value.toIntOrNull()
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Favourite active for") },
+        title = { Text(title) },
         text = {
             OutlinedTextField(
                 value = value,
                 onValueChange = { value = it },
-                label = { Text("Minutes (15-240)") },
+                label = { Text("Minutes ($minMinutes-$maxMinutes)") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                isError = minutes == null || minutes !in 15..240,
+                isError = minutes == null || minutes !in minMinutes..maxMinutes,
             )
         },
         confirmButton = {
             TextButton(
-                enabled = minutes in 15..240,
+                enabled = minutes in minMinutes..maxMinutes,
                 onClick = { onSave(requireNotNull(minutes)) },
             ) { Text("Save") }
         },
@@ -596,8 +622,12 @@ private fun LeaveBySection(
     enabled: Boolean,
     arriveWork: Int,
     arriveHome: Int,
+    eventLeaveByBufferMinutes: Int,
+    eventRealtimeThresholdMinutes: Int,
     onEnabledChanged: (Boolean) -> Unit,
     onTimeChanged: (Boolean, Int) -> Unit,
+    onEventLeaveByBufferChanged: (Int) -> Unit,
+    onEventRealtimeThresholdChanged: (Int) -> Unit,
 ) {
     val context = LocalContext.current
     var notificationsGranted by remember {
@@ -610,6 +640,7 @@ private fun LeaveBySection(
         ActivityResultContracts.RequestPermission(),
     ) { notificationsGranted = it }
     var editingWork by remember { mutableStateOf<Boolean?>(null) }
+    var editingDuration by remember { mutableStateOf<LeaveByDuration?>(null) }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text("Leave-by advisor", style = MaterialTheme.typography.titleMedium)
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -625,9 +656,23 @@ private fun LeaveBySection(
         if (enabled) {
             TimeRow("Arrive at work by", arriveWork) { editingWork = true }
             TimeRow("Arrive home by", arriveHome) { editingWork = false }
+            DurationRow("Arrive early by", eventLeaveByBufferMinutes) {
+                editingDuration = LeaveByDuration.ARRIVE_EARLY_BUFFER
+            }
+            Text(
+                "Buffer before a calendar event's start time",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            DurationRow("Use live traffic within", eventRealtimeThresholdMinutes) {
+                editingDuration = LeaveByDuration.LIVE_TRAFFIC_THRESHOLD
+            }
+            Text(
+                "Events further out use predicted traffic",
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
         Text(
-            "Applies inside your To Work and To Home windows.",
+            "Applies inside your To Work and To Home windows, and to calendar events with a location - one notification per event.",
             style = MaterialTheme.typography.bodySmall,
         )
     }
@@ -640,6 +685,54 @@ private fun LeaveBySection(
                 editingWork = null
             }
         }
+    }
+    editingDuration?.let { duration ->
+        val initialMinutes = when (duration) {
+            LeaveByDuration.ARRIVE_EARLY_BUFFER -> eventLeaveByBufferMinutes
+            LeaveByDuration.LIVE_TRAFFIC_THRESHOLD -> eventRealtimeThresholdMinutes
+        }
+        val title = when (duration) {
+            LeaveByDuration.ARRIVE_EARLY_BUFFER -> "Arrive early by"
+            LeaveByDuration.LIVE_TRAFFIC_THRESHOLD -> "Use live traffic within"
+        }
+        val minMinutes = when (duration) {
+            LeaveByDuration.ARRIVE_EARLY_BUFFER -> 0
+            LeaveByDuration.LIVE_TRAFFIC_THRESHOLD -> 15
+        }
+        val maxMinutes = when (duration) {
+            LeaveByDuration.ARRIVE_EARLY_BUFFER -> 60
+            LeaveByDuration.LIVE_TRAFFIC_THRESHOLD -> 180
+        }
+        DurationDialog(
+            initialMinutes = initialMinutes,
+            title = title,
+            minMinutes = minMinutes,
+            maxMinutes = maxMinutes,
+            onDismiss = { editingDuration = null },
+            onSave = { minutes ->
+                when (duration) {
+                    LeaveByDuration.ARRIVE_EARLY_BUFFER -> onEventLeaveByBufferChanged(minutes)
+                    LeaveByDuration.LIVE_TRAFFIC_THRESHOLD -> onEventRealtimeThresholdChanged(minutes)
+                }
+                editingDuration = null
+            },
+        )
+    }
+}
+
+private enum class LeaveByDuration { ARRIVE_EARLY_BUFFER, LIVE_TRAFFIC_THRESHOLD }
+
+@Composable
+private fun DurationRow(label: String, minutes: Int, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(label)
+        Text("$minutes min", color = MaterialTheme.colorScheme.primary)
     }
 }
 

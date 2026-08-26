@@ -69,6 +69,52 @@ class CommuteWidgetDisplayTest {
     }
 
     @Test
+    fun shouldShowLeaveBy_commuteShownWhenEnabledAndPresent() {
+        val snapshot = emptySnapshot().copy(
+            mode = SnapshotMode.COMMUTE,
+            leaveByMinuteOfDay = 14 * 60 + 40,
+        )
+        assertTrue(shouldShowLeaveBy(snapshot, leaveByEnabled = true))
+    }
+
+    @Test
+    fun shouldShowLeaveBy_calendarEventShownWhenEnabledAndPresent() {
+        val snapshot = emptySnapshot().copy(
+            mode = SnapshotMode.CALENDAR_EVENT,
+            leaveByMinuteOfDay = 14 * 60 + 40,
+        )
+        assertTrue(shouldShowLeaveBy(snapshot, leaveByEnabled = true))
+    }
+
+    @Test
+    fun shouldShowLeaveBy_calendarEmptyNeverShown() {
+        val snapshot = emptySnapshot().copy(leaveByMinuteOfDay = 14 * 60 + 40)
+        assertFalse(shouldShowLeaveBy(snapshot, leaveByEnabled = true))
+    }
+
+    @Test
+    fun shouldShowLeaveBy_disabledToggleHidesEvenWhenFieldPresent() {
+        val commute = emptySnapshot().copy(
+            mode = SnapshotMode.COMMUTE,
+            leaveByMinuteOfDay = 14 * 60 + 40,
+        )
+        val event = emptySnapshot().copy(
+            mode = SnapshotMode.CALENDAR_EVENT,
+            leaveByMinuteOfDay = 14 * 60 + 40,
+        )
+        assertFalse(shouldShowLeaveBy(commute, leaveByEnabled = false))
+        assertFalse(shouldShowLeaveBy(event, leaveByEnabled = false))
+    }
+
+    @Test
+    fun shouldShowLeaveBy_nullFieldHidesEvenWhenEnabled() {
+        val commute = emptySnapshot().copy(mode = SnapshotMode.COMMUTE, leaveByMinuteOfDay = null)
+        val event = emptySnapshot().copy(mode = SnapshotMode.CALENDAR_EVENT, leaveByMinuteOfDay = null)
+        assertFalse(shouldShowLeaveBy(commute, leaveByEnabled = true))
+        assertFalse(shouldShowLeaveBy(event, leaveByEnabled = true))
+    }
+
+    @Test
     fun favouriteChipsToShow_capsWideRowAtTwo() {
         val favourites = listOf(
             favourite("Gym"),
@@ -184,6 +230,23 @@ class CommuteWidgetDisplayTest {
             eventStartEpochMillis = start,
         ).copy(mode = SnapshotMode.CALENDAR_EVENT)
         assertEquals(listOf("Client meeting", "at 3:30 pm"), mapAreaPlaceholderLines(snapshot, zone))
+    }
+
+    @Test
+    fun mapAreaPlaceholderLines_calendarEventAppendsLeaveByWhenPresent() {
+        val zone = ZoneId.of("UTC")
+        val start = ZonedDateTime.of(2026, 8, 26, 15, 30, 0, 0, zone).toInstant().toEpochMilli()
+        val snapshot = emptySnapshot(
+            destinationLabel = "Client meeting",
+            eventStartEpochMillis = start,
+        ).copy(
+            mode = SnapshotMode.CALENDAR_EVENT,
+            leaveByMinuteOfDay = 14 * 60 + 40,
+        )
+        assertEquals(
+            listOf("Client meeting", "at 3:30 pm", "Leave by 2:40 pm"),
+            mapAreaPlaceholderLines(snapshot, zone),
+        )
     }
 
     @Test
