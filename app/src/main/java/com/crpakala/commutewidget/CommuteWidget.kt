@@ -123,10 +123,12 @@ class CommuteWidget : GlanceAppWidget() {
             null
         }
         val nextAlarmLine = runCatching {
-            val triggerTime = (context.getSystemService(Context.ALARM_SERVICE) as AlarmManager)
-                .nextAlarmClock
-                ?.triggerTime
-            triggerTime?.let { formatAlarmLine(it) }
+            val info = (context.getSystemService(Context.ALARM_SERVICE) as AlarmManager).nextAlarmClock
+            // Only real clock-app alarms: Samsung Modes and Routines (and similar apps) register
+            // schedule triggers as system alarm clocks, which read as phantom alarms the owner
+            // never set. The show intent's creator package identifies the actual owner.
+            info?.takeIf { isClockAppAlarm(it.showIntent?.creatorPackage) }
+                ?.let { formatAlarmLine(it.triggerTime) }
         }.getOrNull()
 
         val lightScheme = dynamicLightColorScheme(context)
@@ -1132,6 +1134,15 @@ internal fun formatTodayBrief(
 
 internal fun formatAlarmLine(triggerTimeEpochMillis: Long, zone: ZoneId = ZoneId.systemDefault()): String {
     return "⏰ Alarm ${formatEventClockTime(triggerTimeEpochMillis, zone)}"
+}
+
+/** Allowlist of real clock apps; anything else (routine schedulers, sleep apps) is filtered out. */
+internal fun isClockAppAlarm(creatorPackage: String?): Boolean {
+    return creatorPackage in setOf(
+        "com.sec.android.app.clockpackage",
+        "com.google.android.deskclock",
+        "com.android.deskclock",
+    )
 }
 
 private fun formatCompactHoursMinutes(minutesUntil: Int): String {

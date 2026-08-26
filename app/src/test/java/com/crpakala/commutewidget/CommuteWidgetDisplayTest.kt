@@ -31,6 +31,14 @@ class CommuteWidgetDisplayTest {
     }
 
     @Test
+    fun isClockAppAlarm_allowsClockAppsOnly() {
+        assertTrue(isClockAppAlarm("com.sec.android.app.clockpackage"))
+        assertTrue(isClockAppAlarm("com.google.android.deskclock"))
+        assertFalse(isClockAppAlarm("com.samsung.android.app.routines"))
+        assertFalse(isClockAppAlarm(null))
+    }
+
+    @Test
     fun bestDepartureLineText_shortForm() {
         assertEquals("Best: 5:39 pm", bestDepartureLineText(17 * 60 + 39))
         assertEquals("Best: 9:05 am", bestDepartureLineText(9 * 60 + 5))
