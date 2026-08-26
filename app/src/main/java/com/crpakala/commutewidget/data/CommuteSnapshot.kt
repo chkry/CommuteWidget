@@ -37,4 +37,10 @@ data class CommuteSnapshot(
      * and no calendar event is available.
      */
     val nextWindowStartMinuteOfDay: Int? = null,
+    /**
+     * v5 FIX-9: mirrors [com.crpakala.commutewidget.calendar.TodayEvent.preferredOverEarlierEvent]
+     * for the event this [SnapshotMode.CALENDAR_EVENT] snapshot routed. Additive/defaulted so a
+     * pre-FIX-9 stored snapshot JSON decodes as `false` rather than failing.
+     */
+    val routedOverEarlier: Boolean = false,
 )

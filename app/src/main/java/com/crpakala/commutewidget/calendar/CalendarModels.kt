@@ -24,4 +24,11 @@ data class TodayEvent(
     val location: String?,
     val startEpochMillis: Long,
     val endEpochMillis: Long,
+    /**
+     * v5 FIX-9: true when [selectTodayEvent] chose this (located) event over a chronologically
+     * earlier unlocated candidate via the 30-minute located-event preference (see that function's
+     * doc). Surfaced on the widget as a "Routed" caption so the reordering is visible rather than
+     * invisible (UX-AUDIT.md ruling f).
+     */
+    val preferredOverEarlierEvent: Boolean = false,
 )

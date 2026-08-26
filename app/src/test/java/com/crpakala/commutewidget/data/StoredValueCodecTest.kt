@@ -3,7 +3,6 @@ package com.crpakala.commutewidget.data
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class StoredValueCodecTest {
@@ -153,6 +152,56 @@ class StoredValueCodecTest {
         assertNull(decoded.nextWindowStartMinuteOfDay)
     }
 
+    /**
+     * v5 FIX-9 adds `routedOverEarlier` to [CommuteSnapshot]. A v4-format snapshot JSON (predating
+     * the field) must still decode, with the new field defaulting to `false` rather than failing
+     * to parse.
+     */
+    @Test
+    fun commuteSnapshotJson_v4FormatDecodesWithRoutedOverEarlierDefault() {
+        val v4Json = """
+            {
+              "direction": "TO_WORK",
+              "durationSeconds": 1200,
+              "durationNoTrafficSeconds": 1000,
+              "distanceMeters": 8000,
+              "mapImagePath": "/cache/event-map.png",
+              "fetchedAtEpochMillis": 1700000000000,
+              "lastFetchFailed": false,
+              "lastErrorMessage": null,
+              "destinationLabel": "Client meeting",
+              "destinationLat": 12.9716,
+              "destinationLng": 77.5946,
+              "leaveByMinuteOfDay": 540,
+              "mode": "CALENDAR_EVENT",
+              "eventStartEpochMillis": 1700000600000
+            }
+        """.trimIndent()
+        val decoded = decodeCommuteSnapshot(v4Json)
+        requireNotNull(decoded)
+        assertEquals(SnapshotMode.CALENDAR_EVENT, decoded.mode)
+        assertEquals(1700000600000L, decoded.eventStartEpochMillis)
+        assertFalse(decoded.routedOverEarlier)
+    }
+
+    @Test
+    fun commuteSnapshotJson_routedOverEarlierRoundTrips() {
+        val snapshot = CommuteSnapshot(
+            direction = Direction.TO_WORK,
+            durationSeconds = 1200L,
+            durationNoTrafficSeconds = 1000L,
+            distanceMeters = 8000L,
+            mapImagePath = null,
+            fetchedAtEpochMillis = 1_700_000_000_000L,
+            lastFetchFailed = false,
+            lastErrorMessage = null,
+            mode = SnapshotMode.CALENDAR_EVENT,
+            routedOverEarlier = true,
+        )
+        val encoded = encodeCommuteSnapshot(snapshot)
+        assertEquals(true, decodeCommuteSnapshot(encoded)?.routedOverEarlier)
+    }
+
     @Test
     fun snapshotMode_roundTrip() {
         for (mode in SnapshotMode.entries) {
@@ -221,53 +270,6 @@ class StoredValueCodecTest {
     }
 
     @Test
-    fun activeFavouriteJson_roundTrip() {
-        val favourite = Favourite(label = "Gym", place = Place("Gym St", 12.0, 77.0))
-        val active = ActiveFavourite(
-            favourite = favourite,
-            activatedAtEpochMillis = 1_000L,
-            expiresAtEpochMillis = 3_600_000L,
-        )
-        val encoded = encodeActiveFavourite(active)
-        assertEquals(active, decodeActiveFavourite(encoded))
-    }
-
-    @Test
-    fun isActive_beforeExpiry() {
-        val active = ActiveFavourite(
-            favourite = Favourite("Gym", Place("Gym St", 12.0, 77.0)),
-            activatedAtEpochMillis = 1_000L,
-            expiresAtEpochMillis = 5_000L,
-        )
-        assertTrue(isActive(active, nowEpochMillis = 4_999L))
-    }
-
-    @Test
-    fun isActive_atExpiry() {
-        val active = ActiveFavourite(
-            favourite = Favourite("Gym", Place("Gym St", 12.0, 77.0)),
-            activatedAtEpochMillis = 1_000L,
-            expiresAtEpochMillis = 5_000L,
-        )
-        assertFalse(isActive(active, nowEpochMillis = 5_000L))
-    }
-
-    @Test
-    fun isActive_afterExpiry() {
-        val active = ActiveFavourite(
-            favourite = Favourite("Gym", Place("Gym St", 12.0, 77.0)),
-            activatedAtEpochMillis = 1_000L,
-            expiresAtEpochMillis = 5_000L,
-        )
-        assertFalse(isActive(active, nowEpochMillis = 5_001L))
-    }
-
-    @Test
-    fun isActive_nullIsInactive() {
-        assertFalse(isActive(null, nowEpochMillis = 0L))
-    }
-
-    @Test
     fun longSetJson_roundTrip() {
         val values = setOf(42L, 7L, 99L)
         val encoded = encodeLongSet(values)
@@ -300,6 +302,27 @@ class StoredValueCodecTest {
         val settings = AppSettings()
         assertEquals(10, settings.eventLeaveByBufferMinutes)
         assertEquals(60, settings.eventRealtimeThresholdMinutes)
+    }
+
+    /**
+     * v5 renames `historyDays` to `commuteDays` but keeps the DataStore key literal
+     * ("history_days_json", see [com.crpakala.commutewidget.data.SettingsRepository]'s
+     * `PreferenceKeys.HISTORY_DAYS_JSON`) and the [encodeIntSet]/[decodeIntSet] wire format
+     * completely unchanged, so a pre-v5 device's stored set decodes exactly as before under the
+     * new field name - only the Kotlin-side name changed, not a single byte on disk.
+     */
+    @Test
+    fun commuteDays_decodesAPreV5EncodedIntSetIdentically() {
+        val preV5StoredValue = encodeIntSet(setOf(1, 2, 3, 4, 5))
+
+        val decoded = decodeIntSet(preV5StoredValue, default = emptySet())
+
+        assertEquals(setOf(1, 2, 3, 4, 5), decoded)
+    }
+
+    @Test
+    fun commuteDays_defaultsToWeekdaysOnEmptyStore() {
+        assertEquals(setOf(1, 2, 3, 4, 5), AppSettings().commuteDays)
     }
 
     @Test

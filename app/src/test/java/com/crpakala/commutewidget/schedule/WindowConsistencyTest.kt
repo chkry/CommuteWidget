@@ -2,23 +2,27 @@ package com.crpakala.commutewidget.schedule
 
 import com.crpakala.commutewidget.data.Direction
 import com.crpakala.commutewidget.engine.WidgetMode
+import com.crpakala.commutewidget.engine.nextWindow
 import com.crpakala.commutewidget.engine.resolveWidgetMode
+import java.time.DayOfWeek
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Adversarial cross-check for the v3 window model: [resolveWidgetMode] (engine), `nextWindow`
- * (engine), and [nextWindowBoundary] (schedule) all independently encode "is `[start, end)` a
- * valid, currently-active window on this ISO day", and a schedule/engine drift there would be a
- * real bug (e.g. the widget rendering COMMUTE while the boundary chain thinks the window already
- * ended). These tests pin the [start, end) / invalid-window-is-absent convention shared by all
- * three, plus the one deliberately *different* convention: [SlotFetchWorker]'s
- * [isWithinSlotFetchWindow] grace period, which intentionally fires a few minutes either side of
- * the exact boundary to absorb WorkManager jitter - and verifies that firing early/late never
- * results in a recorded history sample outside a genuine COMMUTE-mode fetch.
+ * Adversarial cross-check for the v3 window model, updated for v5's `commuteDays` rename:
+ * [resolveWidgetMode]/[nextWindow] (engine) and [nextWindowBoundary] (schedule) all independently
+ * encode "is `[start, end)` a valid, currently-active window on this ISO day", and a
+ * schedule/engine drift there would be a real bug (e.g. the widget rendering COMMUTE while the
+ * boundary chain thinks the window already ended). These tests pin the [start, end) /
+ * invalid-window-is-absent convention shared by all three.
+ *
+ * v5 removes the third participant this suite used to cross-check - the 10-minute
+ * `isWithinSlotFetchWindow` grace period (formerly `SlotFetchWorker`), deleted along with the
+ * history subsystem it fed. Those grace-period-specific assertions are dropped rather than
+ * ported: there is no successor with a comparable "fires a few minutes either side of the
+ * boundary" convention to pin.
  */
 class WindowConsistencyTest {
     private val zone = ZoneId.of("Asia/Kolkata")
@@ -27,7 +31,6 @@ class WindowConsistencyTest {
     private val morningEnd = 600
     private val eveningStart = 1020
     private val eveningEnd = 1200
-    private val slots = listOf(morningStart..morningEnd, eveningStart..eveningEnd)
 
     @Test
     fun windowEndIsExclusiveInBothResolveWidgetModeAndNextWindowBoundary() {
@@ -35,7 +38,7 @@ class WindowConsistencyTest {
         val mode = resolveWidgetMode(
             dayOfWeekIso = 1,
             minuteOfDay = morningEnd,
-            historyDays = weekdays,
+            commuteDays = weekdays,
             morningStart = morningStart,
             morningEnd = morningEnd,
             eveningStart = eveningStart,
@@ -49,7 +52,7 @@ class WindowConsistencyTest {
         val justBeforeEnd = ZonedDateTime.of(2026, 8, 24, (morningEnd - 1) / 60, (morningEnd - 1) % 60, 0, 0, zone)
         val boundary = nextWindowBoundary(
             now = justBeforeEnd,
-            historyDays = weekdays,
+            commuteDays = weekdays,
             morningStart = morningStart,
             morningEnd = morningEnd,
             eveningStart = eveningStart,
@@ -66,7 +69,7 @@ class WindowConsistencyTest {
         val mode = resolveWidgetMode(
             dayOfWeekIso = 1,
             minuteOfDay = 420,
-            historyDays = weekdays,
+            commuteDays = weekdays,
             morningStart = invalidStart,
             morningEnd = invalidEnd,
             eveningStart = eveningStart,
@@ -76,7 +79,7 @@ class WindowConsistencyTest {
 
         val boundary = nextWindowBoundary(
             now = ZonedDateTime.of(2026, 8, 24, 0, 0, 0, 0, zone),
-            historyDays = weekdays,
+            commuteDays = weekdays,
             morningStart = invalidStart,
             morningEnd = invalidEnd,
             eveningStart = eveningStart,
@@ -84,85 +87,76 @@ class WindowConsistencyTest {
         )
         // Only the (valid) evening window's two boundaries remain.
         assertEquals(eveningStart, boundary!!.hour * 60 + boundary.minute)
-    }
 
-    @Test
-    fun slotFetchGracePeriod_firesPastWindowEndButResolvesToCalendarMode() {
-        // isWithinSlotFetchWindow's +-5 min grace intentionally overlaps resolveWidgetMode's
-        // exclusive end boundary - this is a deliberate difference (jitter absorption), not a
-        // bug, and is safe only because history recording is gated on WidgetMode.Commute
-        // (performCommuteRefresh is the sole call site of HistoryStore.insert). Assert both
-        // halves of that contract so a future refactor can't silently reintroduce the bug.
-        val justPastEnd = morningEnd + 5
-        assertTrue(isWithinSlotFetchWindow(todayIso = 1, nowMinuteOfDay = justPastEnd, historyDays = weekdays, slots = slots))
-
-        val mode = resolveWidgetMode(
+        val next = nextWindow(
             dayOfWeekIso = 1,
-            minuteOfDay = justPastEnd,
-            historyDays = weekdays,
-            morningStart = morningStart,
-            morningEnd = morningEnd,
+            minuteOfDay = 420,
+            commuteDays = weekdays,
+            morningStart = invalidStart,
+            morningEnd = invalidEnd,
             eveningStart = eveningStart,
             eveningEnd = eveningEnd,
         )
-        assertEquals(WidgetMode.Calendar, mode)
+        assertEquals(eveningStart, next!!.startMinuteOfDay)
     }
 
     @Test
-    fun slotFetchGracePeriod_firesBeforeWindowStartButResolvesToCalendarMode() {
-        val justBeforeStart = morningStart - 5
-        assertTrue(
-            isWithinSlotFetchWindow(todayIso = 1, nowMinuteOfDay = justBeforeStart, historyDays = weekdays, slots = slots),
-        )
-
-        val mode = resolveWidgetMode(
-            dayOfWeekIso = 1,
-            minuteOfDay = justBeforeStart,
-            historyDays = weekdays,
-            morningStart = morningStart,
-            morningEnd = morningEnd,
-            eveningStart = eveningStart,
-            eveningEnd = eveningEnd,
-        )
-        assertEquals(WidgetMode.Calendar, mode)
-    }
-
-    @Test
-    fun dayDisabledForHistory_neitherSlotFetchNorResolveWidgetModeTreatItAsCommute() {
+    fun dayNotInCommuteDays_resolveWidgetModeAndNextWindowBoundaryBothSkipIt() {
         val days = setOf(1, 2, 3, 4, 5) // Saturday (6) not enabled
-        assertEquals(
-            false,
-            isWithinSlotFetchWindow(todayIso = 6, nowMinuteOfDay = morningStart + 30, historyDays = days, slots = slots),
-        )
+
         assertEquals(
             WidgetMode.Calendar,
             resolveWidgetMode(
                 dayOfWeekIso = 6,
                 minuteOfDay = morningStart + 30,
-                historyDays = days,
+                commuteDays = days,
                 morningStart = morningStart,
                 morningEnd = morningEnd,
                 eveningStart = eveningStart,
                 eveningEnd = eveningEnd,
             ),
         )
+
+        // Saturday 2026-08-22, inside what would be the morning window on an enabled day.
+        val saturdayInsideWindow = ZonedDateTime.of(2026, 8, 22, morningStart / 60, morningStart % 60, 0, 0, zone)
+        val boundary = nextWindowBoundary(
+            now = saturdayInsideWindow,
+            commuteDays = days,
+            morningStart = morningStart,
+            morningEnd = morningEnd,
+            eveningStart = eveningStart,
+            eveningEnd = eveningEnd,
+        )
+        // Skips Saturday's own (disabled) boundaries entirely and jumps to Monday morning start.
+        assertEquals(morningStart, boundary!!.hour * 60 + boundary.minute)
+        assertEquals(DayOfWeek.MONDAY, boundary.dayOfWeek)
     }
 
     @Test
-    fun insideWindow_allThreeAgreeItIsActive() {
+    fun insideWindow_resolveWidgetModeAndNextWindowBoundaryAgreeItIsActive() {
         val minuteOfDay = morningStart + 30
-        assertTrue(isWithinSlotFetchWindow(todayIso = 1, nowMinuteOfDay = minuteOfDay, historyDays = weekdays, slots = slots))
+
         assertEquals(
             WidgetMode.Commute(Direction.TO_WORK),
             resolveWidgetMode(
                 dayOfWeekIso = 1,
                 minuteOfDay = minuteOfDay,
-                historyDays = weekdays,
+                commuteDays = weekdays,
                 morningStart = morningStart,
                 morningEnd = morningEnd,
                 eveningStart = eveningStart,
                 eveningEnd = eveningEnd,
             ),
         )
+
+        val boundary = nextWindowBoundary(
+            now = ZonedDateTime.of(2026, 8, 24, minuteOfDay / 60, minuteOfDay % 60, 0, 0, zone),
+            commuteDays = weekdays,
+            morningStart = morningStart,
+            morningEnd = morningEnd,
+            eveningStart = eveningStart,
+            eveningEnd = eveningEnd,
+        )
+        assertEquals(morningEnd, boundary!!.hour * 60 + boundary.minute)
     }
 }

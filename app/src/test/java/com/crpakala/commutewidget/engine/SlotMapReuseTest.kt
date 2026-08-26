@@ -7,10 +7,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Regression coverage for the v2 integration bug where a [RefreshTrigger.SLOT] fetch could reuse
- * a stale map image left over from a different destination (e.g. a favourite or calendar target)
- * simply because the home/work-by-time-of-day [Direction] happened to be unchanged. See
- * [shouldReuseSlotMap] for the fixed decision logic.
+ * Regression coverage for the v2 integration bug where a slot/tick-style fetch (v2-v4:
+ * `RefreshTrigger.SLOT`; v5: [RefreshTrigger.TICK]) could reuse a stale map image left over from a
+ * different destination simply because the home/work-by-time-of-day [Direction] happened to be
+ * unchanged. See [shouldReuseSlotMap] for the fixed decision logic, now serving
+ * [RefreshTrigger.TICK]'s v5 calendar-staleness role instead of the retired 10-minute
+ * history-sampling cadence.
  */
 class SlotMapReuseTest {
     private val direction = Direction.TO_WORK
@@ -31,8 +33,8 @@ class SlotMapReuseTest {
 
     @Test
     fun sameDirectionButDifferentDestination_doesNotReuseMap() {
-        // e.g. an active favourite occupied the previous SLOT fetch while the plain
-        // home/work-by-time-of-day direction stayed the same across both fetches.
+        // e.g. the resolved destination coordinates moved between fetches while the plain
+        // home/work-by-time-of-day direction stayed the same.
         assertFalse(
             shouldReuseSlotMap(
                 previousDirection = Direction.TO_WORK,

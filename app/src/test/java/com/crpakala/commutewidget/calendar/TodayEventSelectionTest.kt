@@ -75,6 +75,7 @@ class TodayEventSelectionTest {
         )
 
         assertEquals("Sooner", result?.title)
+        assertEquals(false, result?.preferredOverEarlierEvent)
     }
 
     @Test
@@ -89,6 +90,7 @@ class TodayEventSelectionTest {
         )
 
         assertEquals("Sooner", result?.title)
+        assertEquals(false, result?.preferredOverEarlierEvent)
     }
 
     @Test
@@ -103,6 +105,7 @@ class TodayEventSelectionTest {
         )
 
         assertEquals("Located soon after", result?.title)
+        assertEquals(true, result?.preferredOverEarlierEvent)
     }
 
     @Test
@@ -117,6 +120,7 @@ class TodayEventSelectionTest {
         )
 
         assertEquals("Located at boundary", result?.title)
+        assertEquals(true, result?.preferredOverEarlierEvent)
     }
 
     @Test
@@ -131,10 +135,11 @@ class TodayEventSelectionTest {
         )
 
         assertEquals("Unlocated first", result?.title)
+        assertEquals(false, result?.preferredOverEarlierEvent)
     }
 
     @Test
-    fun locatedCandidateStartsBeforeUnlocated_locatedWins() {
+    fun locatedCandidateStartsBeforeUnlocated_locatedWins_butIsNotFlaggedAsPreferred() {
         val result = selectTodayEvent(
             listOf(
                 row(title = "Unlocated later", location = null, beginEpochMillis = now + 10_000L),
@@ -144,7 +149,19 @@ class TodayEventSelectionTest {
             now,
         )
 
+        // The located event genuinely is the earliest here, so choosing it is not a reordering:
+        // the "Routed" caption must not fire for this case (see UX-AUDIT.md ruling f).
         assertEquals("Located earlier", result?.title)
+        assertEquals(false, result?.preferredOverEarlierEvent)
+    }
+
+    @Test
+    fun onlyOneCandidateAtAll_neverFlaggedAsPreferred() {
+        val locatedOnly = selectTodayEvent(listOf(row(location = "Cafe")), setOf(1L), now)
+        val unlocatedOnly = selectTodayEvent(listOf(row(location = null)), setOf(1L), now)
+
+        assertEquals(false, locatedOnly?.preferredOverEarlierEvent)
+        assertEquals(false, unlocatedOnly?.preferredOverEarlierEvent)
     }
 
     @Test

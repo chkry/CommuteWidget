@@ -33,7 +33,7 @@ class WindowBoundaryWorker(
         val settings = SettingsRepository.get(applicationContext).settingsSnapshot()
         val next = nextWindowBoundary(
             now = ZonedDateTime.now(),
-            historyDays = settings.historyDays,
+            commuteDays = settings.commuteDays,
             morningStart = settings.morningSlotStartMinuteOfDay,
             morningEnd = settings.morningSlotEndMinuteOfDay,
             eveningStart = settings.eveningSlotStartMinuteOfDay,
@@ -53,15 +53,15 @@ class WindowBoundaryWorker(
 
 /**
  * Pure computation of the next morning/evening window boundary instant - a window START or END
- * minute-of-day, whichever comes first - among enabled [historyDays]. If [now] falls on an
+ * minute-of-day, whichever comes first - among enabled [commuteDays]. If [now] falls on an
  * enabled day and a boundary remains later today, that is the result; otherwise the search
  * advances to the earliest boundary on the next enabled day, wrapping the week (e.g. Friday
  * evening end -> Monday morning start). Invalid windows (`start >= end`) contribute no
- * boundaries. Returns null when [historyDays] is empty or neither window is valid.
+ * boundaries. Returns null when [commuteDays] is empty or neither window is valid.
  */
 internal fun nextWindowBoundary(
     now: ZonedDateTime,
-    historyDays: Set<Int>,
+    commuteDays: Set<Int>,
     morningStart: Int,
     morningEnd: Int,
     eveningStart: Int,
@@ -77,12 +77,12 @@ internal fun nextWindowBoundary(
             add(eveningEnd)
         }
     }.distinct().sorted()
-    if (historyDays.isEmpty() || boundaries.isEmpty()) return null
+    if (commuteDays.isEmpty() || boundaries.isEmpty()) return null
 
     val todayIso = now.dayOfWeek.value
     val nowMinuteOfDay = now.hour * 60 + now.minute
 
-    if (todayIso in historyDays) {
+    if (todayIso in commuteDays) {
         val nextToday = boundaries.firstOrNull { it > nowMinuteOfDay }
         if (nextToday != null) {
             return atMinuteOfDay(now, nextToday)
@@ -91,7 +91,7 @@ internal fun nextWindowBoundary(
 
     for (offset in 1..7) {
         val candidateDay = now.plusDays(offset.toLong())
-        if (candidateDay.dayOfWeek.value in historyDays) {
+        if (candidateDay.dayOfWeek.value in commuteDays) {
             return atMinuteOfDay(candidateDay, boundaries.first())
         }
     }

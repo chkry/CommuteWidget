@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -23,25 +24,25 @@ private object PreferenceKeys {
     val TRAVEL_MODE = stringPreferencesKey("travel_mode")
     val SNAPSHOT_JSON = stringPreferencesKey("snapshot_json")
     val FAVOURITES_JSON = stringPreferencesKey("favourites_json")
-    val SHOW_FAVOURITE_CHIPS = booleanPreferencesKey("show_favourite_chips")
-    val FAVOURITE_WINDOW_MINUTES = intPreferencesKey("favourite_window_minutes")
     val LEAVE_BY_ENABLED = booleanPreferencesKey("leave_by_enabled")
     val ARRIVE_WORK_BY_MINUTE_OF_DAY = intPreferencesKey("arrive_work_by_minute_of_day")
     val ARRIVE_HOME_BY_MINUTE_OF_DAY = intPreferencesKey("arrive_home_by_minute_of_day")
     val CALENDAR_ENABLED = booleanPreferencesKey("calendar_enabled")
     val SELECTED_CALENDAR_IDS_JSON = stringPreferencesKey("selected_calendar_ids_json")
-    val HISTORY_ENABLED = booleanPreferencesKey("history_enabled")
+    // v5 renames historyDays -> commuteDays (it always gated commute windows, not just sampling);
+    // the stored key literal is kept exactly as-is so an existing owner's device data survives.
     val HISTORY_DAYS_JSON = stringPreferencesKey("history_days_json")
     val MORNING_SLOT_START_MINUTE_OF_DAY = intPreferencesKey("morning_slot_start_minute_of_day")
     val MORNING_SLOT_END_MINUTE_OF_DAY = intPreferencesKey("morning_slot_end_minute_of_day")
     val EVENING_SLOT_START_MINUTE_OF_DAY = intPreferencesKey("evening_slot_start_minute_of_day")
     val EVENING_SLOT_END_MINUTE_OF_DAY = intPreferencesKey("evening_slot_end_minute_of_day")
-    val ACTIVE_FAVOURITE_JSON = stringPreferencesKey("active_favourite_json")
     val LEAVE_BY_NOTIFIED_TO_WORK = stringPreferencesKey("leave_by_notified_to_work")
     val LEAVE_BY_NOTIFIED_TO_HOME = stringPreferencesKey("leave_by_notified_to_home")
     val EVENT_LEAVE_BY_BUFFER_MINUTES = intPreferencesKey("event_leave_by_buffer_minutes")
     val EVENT_REALTIME_THRESHOLD_MINUTES = intPreferencesKey("event_realtime_threshold_minutes")
     val EVENT_LEAVE_BY_NOTIFIED_KEY = stringPreferencesKey("event_leave_by_notified_key")
+    val CALENDAR_TICK_ENABLED = booleanPreferencesKey("calendar_tick_enabled")
+    val REFRESHING_SINCE_EPOCH_MILLIS = longPreferencesKey("refreshing_since_epoch_millis")
 }
 
 private fun Preferences.toAppSettings(): AppSettings {
@@ -51,8 +52,6 @@ private fun Preferences.toAppSettings(): AppSettings {
         work = decodePlace(this[PreferenceKeys.WORK_JSON]),
         travelMode = parseTravelMode(this[PreferenceKeys.TRAVEL_MODE]),
         favourites = decodeFavourites(this[PreferenceKeys.FAVOURITES_JSON]),
-        showFavouriteChips = this[PreferenceKeys.SHOW_FAVOURITE_CHIPS] ?: true,
-        favouriteWindowMinutes = this[PreferenceKeys.FAVOURITE_WINDOW_MINUTES] ?: 60,
         leaveByEnabled = this[PreferenceKeys.LEAVE_BY_ENABLED] ?: false,
         arriveWorkByMinuteOfDay = this[PreferenceKeys.ARRIVE_WORK_BY_MINUTE_OF_DAY] ?: 570,
         arriveHomeByMinuteOfDay = this[PreferenceKeys.ARRIVE_HOME_BY_MINUTE_OF_DAY] ?: 1170,
@@ -60,12 +59,12 @@ private fun Preferences.toAppSettings(): AppSettings {
         eventRealtimeThresholdMinutes = this[PreferenceKeys.EVENT_REALTIME_THRESHOLD_MINUTES] ?: 60,
         calendarEnabled = this[PreferenceKeys.CALENDAR_ENABLED] ?: false,
         selectedCalendarIds = decodeLongSet(this[PreferenceKeys.SELECTED_CALENDAR_IDS_JSON]),
-        historyEnabled = this[PreferenceKeys.HISTORY_ENABLED] ?: true,
-        historyDays = decodeIntSet(this[PreferenceKeys.HISTORY_DAYS_JSON], setOf(1, 2, 3, 4, 5)),
+        commuteDays = decodeIntSet(this[PreferenceKeys.HISTORY_DAYS_JSON], setOf(1, 2, 3, 4, 5)),
         morningSlotStartMinuteOfDay = this[PreferenceKeys.MORNING_SLOT_START_MINUTE_OF_DAY] ?: 420,
         morningSlotEndMinuteOfDay = this[PreferenceKeys.MORNING_SLOT_END_MINUTE_OF_DAY] ?: 600,
         eveningSlotStartMinuteOfDay = this[PreferenceKeys.EVENING_SLOT_START_MINUTE_OF_DAY] ?: 1020,
         eveningSlotEndMinuteOfDay = this[PreferenceKeys.EVENING_SLOT_END_MINUTE_OF_DAY] ?: 1200,
+        calendarTickEnabled = this[PreferenceKeys.CALENDAR_TICK_ENABLED] ?: true,
     )
 }
 
@@ -80,23 +79,24 @@ class SettingsRepository private constructor(
         decodeCommuteSnapshot(preferences[PreferenceKeys.SNAPSHOT_JSON])
     }
 
-    val activeFavouriteFlow: Flow<ActiveFavourite?> = dataStore.data.map { preferences ->
-        decodeActiveFavourite(preferences[PreferenceKeys.ACTIVE_FAVOURITE_JSON])
+    val refreshingSinceFlow: Flow<Long?> = dataStore.data.map { preferences ->
+        preferences[PreferenceKeys.REFRESHING_SINCE_EPOCH_MILLIS]
     }
 
     suspend fun settingsSnapshot(): AppSettings = settings.first()
 
     suspend fun snapshot(): CommuteSnapshot? = snapshotFlow.first()
 
-    suspend fun activeFavourite(nowEpochMillis: Long = System.currentTimeMillis()): ActiveFavourite? {
-        val stored = decodeActiveFavourite(
-            dataStore.data.first()[PreferenceKeys.ACTIVE_FAVOURITE_JSON],
-        ) ?: return null
-        if (isActive(stored, nowEpochMillis)) {
-            return stored
+    suspend fun refreshingSince(): Long? = refreshingSinceFlow.first()
+
+    suspend fun setRefreshing(inProgress: Boolean, nowEpochMillis: Long = System.currentTimeMillis()) {
+        dataStore.edit { preferences ->
+            if (inProgress) {
+                preferences[PreferenceKeys.REFRESHING_SINCE_EPOCH_MILLIS] = nowEpochMillis
+            } else {
+                preferences.remove(PreferenceKeys.REFRESHING_SINCE_EPOCH_MILLIS)
+            }
         }
-        clearActiveFavourite()
-        return null
     }
 
     suspend fun setApiKey(apiKey: String) {
@@ -127,18 +127,6 @@ class SettingsRepository private constructor(
         require(favourites.size <= 4) { "At most 4 favourites allowed" }
         dataStore.edit { preferences ->
             preferences[PreferenceKeys.FAVOURITES_JSON] = encodeFavourites(favourites)
-        }
-    }
-
-    suspend fun setShowFavouriteChips(show: Boolean) {
-        dataStore.edit { preferences ->
-            preferences[PreferenceKeys.SHOW_FAVOURITE_CHIPS] = show
-        }
-    }
-
-    suspend fun setFavouriteWindowMinutes(minutes: Int) {
-        dataStore.edit { preferences ->
-            preferences[PreferenceKeys.FAVOURITE_WINDOW_MINUTES] = minutes
         }
     }
 
@@ -184,15 +172,15 @@ class SettingsRepository private constructor(
         }
     }
 
-    suspend fun setHistoryEnabled(enabled: Boolean) {
+    suspend fun setCommuteDays(days: Set<Int>) {
         dataStore.edit { preferences ->
-            preferences[PreferenceKeys.HISTORY_ENABLED] = enabled
+            preferences[PreferenceKeys.HISTORY_DAYS_JSON] = encodeIntSet(days)
         }
     }
 
-    suspend fun setHistoryDays(days: Set<Int>) {
+    suspend fun setCalendarTickEnabled(enabled: Boolean) {
         dataStore.edit { preferences ->
-            preferences[PreferenceKeys.HISTORY_DAYS_JSON] = encodeIntSet(days)
+            preferences[PreferenceKeys.CALENDAR_TICK_ENABLED] = enabled
         }
     }
 
@@ -217,28 +205,6 @@ class SettingsRepository private constructor(
     suspend fun setEveningSlotEndMinuteOfDay(minuteOfDay: Int) {
         dataStore.edit { preferences ->
             preferences[PreferenceKeys.EVENING_SLOT_END_MINUTE_OF_DAY] = minuteOfDay
-        }
-    }
-
-    suspend fun setActiveFavourite(
-        favourite: Favourite,
-        windowMinutes: Int,
-        nowEpochMillis: Long = System.currentTimeMillis(),
-    ) {
-        val expiresAtEpochMillis = nowEpochMillis + windowMinutes * 60_000L
-        val active = ActiveFavourite(
-            favourite = favourite,
-            activatedAtEpochMillis = nowEpochMillis,
-            expiresAtEpochMillis = expiresAtEpochMillis,
-        )
-        dataStore.edit { preferences ->
-            preferences[PreferenceKeys.ACTIVE_FAVOURITE_JSON] = encodeActiveFavourite(active)
-        }
-    }
-
-    suspend fun clearActiveFavourite() {
-        dataStore.edit { preferences ->
-            preferences.remove(PreferenceKeys.ACTIVE_FAVOURITE_JSON)
         }
     }
 

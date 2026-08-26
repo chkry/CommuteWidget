@@ -1,6 +1,7 @@
 package com.crpakala.commutewidget.ui
 
 import android.Manifest
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -38,7 +39,6 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -54,6 +54,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
 import androidx.glance.appwidget.updateAll
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -69,8 +70,6 @@ import com.crpakala.commutewidget.data.SettingsRepository
 import com.crpakala.commutewidget.data.TravelMode
 import com.crpakala.commutewidget.calendar.CalendarReader
 import com.crpakala.commutewidget.calendar.DeviceCalendar
-import com.crpakala.commutewidget.history.DateCount
-import com.crpakala.commutewidget.history.HistoryStore
 import com.crpakala.commutewidget.schedule.CommuteScheduler
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -79,11 +78,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 @Composable
-fun CommuteWidgetApp(
-    showStats: Boolean,
-    onViewStats: () -> Unit,
-    onBackToSettings: () -> Unit,
-) {
+fun CommuteWidgetApp() {
     val context = LocalContext.current
     val darkTheme = androidx.compose.foundation.isSystemInDarkTheme()
     // minSdk 34 is always >= S (31), so dynamic color is unconditionally available.
@@ -91,16 +86,12 @@ fun CommuteWidgetApp(
     MaterialTheme(
         colorScheme = colors,
     ) {
-        if (showStats) {
-            StatsScreen(onBack = onBackToSettings)
-        } else {
-            SettingsScreen(onViewStats = onViewStats)
-        }
+        SettingsScreen()
     }
 }
 
 @Composable
-private fun SettingsScreen(onViewStats: () -> Unit) {
+private fun SettingsScreen() {
     val context = LocalContext.current
     val applicationContext = context.applicationContext
     val repository = remember { SettingsRepository.get(applicationContext) }
@@ -179,24 +170,11 @@ private fun SettingsScreen(onViewStats: () -> Unit) {
             item {
                 FavouritesSection(
                     favourites = settings.favourites,
-                    showChips = settings.showFavouriteChips,
-                    windowMinutes = settings.favouriteWindowMinutes,
+                    travelMode = settings.travelMode,
                     apiKey = settings.apiKey,
                     onSaveFavourites = { favourites ->
                         scope.launch {
                             repository.setFavourites(favourites)
-                            refreshWidget(applicationContext)
-                        }
-                    },
-                    onShowChipsChanged = { enabled ->
-                        scope.launch {
-                            repository.setShowFavouriteChips(enabled)
-                            refreshWidget(applicationContext)
-                        }
-                    },
-                    onWindowChanged = { minutes ->
-                        scope.launch {
-                            repository.setFavouriteWindowMinutes(minutes)
                             refreshWidget(applicationContext)
                         }
                     },
@@ -242,6 +220,7 @@ private fun SettingsScreen(onViewStats: () -> Unit) {
                 CalendarSection(
                     enabled = settings.calendarEnabled,
                     selectedIds = settings.selectedCalendarIds,
+                    calendarTickEnabled = settings.calendarTickEnabled,
                     onEnabledChanged = { enabled ->
                         scope.launch {
                             repository.setCalendarEnabled(enabled)
@@ -254,10 +233,17 @@ private fun SettingsScreen(onViewStats: () -> Unit) {
                             refreshWidget(applicationContext)
                         }
                     },
+                    onCalendarTickEnabledChanged = { enabled ->
+                        scope.launch {
+                            repository.setCalendarTickEnabled(enabled)
+                            CommuteScheduler.ensureScheduled(applicationContext)
+                            refreshWidget(applicationContext)
+                        }
+                    },
                 )
             }
             item {
-                HistorySection(
+                CommuteWindowsSection(
                     settings = settings,
                     onSettingsChange = { update ->
                         scope.launch {
@@ -266,7 +252,6 @@ private fun SettingsScreen(onViewStats: () -> Unit) {
                             refreshWidget(applicationContext)
                         }
                     },
-                    onViewStats = onViewStats,
                 )
             }
             item {
@@ -274,8 +259,7 @@ private fun SettingsScreen(onViewStats: () -> Unit) {
             }
             item {
                 Text(
-                    "The widget follows your commute windows; outside them it shows your next calendar event. " +
-                        "History collects every 10 minutes inside windows on selected days.",
+                    "The widget refreshes on tap, at window boundaries, and every 20 minutes while showing a routed event.",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -448,17 +432,18 @@ private fun TimePickerDialog(
 @Composable
 private fun FavouritesSection(
     favourites: List<Favourite>,
-    showChips: Boolean,
-    windowMinutes: Int,
+    travelMode: TravelMode,
     apiKey: String,
     onSaveFavourites: (List<Favourite>) -> Unit,
-    onShowChipsChanged: (Boolean) -> Unit,
-    onWindowChanged: (Int) -> Unit,
 ) {
     var adding by remember { mutableStateOf(false) }
-    var editWindow by remember { mutableStateOf(false) }
+    val context = LocalContext.current
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Favourites", style = MaterialTheme.typography.titleMedium)
+        Text("Saved places", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Saved places for quick navigation from here.",
+            style = MaterialTheme.typography.bodySmall,
+        )
         favourites.forEach { favourite ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -469,13 +454,16 @@ private fun FavouritesSection(
                     Text(favourite.place.address, style = MaterialTheme.typography.bodySmall)
                 }
                 TextButton(onClick = {
+                    launchNavigation(context, favourite.place, travelMode)
+                }) { Text("Navigate") }
+                TextButton(onClick = {
                     onSaveFavourites(favourites.filterNot { it.label == favourite.label })
-                }) { Text("Delete") }
+                }) { Text("Remove") }
             }
         }
         if (favourites.size < 4) {
             TextButton(onClick = { adding = !adding }) {
-                Text(if (adding) "Cancel adding favourite" else "Add favourite")
+                Text(if (adding) "Cancel adding place" else "Add saved place")
             }
         }
         if (adding) {
@@ -488,33 +476,6 @@ private fun FavouritesSection(
                 },
             )
         }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text("Show favourite chips on widget")
-            Switch(checked = showChips, onCheckedChange = onShowChipsChanged)
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth().clickable { editWindow = true }.padding(vertical = 12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text("Favourite active for")
-            Text("$windowMinutes min", color = MaterialTheme.colorScheme.primary)
-        }
-    }
-    if (editWindow) {
-        DurationDialog(
-            initialMinutes = windowMinutes,
-            title = "Favourite active for",
-            minMinutes = 15,
-            maxMinutes = 240,
-            onDismiss = { editWindow = false },
-            onSave = {
-                onWindowChanged(it)
-                editWindow = false
-            },
-        )
     }
 }
 
@@ -740,8 +701,10 @@ private fun DurationRow(label: String, minutes: Int, onClick: () -> Unit) {
 private fun CalendarSection(
     enabled: Boolean,
     selectedIds: Set<Long>,
+    calendarTickEnabled: Boolean,
     onEnabledChanged: (Boolean) -> Unit,
     onSelectedIdsChanged: (Set<Long>) -> Unit,
+    onCalendarTickEnabledChanged: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
     var permissionGranted by remember {
@@ -764,6 +727,16 @@ private fun CalendarSection(
                 onEnabledChanged(it)
                 if (it && !permissionGranted) permissionLauncher.launch(Manifest.permission.READ_CALENDAR)
             })
+        }
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Keep event ETA fresh")
+                Text(
+                    "Refreshes the next event's travel time every 20 minutes outside commute windows. Uses extra background data.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Switch(checked = calendarTickEnabled, onCheckedChange = onCalendarTickEnabledChanged)
         }
         if (enabled && !permissionGranted) {
             Text("Calendar permission needed", color = MaterialTheme.colorScheme.error)
@@ -797,106 +770,74 @@ private fun CalendarChoice(calendar: DeviceCalendar, checked: Boolean, onChecked
     }
 }
 
-private enum class HistoryTime { MORNING_START, MORNING_END, EVENING_START, EVENING_END }
+private enum class CommuteWindowTime { MORNING_START, MORNING_END, EVENING_START, EVENING_END }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun HistorySection(
+private fun CommuteWindowsSection(
     settings: AppSettings,
     onSettingsChange: (suspend (SettingsRepository) -> Unit) -> Unit,
-    onViewStats: () -> Unit,
 ) {
-    val context = LocalContext.current
-    val repository = remember { SettingsRepository.get(context.applicationContext) }
-    val history = remember { HistoryStore.get(context.applicationContext) }
-    val scope = rememberCoroutineScope()
-    var selectedTime by remember { mutableStateOf<HistoryTime?>(null) }
-    var expanded by remember { mutableStateOf(false) }
-    var total by remember { mutableStateOf<Long?>(null) }
-    var dates by remember { mutableStateOf<List<DateCount>>(emptyList()) }
-    var deleteDate by remember { mutableStateOf<DateCount?>(null) }
-    var clearAll by remember { mutableStateOf(false) }
+    var selectedTime by remember { mutableStateOf<CommuteWindowTime?>(null) }
     var validationError by remember { mutableStateOf<String?>(null) }
-
-    fun refreshHistoryCounts() {
-        scope.launch {
-            total = history.totalCount()
-            dates = history.datesWithData()
-        }
-    }
-    LaunchedEffect(expanded) { if (expanded) refreshHistoryCounts() }
 
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text("Commute windows", style = MaterialTheme.typography.titleMedium)
         Text(
-            "Inside a window the widget shows that commute and collects history every 10 minutes. " +
-                "Outside your windows it shows your next calendar event.",
+            "Inside a window the widget shows that commute. Outside your windows it shows your next calendar event.",
             style = MaterialTheme.typography.bodySmall,
         )
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Column(modifier = Modifier.weight(1f)) {
-                Text("Collect commute history")
+                Text("Commute days")
                 Text(
-                    "Widget modes still follow the windows when this is off",
+                    "Days the widget shows your To Work and To Home windows",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
-            Switch(checked = settings.historyEnabled, onCheckedChange = { enabled ->
-                onSettingsChange { it.setHistoryEnabled(enabled) }
-            })
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            listOf("M", "T", "W", "T", "F", "S", "S").forEachIndexed { index, label ->
-                val day = index + 1
-                FilterChip(
-                    selected = day in settings.historyDays,
-                    onClick = {
-                        val next = if (day in settings.historyDays) settings.historyDays - day else settings.historyDays + day
-                        onSettingsChange { it.setHistoryDays(next) }
-                    },
-                    label = { Text(label) },
-                )
-            }
-        }
-        TimeRow("To Work window start", settings.morningSlotStartMinuteOfDay) { selectedTime = HistoryTime.MORNING_START }
-        TimeRow("To Work window end", settings.morningSlotEndMinuteOfDay) { selectedTime = HistoryTime.MORNING_END }
-        TimeRow("To Home window start", settings.eveningSlotStartMinuteOfDay) { selectedTime = HistoryTime.EVENING_START }
-        TimeRow("To Home window end", settings.eveningSlotEndMinuteOfDay) { selectedTime = HistoryTime.EVENING_END }
-        validationError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-        Button(onClick = onViewStats) { Text("View commute stats") }
-        TextButton(onClick = { expanded = !expanded }) {
-            Text(if (expanded) "Hide data management" else "Data management")
-        }
-        if (expanded) {
-            Text("Total samples: ${total ?: "Loading..."}")
-            dates.forEach { date ->
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("${date.localDate}: ${date.sampleCount}")
-                    TextButton(onClick = { deleteDate = date }) { Text("Delete") }
+            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                listOf("M", "T", "W", "T", "F", "S", "S").forEachIndexed { index, label ->
+                    val day = index + 1
+                    FilterChip(
+                        selected = day in settings.commuteDays,
+                        onClick = {
+                            val next = if (day in settings.commuteDays) {
+                                settings.commuteDays - day
+                            } else {
+                                settings.commuteDays + day
+                            }
+                            onSettingsChange { it.setCommuteDays(next) }
+                        },
+                        label = { Text(label) },
+                    )
                 }
             }
-            Button(onClick = { clearAll = true }, enabled = (total ?: 0) > 0) { Text("Clear all history") }
         }
+        TimeRow("To Work window start", settings.morningSlotStartMinuteOfDay) { selectedTime = CommuteWindowTime.MORNING_START }
+        TimeRow("To Work window end", settings.morningSlotEndMinuteOfDay) { selectedTime = CommuteWindowTime.MORNING_END }
+        TimeRow("To Home window start", settings.eveningSlotStartMinuteOfDay) { selectedTime = CommuteWindowTime.EVENING_START }
+        TimeRow("To Home window end", settings.eveningSlotEndMinuteOfDay) { selectedTime = CommuteWindowTime.EVENING_END }
+        validationError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
     }
     selectedTime?.let { selection ->
         val current = when (selection) {
-            HistoryTime.MORNING_START -> settings.morningSlotStartMinuteOfDay
-            HistoryTime.MORNING_END -> settings.morningSlotEndMinuteOfDay
-            HistoryTime.EVENING_START -> settings.eveningSlotStartMinuteOfDay
-            HistoryTime.EVENING_END -> settings.eveningSlotEndMinuteOfDay
+            CommuteWindowTime.MORNING_START -> settings.morningSlotStartMinuteOfDay
+            CommuteWindowTime.MORNING_END -> settings.morningSlotEndMinuteOfDay
+            CommuteWindowTime.EVENING_START -> settings.eveningSlotStartMinuteOfDay
+            CommuteWindowTime.EVENING_END -> settings.eveningSlotEndMinuteOfDay
         }
         key(selection, current) {
             val picker = rememberTimePickerState(current / 60, current % 60, is24Hour = false)
             TimePickerDialog(picker, { selectedTime = null }) {
                 val minute = picker.hour * 60 + picker.minute
                 val valid = when (selection) {
-                    HistoryTime.MORNING_START -> minute < settings.morningSlotEndMinuteOfDay
-                    HistoryTime.MORNING_END -> settings.morningSlotStartMinuteOfDay < minute
-                    HistoryTime.EVENING_START -> minute < settings.eveningSlotEndMinuteOfDay
-                    HistoryTime.EVENING_END -> settings.eveningSlotStartMinuteOfDay < minute
+                    CommuteWindowTime.MORNING_START -> minute < settings.morningSlotEndMinuteOfDay
+                    CommuteWindowTime.MORNING_END -> settings.morningSlotStartMinuteOfDay < minute
+                    CommuteWindowTime.EVENING_START -> minute < settings.eveningSlotEndMinuteOfDay
+                    CommuteWindowTime.EVENING_END -> settings.eveningSlotStartMinuteOfDay < minute
                 }
                 if (!valid) {
-                    validationError = if (selection == HistoryTime.MORNING_START || selection == HistoryTime.MORNING_END) {
+                    validationError = if (selection == CommuteWindowTime.MORNING_START || selection == CommuteWindowTime.MORNING_END) {
                         "To Work window start must be before end"
                     } else {
                         "To Home window start must be before end"
@@ -905,50 +846,16 @@ private fun HistorySection(
                     validationError = null
                     onSettingsChange {
                         when (selection) {
-                            HistoryTime.MORNING_START -> it.setMorningSlotStartMinuteOfDay(minute)
-                            HistoryTime.MORNING_END -> it.setMorningSlotEndMinuteOfDay(minute)
-                            HistoryTime.EVENING_START -> it.setEveningSlotStartMinuteOfDay(minute)
-                            HistoryTime.EVENING_END -> it.setEveningSlotEndMinuteOfDay(minute)
+                            CommuteWindowTime.MORNING_START -> it.setMorningSlotStartMinuteOfDay(minute)
+                            CommuteWindowTime.MORNING_END -> it.setMorningSlotEndMinuteOfDay(minute)
+                            CommuteWindowTime.EVENING_START -> it.setEveningSlotStartMinuteOfDay(minute)
+                            CommuteWindowTime.EVENING_END -> it.setEveningSlotEndMinuteOfDay(minute)
                         }
                     }
                 }
                 selectedTime = null
             }
         }
-    }
-    deleteDate?.let { date ->
-        AlertDialog(
-            onDismissRequest = { deleteDate = null },
-            title = { Text("Delete history") },
-            text = { Text("Delete ${date.sampleCount} samples from `${date.localDate}`?") },
-            confirmButton = {
-                TextButton(onClick = {
-                    scope.launch {
-                        history.deleteDate(date.localDate)
-                        refreshHistoryCounts()
-                    }
-                    deleteDate = null
-                }) { Text("Delete") }
-            },
-            dismissButton = { TextButton(onClick = { deleteDate = null }) { Text("Cancel") } },
-        )
-    }
-    if (clearAll) {
-        AlertDialog(
-            onDismissRequest = { clearAll = false },
-            title = { Text("Clear all history") },
-            text = { Text("Delete all collected commute samples?") },
-            confirmButton = {
-                TextButton(onClick = {
-                    scope.launch {
-                        history.clearAll()
-                        refreshHistoryCounts()
-                    }
-                    clearAll = false
-                }) { Text("Clear all") }
-            },
-            dismissButton = { TextButton(onClick = { clearAll = false }) { Text("Cancel") } },
-        )
     }
 }
 
@@ -1011,6 +918,33 @@ private fun LocationPermissionSection() {
             ) {
                 Text("Allow all the time in settings")
             }
+        }
+    }
+}
+
+private fun launchNavigation(context: android.content.Context, place: Place, travelMode: TravelMode) {
+    val mode = when (travelMode) {
+        TravelMode.DRIVE -> "d"
+        TravelMode.TWO_WHEELER -> "l"
+    }
+    val coordinate = "${place.lat},${place.lng}"
+    val mapsIntent = Intent(
+        Intent.ACTION_VIEW,
+        "google.navigation:q=$coordinate&mode=$mode".toUri(),
+    ).apply {
+        setPackage("com.google.android.apps.maps")
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    try {
+        context.startActivity(mapsIntent)
+    } catch (_: ActivityNotFoundException) {
+        val geoIntent = Intent(Intent.ACTION_VIEW, "geo:$coordinate".toUri()).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        try {
+            context.startActivity(geoIntent)
+        } catch (_: ActivityNotFoundException) {
+            // No compatible maps application is installed.
         }
     }
 }

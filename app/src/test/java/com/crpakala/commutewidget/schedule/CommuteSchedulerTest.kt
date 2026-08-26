@@ -19,9 +19,9 @@ class CommuteSchedulerTest {
     private val eveningStart = 1020
     private val eveningEnd = 1200
 
-    private fun boundary(now: ZonedDateTime, historyDays: Set<Int> = weekdays) = nextWindowBoundary(
+    private fun boundary(now: ZonedDateTime, commuteDays: Set<Int> = weekdays) = nextWindowBoundary(
         now = now,
-        historyDays = historyDays,
+        commuteDays = commuteDays,
         morningStart = morningStart,
         morningEnd = morningEnd,
         eveningStart = eveningStart,
@@ -71,15 +71,15 @@ class CommuteSchedulerTest {
     }
 
     @Test
-    fun emptyHistoryDays_returnsNull() {
-        assertNull(boundary(at(2026, 8, 24, 8, 0), historyDays = emptySet()))
+    fun emptyCommuteDays_returnsNull() {
+        assertNull(boundary(at(2026, 8, 24, 8, 0), commuteDays = emptySet()))
     }
 
     @Test
     fun bothWindowsInvalid_returnsNull() {
         val result = nextWindowBoundary(
             now = at(2026, 8, 24, 8, 0),
-            historyDays = weekdays,
+            commuteDays = weekdays,
             morningStart = 420,
             morningEnd = 420,
             eveningStart = 1200,
@@ -94,7 +94,7 @@ class CommuteSchedulerTest {
         // Morning 420..700 and evening 500..1200 overlap; boundaries are 420, 500, 700, 1200.
         val result = nextWindowBoundary(
             now = at(2026, 8, 24, 8, 0), // 480 minutes: past 420, before 500
-            historyDays = weekdays,
+            commuteDays = weekdays,
             morningStart = 420,
             morningEnd = 700,
             eveningStart = 500,
@@ -105,11 +105,11 @@ class CommuteSchedulerTest {
     }
 
     @Test
-    fun dayNotInHistoryDays_isSkippedEntirely() {
+    fun dayNotInCommuteDays_isSkippedEntirely() {
         val days = setOf(1, 2, 4, 5) // Wednesday (3) excluded
         val now = at(2026, 8, 26, 8, 0) // Wednesday, would otherwise be inside the morning window
 
-        assertEquals(at(2026, 8, 27, 7, 0), boundary(now, historyDays = days)) // Thursday morning start
+        assertEquals(at(2026, 8, 27, 7, 0), boundary(now, commuteDays = days)) // Thursday morning start
     }
 
     @Test

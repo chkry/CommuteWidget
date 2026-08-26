@@ -250,11 +250,19 @@ internal fun selectTodayEvent(
         else -> earliestUnlocated
     } ?: return null
 
+    // FIX-9: only true when the located candidate was chosen *and* it actually started later
+    // than the unlocated one - i.e. an actual reordering happened, not just "located happened to
+    // be earliest anyway" (see locatedCandidateStartsBeforeUnlocated_locatedWins in the test).
+    val preferredOverEarlierEvent = chosen == earliestLocated &&
+        earliestUnlocated != null &&
+        earliestLocated.beginEpochMillis > earliestUnlocated.beginEpochMillis
+
     return TodayEvent(
         title = chosen.title?.trim().takeUnless { it.isNullOrEmpty() } ?: "Event",
         location = chosen.location?.trim().takeUnless { it.isNullOrEmpty() },
         startEpochMillis = chosen.beginEpochMillis,
         endEpochMillis = chosen.endEpochMillis,
+        preferredOverEarlierEvent = preferredOverEarlierEvent,
     )
 }
 

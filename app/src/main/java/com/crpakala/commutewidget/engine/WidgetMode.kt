@@ -15,20 +15,20 @@ sealed class WidgetMode {
 /**
  * Resolves the v3 window model. Inside the morning window on an enabled day is the To Work
  * commute; inside the evening window is the To Home commute; everything else - including a day
- * not present in [historyDays] at all - is calendar mode. Overlapping windows resolve to the
+ * not present in [commuteDays] at all - is calendar mode. Overlapping windows resolve to the
  * morning commute (checked first). A window with `start >= end` is treated as absent, matching
  * the existing slot-tick invalid-range convention.
  */
 internal fun resolveWidgetMode(
     dayOfWeekIso: Int,
     minuteOfDay: Int,
-    historyDays: Set<Int>,
+    commuteDays: Set<Int>,
     morningStart: Int,
     morningEnd: Int,
     eveningStart: Int,
     eveningEnd: Int,
 ): WidgetMode {
-    if (dayOfWeekIso !in historyDays) {
+    if (dayOfWeekIso !in commuteDays) {
         return WidgetMode.Calendar
     }
     if (morningStart < morningEnd && minuteOfDay in morningStart until morningEnd) {
@@ -41,6 +41,18 @@ internal fun resolveWidgetMode(
 }
 
 /**
+ * v5: destination resolution is purely this two-way [WidgetMode] split now that the favourite
+ * override precedence is gone (see UX-AUDIT.md ruling d) - commute mode always uses its own
+ * direction, calendar mode falls back to the next upcoming window's direction, or
+ * [Direction.TO_WORK] when none remains today or on any enabled day.
+ */
+internal fun resolveDirectionForSnapshot(widgetMode: WidgetMode, nextWindowDirection: Direction?): Direction =
+    when (widgetMode) {
+        is WidgetMode.Commute -> widgetMode.direction
+        WidgetMode.Calendar -> nextWindowDirection ?: Direction.TO_WORK
+    }
+
+/**
  * The next upcoming To Work / To Home window start, carrying enough information to populate a
  * quiet calendar-mode card ("Next: To Work at 7:00 am") when no calendar event remains today.
  */
@@ -49,21 +61,21 @@ internal data class NextWindow(val direction: Direction, val startMinuteOfDay: I
 }
 
 /**
- * Pure computation of the next To Work / To Home window start across [historyDays], searching
+ * Pure computation of the next To Work / To Home window start across [commuteDays], searching
  * forward from ([dayOfWeekIso], [minuteOfDay]) and wrapping the week (e.g. Friday evening ->
- * Monday morning). Invalid windows (`start >= end`) are excluded. Returns null when [historyDays]
+ * Monday morning). Invalid windows (`start >= end`) are excluded. Returns null when [commuteDays]
  * is empty or neither window is valid.
  */
 internal fun nextWindow(
     dayOfWeekIso: Int,
     minuteOfDay: Int,
-    historyDays: Set<Int>,
+    commuteDays: Set<Int>,
     morningStart: Int,
     morningEnd: Int,
     eveningStart: Int,
     eveningEnd: Int,
 ): NextWindow? {
-    if (historyDays.isEmpty()) return null
+    if (commuteDays.isEmpty()) return null
 
     val windows = buildList {
         if (morningStart < morningEnd) add(NextWindow(Direction.TO_WORK, morningStart))
@@ -71,14 +83,14 @@ internal fun nextWindow(
     }.sortedBy { it.startMinuteOfDay }
     if (windows.isEmpty()) return null
 
-    if (dayOfWeekIso in historyDays) {
+    if (dayOfWeekIso in commuteDays) {
         val todayCandidate = windows.firstOrNull { it.startMinuteOfDay > minuteOfDay }
         if (todayCandidate != null) return todayCandidate
     }
 
     for (offset in 1..7) {
         val candidateDayIso = ((dayOfWeekIso - 1 + offset) % 7) + 1
-        if (candidateDayIso in historyDays) {
+        if (candidateDayIso in commuteDays) {
             return windows.first()
         }
     }

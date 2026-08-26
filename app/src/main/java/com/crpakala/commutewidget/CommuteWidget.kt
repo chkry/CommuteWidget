@@ -22,7 +22,6 @@ import androidx.glance.ImageProvider
 import androidx.glance.LocalContext
 import androidx.glance.LocalSize
 import androidx.glance.action.ActionParameters
-import androidx.glance.action.actionParametersOf
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetReceiver
@@ -53,12 +52,11 @@ import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import com.crpakala.commutewidget.data.CommuteSnapshot
 import com.crpakala.commutewidget.data.Direction
-import com.crpakala.commutewidget.data.Favourite
 import com.crpakala.commutewidget.data.SettingsRepository
 import com.crpakala.commutewidget.data.SnapshotMode
 import com.crpakala.commutewidget.data.TravelMode
+import com.crpakala.commutewidget.data.isRefreshingActive
 import com.crpakala.commutewidget.engine.CommuteRefresher
-import com.crpakala.commutewidget.engine.RefreshTrigger
 import com.crpakala.commutewidget.engine.mapInSampleSize
 import com.crpakala.commutewidget.schedule.CommuteScheduler
 import java.io.File
@@ -72,11 +70,14 @@ private val WIDE_BREAKPOINT = DpSize(220.dp, 110.dp)
 private val LARGE_BREAKPOINT = DpSize(220.dp, 220.dp)
 private const val MAP_DECODE_MAX_EDGE = 1200
 private val LEAVE_BY_LATE_COLOR = Color(0xFFEA4335)
+internal const val ETA_PENDING_ALPHA = 0.45f
+internal const val ETA_STALE_AFTER_MILLIS = 10L * 60L * 1000L
 
-/** WIDE shows at most 2 chips in the bottom row of the info panel; more would be unreadable. */
-internal const val WIDE_MAX_FAVOURITE_CHIPS = 2
-
-internal val FavouriteLabelKey = ActionParameters.Key<String>("favourite_label")
+internal enum class EtaDisplayState {
+    PENDING,
+    STALE,
+    FRESH,
+}
 
 class CommuteWidget : GlanceAppWidget() {
     override val sizeMode: SizeMode = SizeMode.Responsive(
@@ -92,7 +93,7 @@ class CommuteWidget : GlanceAppWidget() {
         val now = ZonedDateTime.now()
         val nowMinuteOfDay = now.hour * 60 + now.minute
         val configured = settings.apiKey.isNotBlank() && settings.home != null && settings.work != null
-        val activeFavourite = repo.activeFavourite(nowEpochMillis)
+        val refreshingSince = repo.refreshingSince()
 
         val colors = ColorProviders(
             light = dynamicLightColorScheme(context),
@@ -108,9 +109,7 @@ class CommuteWidget : GlanceAppWidget() {
                         nowEpochMillis = nowEpochMillis,
                         nowMinuteOfDay = nowMinuteOfDay,
                         leaveByEnabled = settings.leaveByEnabled,
-                        showFavouriteChips = settings.showFavouriteChips,
-                        favourites = settings.favourites,
-                        activeFavouriteLabel = activeFavourite?.favourite?.label,
+                        refreshingSince = refreshingSince,
                     ),
                 )
             }
@@ -166,46 +165,20 @@ class NavigateAction : ActionCallback {
     }
 }
 
-class FavouriteAction : ActionCallback {
-    override suspend fun onAction(
-        context: Context,
-        glanceId: GlanceId,
-        parameters: ActionParameters,
-    ) {
-        val label = parameters[FavouriteLabelKey] ?: return
-        val repo = SettingsRepository.get(context)
-        val settings = repo.settingsSnapshot()
-        val nowEpochMillis = System.currentTimeMillis()
-        val active = repo.activeFavourite(nowEpochMillis)
-        if (active != null && active.favourite.label == label) {
-            repo.clearActiveFavourite()
-        } else {
-            val favourite = settings.favourites.firstOrNull { it.label == label } ?: return
-            repo.setActiveFavourite(favourite, settings.favouriteWindowMinutes, nowEpochMillis)
-        }
-        CommuteRefresher.refreshNow(context, RefreshTrigger.TAP)
-    }
-}
-
 private data class WidgetExtras(
     val nowEpochMillis: Long,
     val nowMinuteOfDay: Int,
     val leaveByEnabled: Boolean,
-    val showFavouriteChips: Boolean,
-    val favourites: List<Favourite>,
-    val activeFavouriteLabel: String?,
+    val refreshingSince: Long?,
 )
 
 private data class InfoStyle(
     val destinationFontSize: TextUnit,
     val etaFontSize: TextUnit,
-    val captionFontSize: TextUnit,
-    val showDistance: Boolean,
-    val showTrafficBar: Boolean,
+    val leaveByFontSize: TextUnit,
     val inlineEta: Boolean,
-    // WIDE renders the leave-by as an overlay pill on the map instead of a panel line;
-    // the 40% info panel is too narrow for the full "Leave by h:mm am" string.
-    val showLeaveBy: Boolean = true,
+    /** FIX-9: WIDE and LARGE show the "Routed" caption when applicable; SMALL skips it for space. */
+    val showRoutedCaption: Boolean,
 )
 
 @Composable
@@ -273,6 +246,10 @@ private fun ConfiguredContent(
     mapBitmap: Bitmap?,
     extras: WidgetExtras,
 ) {
+    if (snapshot.mode == SnapshotMode.CALENDAR_EMPTY) {
+        CalendarEmptyCard(modifier, snapshot)
+        return
+    }
     val size = LocalSize.current
     when {
         size.width >= LARGE_BREAKPOINT.width && size.height >= LARGE_BREAKPOINT.height -> {
@@ -294,44 +271,29 @@ private fun SmallLayout(
     extras: WidgetExtras,
 ) {
     val accent = trafficAccentColor(snapshot.durationSeconds, snapshot.durationNoTrafficSeconds)
-    val quiet = snapshot.mode == SnapshotMode.CALENDAR_EMPTY
     Column(
         modifier = modifier.padding(8.dp).clickable(actionRunCallback<RefreshAction>()),
         verticalAlignment = Alignment.Vertical.CenterVertically,
         horizontalAlignment = Alignment.Horizontal.Start,
     ) {
-        ModeInfo(
+        RoutedInfo(
             snapshot = snapshot,
             extras = extras,
             accent = accent,
             style = InfoStyle(
-                destinationFontSize = 12.sp,
-                etaFontSize = 22.sp,
-                captionFontSize = 10.sp,
-                showDistance = false,
-                showTrafficBar = snapshot.mode == SnapshotMode.COMMUTE,
+                destinationFontSize = 11.sp,
+                etaFontSize = 24.sp,
+                leaveByFontSize = 11.sp,
                 inlineEta = false,
+                showRoutedCaption = false,
             ),
         )
-        if (!quiet) {
-            Spacer(modifier = GlanceModifier.height(4.dp))
-            Row(
-                modifier = GlanceModifier.fillMaxWidth(),
-                verticalAlignment = Alignment.Vertical.CenterVertically,
-            ) {
-                UpdatedText(snapshot, extras, GlanceModifier.defaultWeight())
-                if (snapshot.lastFetchFailed) {
-                    WarningGlyph()
-                }
-                Text(
-                    text = "📍",
-                    style = TextStyle(fontSize = 14.sp),
-                    modifier = GlanceModifier.clickable(actionRunCallback<NavigateAction>()).padding(2.dp),
-                )
-            }
-        } else if (snapshot.lastFetchFailed) {
-            WarningGlyph()
-        }
+        Spacer(modifier = GlanceModifier.height(4.dp))
+        Text(
+            text = "📍",
+            style = TextStyle(fontSize = 14.sp),
+            modifier = GlanceModifier.clickable(actionRunCallback<NavigateAction>()).padding(2.dp),
+        )
     }
 }
 
@@ -343,84 +305,37 @@ private fun WideLayout(
     extras: WidgetExtras,
 ) {
     val accent = trafficAccentColor(snapshot.durationSeconds, snapshot.durationNoTrafficSeconds)
-    val showChips = shouldShowFavouriteChips(extras)
-    val quiet = snapshot.mode == SnapshotMode.CALENDAR_EMPTY
     val infoWidth = LocalSize.current.width * 0.4f
-    val mapAction = if (quiet) {
-        actionRunCallback<RefreshAction>()
-    } else {
-        actionRunCallback<NavigateAction>()
-    }
     Row(modifier = modifier) {
         Column(
             modifier = GlanceModifier
                 .width(infoWidth)
                 .fillMaxHeight()
-                .padding(8.dp)
+                .padding(10.dp)
                 .clickable(actionRunCallback<RefreshAction>()),
-            verticalAlignment = if (showChips || snapshot.mode != SnapshotMode.COMMUTE) {
-                Alignment.Vertical.Top
-            } else {
-                Alignment.Vertical.CenterVertically
-            },
+            verticalAlignment = Alignment.Vertical.CenterVertically,
         ) {
-            ModeInfo(
+            RoutedInfo(
                 snapshot = snapshot,
                 extras = extras,
                 accent = accent,
                 style = InfoStyle(
-                    destinationFontSize = 12.sp,
-                    etaFontSize = 20.sp,
-                    captionFontSize = 10.sp,
-                    showDistance = !quiet,
-                    showTrafficBar = snapshot.mode == SnapshotMode.COMMUTE,
+                    destinationFontSize = 11.sp,
+                    etaFontSize = 28.sp,
+                    leaveByFontSize = 12.sp,
                     inlineEta = false,
-                    showLeaveBy = false,
+                    showRoutedCaption = true,
                 ),
             )
-            if (!quiet) {
-                Spacer(modifier = GlanceModifier.height(4.dp))
-                Row(verticalAlignment = Alignment.Vertical.CenterVertically) {
-                    UpdatedText(snapshot, extras, GlanceModifier.defaultWeight())
-                    if (snapshot.lastFetchFailed) {
-                        WarningGlyph()
-                    }
-                }
-            } else if (snapshot.lastFetchFailed) {
-                WarningGlyph()
-            }
-            if (showChips) {
-                Spacer(modifier = GlanceModifier.defaultWeight())
-                FavouriteChipRow(
-                    favourites = extras.favourites,
-                    activeLabel = extras.activeFavouriteLabel,
-                    maxChips = WIDE_MAX_FAVOURITE_CHIPS,
-                    expandChips = true,
-                    opaqueContainer = false,
-                )
-            }
         }
-        Box(
+        MapPane(
+            snapshot = snapshot,
+            bitmap = mapBitmap,
             modifier = GlanceModifier
                 .defaultWeight()
                 .fillMaxHeight()
-                .clickable(mapAction),
-            contentAlignment = Alignment.BottomStart,
-        ) {
-            MapPane(
-                snapshot = snapshot,
-                bitmap = mapBitmap,
-                modifier = GlanceModifier.fillMaxSize(),
-            )
-            // The 40% info panel is too narrow for the leave-by string on this size, so it
-            // rides on the map as an overlay pill. Only over a real map image: the no-map
-            // placeholder already carries a "Leave by" text line of its own.
-            if (mapBitmap != null && shouldShowLeaveBy(snapshot, extras.leaveByEnabled)) {
-                Box(modifier = GlanceModifier.padding(6.dp)) {
-                    LeaveByChip(snapshot.leaveByMinuteOfDay!!, extras.nowMinuteOfDay, 10.sp)
-                }
-            }
-        }
+                .clickable(actionRunCallback<NavigateAction>()),
+        )
     }
 }
 
@@ -432,13 +347,6 @@ private fun LargeLayout(
     extras: WidgetExtras,
 ) {
     val accent = trafficAccentColor(snapshot.durationSeconds, snapshot.durationNoTrafficSeconds)
-    val showChips = shouldShowFavouriteChips(extras)
-    val quiet = snapshot.mode == SnapshotMode.CALENDAR_EMPTY
-    val mapAction = if (quiet) {
-        actionRunCallback<RefreshAction>()
-    } else {
-        actionRunCallback<NavigateAction>()
-    }
     Box(modifier = modifier) {
         MapPane(
             snapshot = snapshot,
@@ -446,7 +354,7 @@ private fun LargeLayout(
             modifier = GlanceModifier.fillMaxSize(),
         )
         Column(modifier = GlanceModifier.fillMaxSize()) {
-            Row(
+            Column(
                 modifier = GlanceModifier
                     .fillMaxWidth()
                     .padding(8.dp)
@@ -454,43 +362,102 @@ private fun LargeLayout(
                     .cornerRadius(20.dp)
                     .padding(horizontal = 12.dp, vertical = 8.dp)
                     .clickable(actionRunCallback<RefreshAction>()),
-                verticalAlignment = Alignment.Vertical.CenterVertically,
             ) {
-                Column(modifier = GlanceModifier.defaultWeight()) {
-                    ModeInfo(
-                        snapshot = snapshot,
-                        extras = extras,
-                        accent = accent,
-                        style = InfoStyle(
-                            destinationFontSize = 14.sp,
-                            etaFontSize = 14.sp,
-                            captionFontSize = 10.sp,
-                            showDistance = false,
-                            showTrafficBar = false,
-                            inlineEta = snapshot.mode != SnapshotMode.CALENDAR_EMPTY,
-                        ),
-                    )
-                    if (!quiet) {
-                        UpdatedText(snapshot, extras, GlanceModifier)
-                    }
-                }
-                if (snapshot.lastFetchFailed) {
-                    WarningGlyph()
-                }
+                RoutedInfo(
+                    snapshot = snapshot,
+                    extras = extras,
+                    accent = accent,
+                    style = InfoStyle(
+                        destinationFontSize = 16.sp,
+                        etaFontSize = 16.sp,
+                        leaveByFontSize = 11.sp,
+                        inlineEta = true,
+                        showRoutedCaption = true,
+                    ),
+                )
             }
             Spacer(
                 modifier = GlanceModifier
                     .defaultWeight()
                     .fillMaxWidth()
-                    .clickable(mapAction),
+                    .clickable(actionRunCallback<NavigateAction>()),
             )
-            if (showChips) {
-                FavouriteChipRow(
-                    favourites = extras.favourites,
-                    activeLabel = extras.activeFavouriteLabel,
-                    maxChips = extras.favourites.size,
-                    expandChips = false,
-                    opaqueContainer = true,
+        }
+    }
+}
+
+@Composable
+private fun CalendarEmptyCard(
+    modifier: GlanceModifier,
+    snapshot: CommuteSnapshot,
+) {
+    Box(
+        modifier = modifier.clickable(actionRunCallback<RefreshAction>()).padding(12.dp),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        when (calendarEmptyCase(snapshot)) {
+            CalendarEmptyCase.UNLOCATED_EVENT -> {
+                Column {
+                    Text(
+                        text = calendarEventTitle(snapshot.destinationLabel),
+                        style = TextStyle(
+                            color = GlanceTheme.colors.onSurface,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium,
+                        ),
+                        maxLines = 1,
+                    )
+                    Text(
+                        text = formatEventClockTime(snapshot.eventStartEpochMillis!!),
+                        style = TextStyle(
+                            color = GlanceTheme.colors.onSurface,
+                            fontSize = 28.sp,
+                            fontWeight = FontWeight.Bold,
+                        ),
+                        maxLines = 1,
+                    )
+                }
+            }
+            CalendarEmptyCase.NEXT_WINDOW -> {
+                Column {
+                    Text(
+                        text = "Next up",
+                        style = TextStyle(
+                            color = GlanceTheme.colors.onSurfaceVariant,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                        ),
+                        maxLines = 1,
+                    )
+                    Text(
+                        text = snapshot.nextWindowLabel!!,
+                        style = TextStyle(
+                            color = GlanceTheme.colors.onSurface,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Medium,
+                        ),
+                        maxLines = 1,
+                    )
+                    Text(
+                        text = formatClockTime(snapshot.nextWindowStartMinuteOfDay!!),
+                        style = TextStyle(
+                            color = GlanceTheme.colors.onSurface,
+                            fontSize = 28.sp,
+                            fontWeight = FontWeight.Bold,
+                        ),
+                        maxLines = 1,
+                    )
+                }
+            }
+            CalendarEmptyCase.NONE -> {
+                Text(
+                    text = "No commute or events scheduled",
+                    style = TextStyle(
+                        color = GlanceTheme.colors.onSurface,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                    ),
+                    maxLines = 3,
                 )
             }
         }
@@ -498,111 +465,28 @@ private fun LargeLayout(
 }
 
 @Composable
-private fun ModeInfo(
+private fun RoutedInfo(
     snapshot: CommuteSnapshot,
     extras: WidgetExtras,
     accent: Color,
     style: InfoStyle,
 ) {
-    when (snapshot.mode) {
-        SnapshotMode.COMMUTE -> CommuteInfo(snapshot, extras, accent, style)
-        SnapshotMode.CALENDAR_EVENT -> CalendarEventInfo(snapshot, extras, accent, style)
-        SnapshotMode.CALENDAR_EMPTY -> CalendarEmptyInfo(snapshot, style)
+    val title = when (snapshot.mode) {
+        SnapshotMode.COMMUTE -> destinationDisplayLabel(snapshot.direction, snapshot.destinationLabel)
+        SnapshotMode.CALENDAR_EVENT -> calendarEventTitle(snapshot.destinationLabel)
+        SnapshotMode.CALENDAR_EMPTY -> calendarEventTitle(snapshot.destinationLabel)
     }
-}
-
-@Composable
-private fun CommuteInfo(
-    snapshot: CommuteSnapshot,
-    extras: WidgetExtras,
-    accent: Color,
-    style: InfoStyle,
-) {
-    val title = destinationDisplayLabel(snapshot.direction, snapshot.destinationLabel)
     if (style.inlineEta) {
-        InlineTitleEta(title, snapshot, accent, style.etaFontSize)
+        InlineTitleEta(title, snapshot, extras, accent, style.etaFontSize)
     } else {
-        DestinationLabelText(title, style.destinationFontSize)
-        EtaText(snapshot, accent, style.etaFontSize)
+        DestinationLine(title, style.destinationFontSize, snapshot.lastFetchFailed)
+        EtaText(snapshot, extras, accent, style.etaFontSize)
     }
-    if (style.showDistance) {
-        DistanceText(snapshot.distanceMeters)
+    if (shouldShowRoutedCaption(snapshot, style.showRoutedCaption)) {
+        RoutedCaption()
     }
-    if (style.showTrafficBar) {
-        TrafficBar(accent)
-    }
-    if (style.showLeaveBy && shouldShowLeaveBy(snapshot, extras.leaveByEnabled)) {
-        Spacer(modifier = GlanceModifier.height(2.dp))
-        LeaveByChip(snapshot.leaveByMinuteOfDay!!, extras.nowMinuteOfDay, style.captionFontSize)
-    }
-}
-
-@Composable
-private fun CalendarEventInfo(
-    snapshot: CommuteSnapshot,
-    extras: WidgetExtras,
-    accent: Color,
-    style: InfoStyle,
-) {
-    CaptionText("Next event", style.captionFontSize)
-    val title = calendarEventTitle(snapshot.destinationLabel)
-    if (style.inlineEta) {
-        InlineTitleEta(title, snapshot, accent, style.etaFontSize)
-    } else {
-        EventTitleText(title, style.destinationFontSize)
-        EtaText(snapshot, accent, style.etaFontSize)
-    }
-    snapshot.eventStartEpochMillis?.let { start ->
-        CaptionText(formatEventAtTime(start), style.captionFontSize)
-    }
-    if (style.showLeaveBy && shouldShowLeaveBy(snapshot, extras.leaveByEnabled)) {
-        Spacer(modifier = GlanceModifier.height(2.dp))
-        LeaveByChip(snapshot.leaveByMinuteOfDay!!, extras.nowMinuteOfDay, style.captionFontSize)
-    }
-    if (style.showDistance) {
-        DistanceText(snapshot.distanceMeters)
-    }
-    if (style.showTrafficBar) {
-        TrafficBar(accent)
-    }
-}
-
-@Composable
-private fun CalendarEmptyInfo(
-    snapshot: CommuteSnapshot,
-    style: InfoStyle,
-) {
-    when (calendarEmptyCase(snapshot)) {
-        CalendarEmptyCase.UNLOCATED_EVENT -> {
-            CaptionText("Next event", style.captionFontSize)
-            EventTitleText(calendarEventTitle(snapshot.destinationLabel), style.destinationFontSize)
-            CaptionText(formatEventAtTime(snapshot.eventStartEpochMillis!!), style.captionFontSize)
-        }
-        CalendarEmptyCase.NEXT_WINDOW -> {
-            Text(
-                text = formatNextWindowLine(
-                    snapshot.nextWindowLabel!!,
-                    snapshot.nextWindowStartMinuteOfDay!!,
-                ),
-                style = TextStyle(
-                    color = GlanceTheme.colors.onSurface,
-                    fontSize = style.destinationFontSize,
-                    fontWeight = FontWeight.Medium,
-                ),
-                maxLines = 2,
-            )
-        }
-        CalendarEmptyCase.NONE -> {
-            Text(
-                text = "No commute or events scheduled",
-                style = TextStyle(
-                    color = GlanceTheme.colors.onSurface,
-                    fontSize = style.destinationFontSize,
-                    fontWeight = FontWeight.Medium,
-                ),
-                maxLines = 3,
-            )
-        }
+    if (shouldShowLeaveBy(snapshot, extras.leaveByEnabled)) {
+        LeaveByLine(snapshot.leaveByMinuteOfDay!!, extras.nowMinuteOfDay, style.leaveByFontSize)
     }
 }
 
@@ -610,68 +494,63 @@ private fun CalendarEmptyInfo(
 private fun InlineTitleEta(
     title: String,
     snapshot: CommuteSnapshot,
+    extras: WidgetExtras,
     accent: Color,
     fontSize: TextUnit,
 ) {
-    Text(
-        text = "$title  ${formatEta(snapshot.durationSeconds)}",
-        style = TextStyle(
-            color = ColorProvider(accent),
-            fontSize = fontSize,
-            fontWeight = FontWeight.Bold,
-        ),
-        maxLines = 1,
-    )
+    Row(
+        modifier = GlanceModifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Vertical.CenterVertically,
+    ) {
+        Text(
+            text = title,
+            style = TextStyle(
+                color = GlanceTheme.colors.onSurfaceVariant,
+                fontSize = fontSize,
+                fontWeight = FontWeight.Bold,
+            ),
+            maxLines = 1,
+            modifier = GlanceModifier.defaultWeight(),
+        )
+        EtaText(snapshot, extras, accent, fontSize)
+        if (snapshot.lastFetchFailed) {
+            WarningGlyph()
+        }
+    }
 }
 
 @Composable
-private fun DestinationLabelText(text: String, fontSize: TextUnit) {
-    Text(
-        text = text,
-        style = TextStyle(
-            color = GlanceTheme.colors.onSurfaceVariant,
-            fontSize = fontSize,
-        ),
-        maxLines = 1,
-    )
-}
-
-@Composable
-private fun EventTitleText(text: String, fontSize: TextUnit) {
-    Text(
-        text = text,
-        style = TextStyle(
-            color = GlanceTheme.colors.onSurface,
-            fontSize = fontSize,
-            fontWeight = FontWeight.Medium,
-        ),
-        maxLines = 1,
-    )
-}
-
-@Composable
-private fun CaptionText(text: String, fontSize: TextUnit) {
-    Text(
-        text = text,
-        style = TextStyle(
-            color = GlanceTheme.colors.onSurfaceVariant,
-            fontSize = fontSize,
-            fontWeight = FontWeight.Medium,
-        ),
-        maxLines = 1,
-    )
+private fun DestinationLine(text: String, fontSize: TextUnit, showWarning: Boolean) {
+    Row(
+        modifier = GlanceModifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Vertical.CenterVertically,
+    ) {
+        Text(
+            text = text,
+            style = TextStyle(
+                color = GlanceTheme.colors.onSurfaceVariant,
+                fontSize = fontSize,
+            ),
+            maxLines = 1,
+            modifier = GlanceModifier.defaultWeight(),
+        )
+        if (showWarning) {
+            WarningGlyph()
+        }
+    }
 }
 
 @Composable
 private fun EtaText(
     snapshot: CommuteSnapshot,
+    extras: WidgetExtras,
     accent: Color,
     fontSize: TextUnit,
 ) {
     Text(
         text = formatEta(snapshot.durationSeconds),
         style = TextStyle(
-            color = ColorProvider(accent),
+            color = etaColorProvider(accent, extras, snapshot.fetchedAtEpochMillis),
             fontSize = fontSize,
             fontWeight = FontWeight.Bold,
         ),
@@ -680,138 +559,49 @@ private fun EtaText(
 }
 
 @Composable
-private fun DistanceText(distanceMeters: Long) {
+private fun etaColorProvider(
+    accent: Color,
+    extras: WidgetExtras,
+    fetchedAtEpochMillis: Long,
+): ColorProvider {
+    return when (
+        etaDisplayState(
+            extras.refreshingSince,
+            fetchedAtEpochMillis,
+            extras.nowEpochMillis,
+        )
+    ) {
+        EtaDisplayState.PENDING -> ColorProvider(accent.copy(alpha = ETA_PENDING_ALPHA))
+        EtaDisplayState.STALE -> GlanceTheme.colors.onSurfaceVariant
+        EtaDisplayState.FRESH -> ColorProvider(accent)
+    }
+}
+
+@Composable
+private fun LeaveByLine(minuteOfDay: Int, nowMinuteOfDay: Int, fontSize: TextUnit) {
+    val late = isLeaveByPast(minuteOfDay, nowMinuteOfDay)
     Text(
-        text = formatDistanceKm(distanceMeters),
+        text = formatLeaveByLine(minuteOfDay),
         style = TextStyle(
-            color = GlanceTheme.colors.onSurface,
-            fontSize = 12.sp,
+            color = if (late) ColorProvider(LEAVE_BY_LATE_COLOR) else GlanceTheme.colors.onSurfaceVariant,
+            fontSize = fontSize,
+            fontWeight = FontWeight.Medium,
         ),
         maxLines = 1,
     )
 }
 
+/** FIX-9: a "Routed" caption under/beside a CALENDAR_EVENT title when it won the 30-minute located-event preference. */
 @Composable
-private fun TrafficBar(accent: Color) {
-    Box(
-        modifier = GlanceModifier
-            .fillMaxWidth()
-            .height(3.dp)
-            .cornerRadius(2.dp)
-            .background(accent),
-    ) {}
-}
-
-@Composable
-private fun LeaveByChip(minuteOfDay: Int, nowMinuteOfDay: Int, fontSize: TextUnit) {
-    val late = isLeaveByPast(minuteOfDay, nowMinuteOfDay)
-    Box(
-        modifier = GlanceModifier
-            .background(GlanceTheme.colors.surfaceVariant)
-            .cornerRadius(8.dp)
-            .padding(horizontal = 6.dp, vertical = 2.dp),
-    ) {
-        Text(
-            text = formatLeaveByLine(minuteOfDay),
-            style = TextStyle(
-                color = if (late) ColorProvider(LEAVE_BY_LATE_COLOR) else GlanceTheme.colors.onSurfaceVariant,
-                fontSize = fontSize,
-                fontWeight = if (late) FontWeight.Medium else FontWeight.Normal,
-            ),
-            maxLines = 1,
-        )
-    }
-}
-
-@Composable
-private fun UpdatedText(snapshot: CommuteSnapshot, extras: WidgetExtras, modifier: GlanceModifier) {
+private fun RoutedCaption() {
     Text(
-        text = formatUpdatedLine(snapshot.fetchedAtEpochMillis, extras.nowEpochMillis),
+        text = "Routed",
         style = TextStyle(
             color = GlanceTheme.colors.onSurfaceVariant,
             fontSize = 10.sp,
         ),
         maxLines = 1,
-        modifier = modifier,
     )
-}
-
-@Composable
-private fun FavouriteChipRow(
-    favourites: List<Favourite>,
-    activeLabel: String?,
-    maxChips: Int,
-    expandChips: Boolean,
-    opaqueContainer: Boolean,
-) {
-    val shown = favouriteChipsToShow(favourites, maxChips)
-    if (shown.isEmpty()) return
-    val containerModifier = if (opaqueContainer) {
-        GlanceModifier
-            .fillMaxWidth()
-            .padding(8.dp)
-            .background(GlanceTheme.colors.surfaceVariant)
-            .cornerRadius(16.dp)
-            .padding(horizontal = 8.dp, vertical = 6.dp)
-    } else {
-        GlanceModifier.fillMaxWidth()
-    }
-    Row(
-        modifier = containerModifier,
-        verticalAlignment = Alignment.Vertical.CenterVertically,
-    ) {
-        shown.forEachIndexed { index, favourite ->
-            if (index > 0) {
-                Spacer(modifier = GlanceModifier.width(4.dp))
-            }
-            val chipModifier = if (expandChips) GlanceModifier.defaultWeight() else GlanceModifier
-            FavouriteChip(
-                favourite = favourite,
-                highlighted = favourite.label == activeLabel,
-                modifier = chipModifier,
-            )
-        }
-    }
-}
-
-@Composable
-private fun FavouriteChip(
-    favourite: Favourite,
-    highlighted: Boolean,
-    modifier: GlanceModifier,
-) {
-    val background = if (highlighted) {
-        GlanceTheme.colors.primaryContainer
-    } else {
-        GlanceTheme.colors.secondaryContainer
-    }
-    val foreground = if (highlighted) {
-        GlanceTheme.colors.onPrimaryContainer
-    } else {
-        GlanceTheme.colors.onSecondaryContainer
-    }
-    Box(
-        modifier = modifier
-            .background(background)
-            .cornerRadius(12.dp)
-            .padding(horizontal = 6.dp, vertical = 3.dp)
-            .clickable(
-                actionRunCallback<FavouriteAction>(
-                    actionParametersOf(FavouriteLabelKey to favourite.label),
-                ),
-            ),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = favourite.label,
-            style = TextStyle(
-                color = foreground,
-                fontSize = 10.sp,
-                fontWeight = if (highlighted) FontWeight.Bold else FontWeight.Medium,
-            ),
-            maxLines = 1,
-        )
-    }
 }
 
 @Composable
@@ -820,8 +610,7 @@ private fun MapPane(
     bitmap: Bitmap?,
     modifier: GlanceModifier,
 ) {
-    val quiet = snapshot.mode == SnapshotMode.CALENDAR_EMPTY
-    if (!quiet && bitmap != null) {
+    if (bitmap != null) {
         Image(
             provider = ImageProvider(bitmap),
             contentDescription = "Route map",
@@ -830,7 +619,6 @@ private fun MapPane(
         )
         return
     }
-    // No map to show: use the area for the calendar event (or next window) instead of a bare glyph.
     val lines = mapAreaPlaceholderLines(snapshot)
     Box(
         modifier = modifier.background(GlanceTheme.colors.surfaceVariant).padding(8.dp),
@@ -916,12 +704,32 @@ internal fun shouldShowLeaveBy(snapshot: CommuteSnapshot, leaveByEnabled: Boolea
         snapshot.leaveByMinuteOfDay != null
 }
 
-private fun shouldShowFavouriteChips(extras: WidgetExtras): Boolean {
-    return extras.showFavouriteChips && extras.favourites.isNotEmpty()
+/**
+ * FIX-9: the "Routed" caption only ever applies to a [SnapshotMode.CALENDAR_EVENT] snapshot whose
+ * event won the 30-minute located-event preference, and only on sizes that opt in
+ * ([InfoStyle.showRoutedCaption] - WIDE and LARGE; SMALL skips it for space).
+ */
+internal fun shouldShowRoutedCaption(snapshot: CommuteSnapshot, captionAllowedForSize: Boolean): Boolean {
+    return captionAllowedForSize && snapshot.mode == SnapshotMode.CALENDAR_EVENT && snapshot.routedOverEarlier
 }
 
-internal fun favouriteChipsToShow(favourites: List<Favourite>, maxChips: Int): List<Favourite> {
-    return favourites.take(maxChips.coerceAtLeast(0))
+/**
+ * Three-way ETA treatment: a TAP-pending refresh dims the accent, a settled but
+ * old snapshot greys the number, and a fresh settled snapshot keeps full accent.
+ * Pending always wins so the two non-fresh states cannot be confused.
+ */
+internal fun etaDisplayState(
+    refreshingSinceEpochMillis: Long?,
+    fetchedAtEpochMillis: Long,
+    nowEpochMillis: Long,
+): EtaDisplayState {
+    if (isRefreshingActive(refreshingSinceEpochMillis, nowEpochMillis)) {
+        return EtaDisplayState.PENDING
+    }
+    if (nowEpochMillis - fetchedAtEpochMillis > ETA_STALE_AFTER_MILLIS) {
+        return EtaDisplayState.STALE
+    }
+    return EtaDisplayState.FRESH
 }
 
 internal fun destinationDisplayLabel(direction: Direction, destinationLabel: String?): String {
@@ -958,14 +766,13 @@ internal fun calendarEmptyCase(snapshot: CommuteSnapshot): CalendarEmptyCase {
 }
 
 /**
- * Text lines shown in the map area when no map image is displayed.
- * First line renders as a title, the rest as captions. Empty for commute mode
- * (a missing commute map keeps the bare glyph placeholder).
+ * Text lines shown in the map pane when a COMMUTE or CALENDAR_EVENT snapshot
+ * has no bitmap. First line is a title, the rest are captions.
  *
- * For [SnapshotMode.CALENDAR_EVENT], appends [formatLeaveByLine] when
- * [CommuteSnapshot.leaveByMinuteOfDay] is non-null. This function has no access
- * to the leave-by setting toggle; the engine only populates that field when the
- * advisor is enabled, so a non-null value is treated as displayable.
+ * COMMUTE returns empty (glyph only). CALENDAR_EVENT returns the event title
+ * and clock time. Leave-by is never included: the info panel always carries it
+ * when the advisor is enabled. CALENDAR_EMPTY returns empty because that mode
+ * uses a full-width card, not a map pane.
  */
 internal fun mapAreaPlaceholderLines(
     snapshot: CommuteSnapshot,
@@ -975,22 +782,9 @@ internal fun mapAreaPlaceholderLines(
         SnapshotMode.COMMUTE -> emptyList()
         SnapshotMode.CALENDAR_EVENT -> buildList {
             add(calendarEventTitle(snapshot.destinationLabel))
-            snapshot.eventStartEpochMillis?.let { add(formatEventAtTime(it, zone)) }
-            snapshot.leaveByMinuteOfDay?.let { add(formatLeaveByLine(it)) }
+            snapshot.eventStartEpochMillis?.let { add(formatEventClockTime(it, zone)) }
         }
-        SnapshotMode.CALENDAR_EMPTY -> when (calendarEmptyCase(snapshot)) {
-            CalendarEmptyCase.UNLOCATED_EVENT -> listOf(
-                calendarEventTitle(snapshot.destinationLabel),
-                formatEventAtTime(snapshot.eventStartEpochMillis!!, zone),
-            )
-            CalendarEmptyCase.NEXT_WINDOW -> listOf(
-                formatNextWindowLine(
-                    snapshot.nextWindowLabel!!,
-                    snapshot.nextWindowStartMinuteOfDay!!,
-                ),
-            )
-            CalendarEmptyCase.NONE -> listOf("No events today")
-        }
+        SnapshotMode.CALENDAR_EMPTY -> emptyList()
     }
 }
 
@@ -1010,13 +804,9 @@ internal fun formatLeaveByLine(minuteOfDay: Int): String {
     return "Leave by ${formatClockTime(minuteOfDay)}"
 }
 
-internal fun formatEventAtTime(eventStartEpochMillis: Long, zone: ZoneId = ZoneId.systemDefault()): String {
+internal fun formatEventClockTime(eventStartEpochMillis: Long, zone: ZoneId = ZoneId.systemDefault()): String {
     val zoned = Instant.ofEpochMilli(eventStartEpochMillis).atZone(zone)
-    return "at ${formatClockTime(zoned.hour * 60 + zoned.minute)}"
-}
-
-internal fun formatNextWindowLine(label: String, startMinuteOfDay: Int): String {
-    return "Next: $label at ${formatClockTime(startMinuteOfDay)}"
+    return formatClockTime(zoned.hour * 60 + zoned.minute)
 }
 
 internal fun isLeaveByPast(leaveByMinuteOfDay: Int, nowMinuteOfDay: Int): Boolean {
@@ -1033,20 +823,6 @@ private fun formatEta(durationSeconds: Long): String {
     val hours = totalMinutes / 60
     val minutes = totalMinutes % 60
     return if (minutes == 0) "$hours hr" else "$hours hr $minutes min"
-}
-
-private fun formatUpdatedLine(fetchedAtEpochMillis: Long, nowEpochMillis: Long): String {
-    if (fetchedAtEpochMillis <= 0L) return "not yet"
-    val seconds = ((nowEpochMillis - fetchedAtEpochMillis).coerceAtLeast(0L)) / 1000L
-    return when {
-        seconds < 60L -> "just now"
-        seconds < 3600L -> "${seconds / 60L}m ago"
-        else -> "${seconds / 3600L}h ago"
-    }
-}
-
-private fun formatDistanceKm(distanceMeters: Long): String {
-    return String.format(Locale.US, "%.1f km", distanceMeters / 1000.0)
 }
 
 private fun trafficAccentColor(durationSeconds: Long, durationNoTrafficSeconds: Long): Color {

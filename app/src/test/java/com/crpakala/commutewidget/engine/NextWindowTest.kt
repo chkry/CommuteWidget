@@ -12,11 +12,11 @@ class NextWindowTest {
     private val eveningStart = 1020
     private val eveningEnd = 1200
 
-    private fun next(dayOfWeekIso: Int, minuteOfDay: Int, historyDays: Set<Int> = weekdays): NextWindow? =
+    private fun next(dayOfWeekIso: Int, minuteOfDay: Int, commuteDays: Set<Int> = weekdays): NextWindow? =
         nextWindow(
             dayOfWeekIso = dayOfWeekIso,
             minuteOfDay = minuteOfDay,
-            historyDays = historyDays,
+            commuteDays = commuteDays,
             morningStart = morningStart,
             morningEnd = morningEnd,
             eveningStart = eveningStart,
@@ -52,12 +52,12 @@ class NextWindowTest {
     @Test
     fun dayNotEnabled_looksAheadToNextEnabledDay() {
         val days = setOf(1, 2, 4, 5) // Wednesday (3) excluded
-        assertEquals(NextWindow(Direction.TO_WORK, morningStart), next(3, morningStart + 30, historyDays = days))
+        assertEquals(NextWindow(Direction.TO_WORK, morningStart), next(3, morningStart + 30, commuteDays = days))
     }
 
     @Test
-    fun emptyHistoryDays_returnsNull() {
-        assertNull(next(1, morningStart - 30, historyDays = emptySet()))
+    fun emptyCommuteDays_returnsNull() {
+        assertNull(next(1, morningStart - 30, commuteDays = emptySet()))
     }
 
     @Test
@@ -65,7 +65,7 @@ class NextWindowTest {
         val result = nextWindow(
             dayOfWeekIso = 1,
             minuteOfDay = 500,
-            historyDays = weekdays,
+            commuteDays = weekdays,
             morningStart = 420,
             morningEnd = 420,
             eveningStart = 1200,
@@ -79,7 +79,7 @@ class NextWindowTest {
         val result = nextWindow(
             dayOfWeekIso = 1,
             minuteOfDay = 0,
-            historyDays = weekdays,
+            commuteDays = weekdays,
             morningStart = 420,
             morningEnd = 420,
             eveningStart = eveningStart,

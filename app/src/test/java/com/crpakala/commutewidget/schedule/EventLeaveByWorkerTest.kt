@@ -8,8 +8,8 @@ import org.junit.Test
 /**
  * Pure decision logic behind [EventLeaveByScheduler]/[EventLeaveByWorker]. The worker/scheduler
  * classes themselves touch WorkManager, NotificationManager, and DataStore, so - matching the
- * rest of this module's test suite (see [SlotFetchWorkerTest], [CommuteSchedulerTest]) - only the
- * extracted pure functions are exercised directly here.
+ * rest of this module's test suite (see [CommuteSchedulerTest]) - only the extracted pure
+ * functions are exercised directly here.
  */
 class EventLeaveByWorkerTest {
     @Test

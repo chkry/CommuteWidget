@@ -2,8 +2,6 @@ package com.crpakala.commutewidget
 
 import com.crpakala.commutewidget.data.CommuteSnapshot
 import com.crpakala.commutewidget.data.Direction
-import com.crpakala.commutewidget.data.Favourite
-import com.crpakala.commutewidget.data.Place
 import com.crpakala.commutewidget.data.SnapshotMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -115,52 +113,58 @@ class CommuteWidgetDisplayTest {
     }
 
     @Test
-    fun favouriteChipsToShow_capsWideRowAtTwo() {
-        val favourites = listOf(
-            favourite("Gym"),
-            favourite("School"),
-            favourite("Airport"),
-            favourite("Clinic"),
-            favourite("Depot"),
-        )
-        val shown = favouriteChipsToShow(favourites, WIDE_MAX_FAVOURITE_CHIPS)
-        assertEquals(listOf("Gym", "School"), shown.map { it.label })
+    fun shouldShowRoutedCaption_calendarEventRoutedAndAllowedForSize() {
+        val snapshot = emptySnapshot().copy(mode = SnapshotMode.CALENDAR_EVENT, routedOverEarlier = true)
+        assertTrue(shouldShowRoutedCaption(snapshot, captionAllowedForSize = true))
     }
 
     @Test
-    fun favouriteChipsToShow_preservesOrderAndAllowsAllOnLarge() {
-        val favourites = listOf(favourite("Gym"), favourite("School"), favourite("Airport"))
-        assertEquals(favourites, favouriteChipsToShow(favourites, favourites.size))
-        assertEquals(emptyList<Favourite>(), favouriteChipsToShow(favourites, 0))
+    fun shouldShowRoutedCaption_hiddenWhenSizeDoesNotAllowIt() {
+        val snapshot = emptySnapshot().copy(mode = SnapshotMode.CALENDAR_EVENT, routedOverEarlier = true)
+        assertFalse(shouldShowRoutedCaption(snapshot, captionAllowedForSize = false))
     }
 
     @Test
-    fun formatEventAtTime_afternoon() {
+    fun shouldShowRoutedCaption_hiddenWhenNotRouted() {
+        val snapshot = emptySnapshot().copy(mode = SnapshotMode.CALENDAR_EVENT, routedOverEarlier = false)
+        assertFalse(shouldShowRoutedCaption(snapshot, captionAllowedForSize = true))
+    }
+
+    @Test
+    fun shouldShowRoutedCaption_hiddenForNonCalendarEventModesEvenIfFlagIsSet() {
+        val commute = emptySnapshot().copy(mode = SnapshotMode.COMMUTE, routedOverEarlier = true)
+        val calendarEmpty = emptySnapshot().copy(mode = SnapshotMode.CALENDAR_EMPTY, routedOverEarlier = true)
+        assertFalse(shouldShowRoutedCaption(commute, captionAllowedForSize = true))
+        assertFalse(shouldShowRoutedCaption(calendarEmpty, captionAllowedForSize = true))
+    }
+
+    @Test
+    fun formatEventClockTime_afternoon() {
         val zone = ZoneId.of("America/Los_Angeles")
         val epoch = ZonedDateTime.of(2026, 8, 25, 15, 30, 0, 0, zone).toInstant().toEpochMilli()
-        assertEquals("at 3:30 pm", formatEventAtTime(epoch, zone))
+        assertEquals("3:30 pm", formatEventClockTime(epoch, zone))
     }
 
     @Test
-    fun formatEventAtTime_morningPaddedMinute() {
+    fun formatEventClockTime_morningPaddedMinute() {
         val zone = ZoneId.of("UTC")
         val epoch = ZonedDateTime.of(2026, 1, 1, 7, 5, 0, 0, zone).toInstant().toEpochMilli()
-        assertEquals("at 7:05 am", formatEventAtTime(epoch, zone))
+        assertEquals("7:05 am", formatEventClockTime(epoch, zone))
     }
 
     @Test
-    fun formatEventAtTime_noonAndMidnightAreTwelve() {
+    fun formatEventClockTime_noonAndMidnightAreTwelve() {
         val zone = ZoneId.of("UTC")
         val noon = ZonedDateTime.of(2026, 1, 1, 12, 0, 0, 0, zone).toInstant().toEpochMilli()
         val midnight = ZonedDateTime.of(2026, 1, 1, 0, 0, 0, 0, zone).toInstant().toEpochMilli()
-        assertEquals("at 12:00 pm", formatEventAtTime(noon, zone))
-        assertEquals("at 12:00 am", formatEventAtTime(midnight, zone))
+        assertEquals("12:00 pm", formatEventClockTime(noon, zone))
+        assertEquals("12:00 am", formatEventClockTime(midnight, zone))
     }
 
     @Test
-    fun formatNextWindowLine_usesClockTime() {
-        assertEquals("Next: To Work at 7:00 am", formatNextWindowLine("To Work", 7 * 60))
-        assertEquals("Next: To Home at 5:30 pm", formatNextWindowLine("To Home", 17 * 60 + 30))
+    fun formatClockTime_windowStartMorningAndEvening() {
+        assertEquals("7:00 am", formatClockTime(7 * 60))
+        assertEquals("5:30 pm", formatClockTime(17 * 60 + 30))
     }
 
     @Test
@@ -229,11 +233,11 @@ class CommuteWidgetDisplayTest {
             destinationLabel = "Client meeting",
             eventStartEpochMillis = start,
         ).copy(mode = SnapshotMode.CALENDAR_EVENT)
-        assertEquals(listOf("Client meeting", "at 3:30 pm"), mapAreaPlaceholderLines(snapshot, zone))
+        assertEquals(listOf("Client meeting", "3:30 pm"), mapAreaPlaceholderLines(snapshot, zone))
     }
 
     @Test
-    fun mapAreaPlaceholderLines_calendarEventAppendsLeaveByWhenPresent() {
+    fun mapAreaPlaceholderLines_calendarEventOmitsLeaveByWhenPresent() {
         val zone = ZoneId.of("UTC")
         val start = ZonedDateTime.of(2026, 8, 26, 15, 30, 0, 0, zone).toInstant().toEpochMilli()
         val snapshot = emptySnapshot(
@@ -243,39 +247,123 @@ class CommuteWidgetDisplayTest {
             mode = SnapshotMode.CALENDAR_EVENT,
             leaveByMinuteOfDay = 14 * 60 + 40,
         )
-        assertEquals(
-            listOf("Client meeting", "at 3:30 pm", "Leave by 2:40 pm"),
-            mapAreaPlaceholderLines(snapshot, zone),
-        )
+        assertEquals(listOf("Client meeting", "3:30 pm"), mapAreaPlaceholderLines(snapshot, zone))
     }
 
     @Test
-    fun mapAreaPlaceholderLines_unlocatedEventShowsTitleAndTime() {
+    fun mapAreaPlaceholderLines_emptyForUnlocatedEvent() {
         val zone = ZoneId.of("UTC")
         val start = ZonedDateTime.of(2026, 8, 26, 9, 5, 0, 0, zone).toInstant().toEpochMilli()
         val snapshot = emptySnapshot(
             destinationLabel = "Dentist",
             eventStartEpochMillis = start,
         )
-        assertEquals(listOf("Dentist", "at 9:05 am"), mapAreaPlaceholderLines(snapshot, zone))
+        assertEquals(emptyList<String>(), mapAreaPlaceholderLines(snapshot, zone))
     }
 
     @Test
-    fun mapAreaPlaceholderLines_nextWindowShowsSingleLine() {
+    fun mapAreaPlaceholderLines_emptyForNextWindow() {
         val snapshot = emptySnapshot(
             nextWindowLabel = "To Work",
             nextWindowStartMinuteOfDay = 7 * 60,
         )
-        assertEquals(listOf("Next: To Work at 7:00 am"), mapAreaPlaceholderLines(snapshot))
+        assertEquals(emptyList<String>(), mapAreaPlaceholderLines(snapshot))
     }
 
     @Test
-    fun mapAreaPlaceholderLines_noneShowsNoEventsToday() {
-        assertEquals(listOf("No events today"), mapAreaPlaceholderLines(emptySnapshot()))
+    fun mapAreaPlaceholderLines_emptyForNone() {
+        assertEquals(emptyList<String>(), mapAreaPlaceholderLines(emptySnapshot()))
     }
 
-    private fun favourite(label: String): Favourite {
-        return Favourite(label = label, place = Place(address = label, lat = 0.0, lng = 0.0))
+    @Test
+    fun etaDisplayState_pendingWhenRefreshIsActive() {
+        val now = 1_000_000L
+        assertEquals(
+            EtaDisplayState.PENDING,
+            etaDisplayState(
+                refreshingSinceEpochMillis = now - 1_000L,
+                fetchedAtEpochMillis = now - 1_000L,
+                nowEpochMillis = now,
+            ),
+        )
+    }
+
+    @Test
+    fun etaDisplayState_pendingWinsOverStale() {
+        val now = 1_000_000L
+        assertEquals(
+            EtaDisplayState.PENDING,
+            etaDisplayState(
+                refreshingSinceEpochMillis = now,
+                fetchedAtEpochMillis = now - ETA_STALE_AFTER_MILLIS - 1L,
+                nowEpochMillis = now,
+            ),
+        )
+    }
+
+    @Test
+    fun etaDisplayState_staleWhenSettledAndOlderThanTenMinutes() {
+        val now = 1_000_000L
+        assertEquals(
+            EtaDisplayState.STALE,
+            etaDisplayState(
+                refreshingSinceEpochMillis = null,
+                fetchedAtEpochMillis = now - ETA_STALE_AFTER_MILLIS - 1L,
+                nowEpochMillis = now,
+            ),
+        )
+    }
+
+    @Test
+    fun etaDisplayState_freshAtExactlyTenMinutes() {
+        val now = 1_000_000L
+        assertEquals(
+            EtaDisplayState.FRESH,
+            etaDisplayState(
+                refreshingSinceEpochMillis = null,
+                fetchedAtEpochMillis = now - ETA_STALE_AFTER_MILLIS,
+                nowEpochMillis = now,
+            ),
+        )
+    }
+
+    @Test
+    fun etaDisplayState_freshWhenSettledAndRecent() {
+        val now = 1_000_000L
+        assertEquals(
+            EtaDisplayState.FRESH,
+            etaDisplayState(
+                refreshingSinceEpochMillis = null,
+                fetchedAtEpochMillis = now - 30_000L,
+                nowEpochMillis = now,
+            ),
+        )
+    }
+
+    @Test
+    fun etaDisplayState_freshWhenRefreshingFlagHasExpiredAndFetchIsRecent() {
+        val now = 1_000_000L
+        assertEquals(
+            EtaDisplayState.FRESH,
+            etaDisplayState(
+                refreshingSinceEpochMillis = now - 60_000L,
+                fetchedAtEpochMillis = now - 1_000L,
+                nowEpochMillis = now,
+            ),
+        )
+    }
+
+    @Test
+    fun etaDisplayState_staleWhenRefreshingFlagHasExpiredAndFetchIsOld() {
+        val now = 1_000_000L
+        assertEquals(
+            EtaDisplayState.STALE,
+            etaDisplayState(
+                refreshingSinceEpochMillis = now - 60_000L,
+                fetchedAtEpochMillis = now - ETA_STALE_AFTER_MILLIS - 1L,
+                nowEpochMillis = now,
+            ),
+        )
     }
 
     private fun emptySnapshot(

@@ -17,7 +17,6 @@ import java.time.ZonedDateTime
 import java.util.concurrent.TimeUnit
 
 object CommuteScheduler {
-    const val SLOT_CHAIN_WORK_NAME = "commute_slot_chain"
     const val WINDOW_BOUNDARY_WORK_NAME = "commute_window_boundary"
 
     /**
@@ -31,13 +30,25 @@ object CommuteScheduler {
     private const val LEGACY_MORNING_WORK_NAME = "commute_refresh_morning"
     private const val LEGACY_EVENING_WORK_NAME = "commute_refresh_evening"
 
+    /**
+     * v3/v4 unique work name for the 10-minute in-window history-sampling chain (formerly
+     * `SlotFetchWorker`), retired entirely in v5 along with the history subsystem it fed - see
+     * [com.crpakala.commutewidget.schedule.CalendarTickScheduler] and
+     * [com.crpakala.commutewidget.schedule.CommuteLeaveByScheduler] for what replaced its two
+     * actual jobs (calendar staleness, commute leave-by). Cancelled on every [ensureScheduled]
+     * call for the same device-migration reason as [LEGACY_MORNING_WORK_NAME]/
+     * [LEGACY_EVENING_WORK_NAME] above: a device last running a pre-v5 build could otherwise keep
+     * this chain alive in WorkManager's persisted store indefinitely, even though the worker class
+     * and the history table it wrote to are both gone.
+     */
+    private const val LEGACY_SLOT_CHAIN_WORK_NAME = "commute_slot_chain"
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     suspend fun ensureScheduled(context: Context) {
         val appContext = context.applicationContext
         val settings = SettingsRepository.get(appContext).settingsSnapshot()
         cancelLegacyRefreshWorks(appContext)
-        scheduleSlotChain(appContext, settings)
         scheduleWindowBoundary(appContext, settings)
     }
 
@@ -52,9 +63,15 @@ object CommuteScheduler {
         val workManager = WorkManager.getInstance(context.applicationContext)
         workManager.cancelUniqueWork(LEGACY_MORNING_WORK_NAME)
         workManager.cancelUniqueWork(LEGACY_EVENING_WORK_NAME)
+        workManager.cancelUniqueWork(LEGACY_SLOT_CHAIN_WORK_NAME)
     }
 
     /**
+     * (Re)schedules the "commute_window_boundary" unique work to fire [WindowBoundaryWorker] at
+     * the next morning/evening window start or end boundary computed by [nextWindowBoundary]. A
+     * no-op when nothing is enabled - the boundary chain simply ends until [ensureScheduled] runs
+     * again with a config that produces a boundary.
+     *
      * [existingWorkPolicy] defaults to [ExistingWorkPolicy.REPLACE] for external callers (app boot,
      * widget enable, settings changes) so a stale chain is always replaced immediately.
      *
@@ -64,47 +81,6 @@ object CommuteScheduler {
      * itself mid-run (see WorkManager's ExistingWorkPolicy docs). APPEND_OR_REPLACE instead chains
      * the successor to run after this invocation finishes, regardless of outcome.
      */
-    internal fun scheduleSlotChain(
-        context: Context,
-        settings: AppSettings,
-        existingWorkPolicy: ExistingWorkPolicy = ExistingWorkPolicy.REPLACE,
-    ) {
-        if (!settings.historyEnabled) {
-            return
-        }
-        val next = nextSlotTick(ZonedDateTime.now(), settings.historyDays, slotRanges(settings)) ?: return
-        scheduleSlotChainAt(context, next, existingWorkPolicy)
-    }
-
-    internal fun scheduleSlotChainAt(
-        context: Context,
-        target: ZonedDateTime,
-        existingWorkPolicy: ExistingWorkPolicy,
-    ) {
-        val now = ZonedDateTime.now()
-        val delayMillis = Duration.between(now, target).toMillis().coerceAtLeast(0)
-        val request = OneTimeWorkRequestBuilder<SlotFetchWorker>()
-            .setConstraints(
-                Constraints.Builder()
-                    .setRequiredNetworkType(NetworkType.CONNECTED)
-                    .build(),
-            )
-            .setInitialDelay(delayMillis, TimeUnit.MILLISECONDS)
-            .build()
-
-        WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
-            SLOT_CHAIN_WORK_NAME,
-            existingWorkPolicy,
-            request,
-        )
-    }
-
-    /**
-     * (Re)schedules the "commute_window_boundary" unique work to fire [WindowBoundaryWorker] at
-     * the next morning/evening window start or end boundary computed by [nextWindowBoundary]. A
-     * no-op when nothing is enabled (mirrors [scheduleSlotChain]'s no-op contract) - the boundary
-     * chain simply ends until [ensureScheduled] runs again with a config that produces a boundary.
-     */
     internal fun scheduleWindowBoundary(
         context: Context,
         settings: AppSettings,
@@ -112,7 +88,7 @@ object CommuteScheduler {
     ) {
         val next = nextWindowBoundary(
             now = ZonedDateTime.now(),
-            historyDays = settings.historyDays,
+            commuteDays = settings.commuteDays,
             morningStart = settings.morningSlotStartMinuteOfDay,
             morningEnd = settings.morningSlotEndMinuteOfDay,
             eveningStart = settings.eveningSlotStartMinuteOfDay,
@@ -143,10 +119,4 @@ object CommuteScheduler {
             request,
         )
     }
-
-    /** The morning and evening minute-of-day windows history collection samples within. */
-    internal fun slotRanges(settings: AppSettings): List<IntRange> = listOf(
-        settings.morningSlotStartMinuteOfDay..settings.morningSlotEndMinuteOfDay,
-        settings.eveningSlotStartMinuteOfDay..settings.eveningSlotEndMinuteOfDay,
-    )
 }

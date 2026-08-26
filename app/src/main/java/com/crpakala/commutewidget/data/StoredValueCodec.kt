@@ -58,18 +58,6 @@ fun decodeFavourites(json: String?): List<Favourite> {
     }.getOrElse { emptyList() }
 }
 
-fun encodeActiveFavourite(activeFavourite: ActiveFavourite): String =
-    commuteJson.encodeToString(ActiveFavourite.serializer(), activeFavourite)
-
-fun decodeActiveFavourite(json: String?): ActiveFavourite? {
-    if (json.isNullOrBlank()) {
-        return null
-    }
-    return runCatching {
-        commuteJson.decodeFromString(ActiveFavourite.serializer(), json)
-    }.getOrNull()
-}
-
 private val longListSerializer = ListSerializer(serializer<Long>())
 private val intListSerializer = ListSerializer(serializer<Int>())
 

@@ -11,11 +11,11 @@ class WidgetModeTest {
     private val eveningStart = 1020
     private val eveningEnd = 1200
 
-    private fun resolve(dayOfWeekIso: Int, minuteOfDay: Int, historyDays: Set<Int> = weekdays): WidgetMode =
+    private fun resolve(dayOfWeekIso: Int, minuteOfDay: Int, commuteDays: Set<Int> = weekdays): WidgetMode =
         resolveWidgetMode(
             dayOfWeekIso = dayOfWeekIso,
             minuteOfDay = minuteOfDay,
-            historyDays = historyDays,
+            commuteDays = commuteDays,
             morningStart = morningStart,
             morningEnd = morningEnd,
             eveningStart = eveningStart,
@@ -63,13 +63,13 @@ class WidgetModeTest {
     }
 
     @Test
-    fun dayNotInHistoryDays_isCalendarEvenInsideWindowMinutes() {
-        assertEquals(WidgetMode.Calendar, resolve(6, morningStart + 30, historyDays = weekdays))
+    fun dayNotInCommuteDays_isCalendarEvenInsideWindowMinutes() {
+        assertEquals(WidgetMode.Calendar, resolve(6, morningStart + 30, commuteDays = weekdays))
     }
 
     @Test
-    fun emptyHistoryDays_alwaysCalendar() {
-        assertEquals(WidgetMode.Calendar, resolve(1, morningStart + 30, historyDays = emptySet()))
+    fun emptyCommuteDays_alwaysCalendar() {
+        assertEquals(WidgetMode.Calendar, resolve(1, morningStart + 30, commuteDays = emptySet()))
     }
 
     @Test
@@ -77,7 +77,7 @@ class WidgetModeTest {
         val mode = resolveWidgetMode(
             dayOfWeekIso = 1,
             minuteOfDay = 500,
-            historyDays = weekdays,
+            commuteDays = weekdays,
             morningStart = 420,
             morningEnd = 700,
             eveningStart = 450,
@@ -91,7 +91,7 @@ class WidgetModeTest {
         val mode = resolveWidgetMode(
             dayOfWeekIso = 1,
             minuteOfDay = 420,
-            historyDays = weekdays,
+            commuteDays = weekdays,
             morningStart = 420,
             morningEnd = 420,
             eveningStart = eveningStart,
@@ -105,7 +105,7 @@ class WidgetModeTest {
         val mode = resolveWidgetMode(
             dayOfWeekIso = 1,
             minuteOfDay = 1100,
-            historyDays = weekdays,
+            commuteDays = weekdays,
             morningStart = morningStart,
             morningEnd = morningEnd,
             eveningStart = 1200,
