@@ -376,16 +376,16 @@ private fun WideLayout(
             // owner-configurable so the stack can dodge whatever the route usually covers.
             val showLeaveByPill = shouldShowLeaveBy(snapshot, extras.leaveByEnabled)
             if (showLeaveByPill || extras.bestDepartureLine != null) {
-                Column(
+                Row(
                     modifier = GlanceModifier.padding(6.dp),
-                    horizontalAlignment = pillCornerHorizontalAlignment(extras.pillCorner),
+                    verticalAlignment = Alignment.Vertical.CenterVertically,
                 ) {
                     if (showLeaveByPill) {
                         LeaveByPill(snapshot.leaveByMinuteOfDay!!, extras.nowMinuteOfDay)
                     }
                     if (extras.bestDepartureLine != null) {
                         if (showLeaveByPill) {
-                            Spacer(modifier = GlanceModifier.height(3.dp))
+                            Spacer(modifier = GlanceModifier.width(4.dp))
                         }
                         MapTextPill(extras.bestDepartureLine)
                     }
@@ -402,10 +402,6 @@ private fun pillCornerAlignment(corner: MapPillCorner): Alignment = when (corner
     MapPillCorner.BOTTOM_END -> Alignment.BottomEnd
 }
 
-private fun pillCornerHorizontalAlignment(corner: MapPillCorner): Alignment.Horizontal = when (corner) {
-    MapPillCorner.TOP_START, MapPillCorner.BOTTOM_START -> Alignment.Horizontal.Start
-    MapPillCorner.TOP_END, MapPillCorner.BOTTOM_END -> Alignment.Horizontal.End
-}
 
 @Composable
 private fun LargeLayout(
