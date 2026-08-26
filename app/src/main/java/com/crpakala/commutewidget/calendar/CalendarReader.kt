@@ -110,25 +110,23 @@ class CalendarReader(private val context: Context) {
      * v3 calendar mode: the next event today, including unlocated events (unlike
      * [nextEventWithLocation], which the v2 tap-triggered calendar override used and which this
      * function does not replace - it stays available for existing callers). The window is
-     * `[now - 15 min, end of local day)`; [zoneId] determines what "end of local day" means.
+     * `[now - 15 min, max(end of local day, now + minLookaheadMinutes))`: rest-of-today
+     * semantics, extended past local midnight by [minLookaheadMinutes] so a temporally imminent
+     * event (a 12:30 am movie seen at 11:40 pm) still routes instead of being excluded purely
+     * because the calendar date rolled over.
      */
     fun nextEventToday(
         selectedCalendarIds: Set<Long>,
         nowEpochMillis: Long,
         zoneId: ZoneId,
+        minLookaheadMinutes: Int = 0,
     ): TodayEvent? {
         if (!hasPermission() || selectedCalendarIds.isEmpty()) {
             return null
         }
 
         val queryStartMillis = nowEpochMillis - TODAY_LOOKBACK_MILLIS
-        val endOfDayMillis = Instant.ofEpochMilli(nowEpochMillis)
-            .atZone(zoneId)
-            .toLocalDate()
-            .plusDays(1)
-            .atStartOfDay(zoneId)
-            .toInstant()
-            .toEpochMilli()
+        val endOfDayMillis = calendarQueryEndEpochMillis(nowEpochMillis, zoneId, minLookaheadMinutes)
         val instancesUri = CalendarContract.Instances.CONTENT_URI.buildUpon()
             .appendPath(queryStartMillis.toString())
             .appendPath(endOfDayMillis.toString())
@@ -270,6 +268,25 @@ internal data class RawInstance(
 )
 
 private const val LOCATION_PREFERENCE_WINDOW_MILLIS = 30 * 60_000L
+
+/**
+ * Query end for [CalendarReader.nextEventToday]: end of the local day, extended to at least
+ * `now + minLookaheadMinutes` so a temporally imminent after-midnight event still qualifies.
+ */
+internal fun calendarQueryEndEpochMillis(
+    nowEpochMillis: Long,
+    zoneId: ZoneId,
+    minLookaheadMinutes: Int,
+): Long {
+    val endOfDay = Instant.ofEpochMilli(nowEpochMillis)
+        .atZone(zoneId)
+        .toLocalDate()
+        .plusDays(1)
+        .atStartOfDay(zoneId)
+        .toInstant()
+        .toEpochMilli()
+    return maxOf(endOfDay, nowEpochMillis + minLookaheadMinutes * 60_000L)
+}
 
 /**
  * Selects the v3 calendar-mode candidate from today's remaining [rows]. Unlike [selectEvent], an

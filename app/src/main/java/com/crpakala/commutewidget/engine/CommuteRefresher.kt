@@ -365,8 +365,12 @@ object CommuteRefresher {
         if (!settings.calendarEnabled || settings.selectedCalendarIds.isEmpty()) return null
         val reader = CalendarReader(context)
         if (!reader.hasPermission()) return null
-        val event = reader.nextEventToday(settings.selectedCalendarIds, nowEpochMillis, ZoneId.systemDefault())
-            ?: return null
+        val event = reader.nextEventToday(
+            settings.selectedCalendarIds,
+            nowEpochMillis,
+            ZoneId.systemDefault(),
+            minLookaheadMinutes = settings.eventTakeoverMinutes,
+        ) ?: return null
         return event.takeIf {
             eventTakeoverApplies(it.startEpochMillis, it.location != null, nowEpochMillis, settings.eventTakeoverMinutes)
         }
@@ -494,7 +498,12 @@ object CommuteRefresher {
             settings.selectedCalendarIds.isNotEmpty()
 
         val event: TodayEvent? = if (canReadCalendar) {
-            calendarReader.nextEventToday(settings.selectedCalendarIds, nowEpochMillis, now.zone)
+            calendarReader.nextEventToday(
+                settings.selectedCalendarIds,
+                nowEpochMillis,
+                now.zone,
+                minLookaheadMinutes = settings.eventTakeoverMinutes,
+            )
         } else {
             null
         }

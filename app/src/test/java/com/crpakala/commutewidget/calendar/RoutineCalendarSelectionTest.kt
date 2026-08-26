@@ -6,6 +6,24 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class RoutineCalendarSelectionTest {
+    @Test
+    fun calendarQueryEnd_restOfDayByDefault() {
+        val zone = java.time.ZoneId.of("Asia/Kolkata")
+        val now = java.time.ZonedDateTime.of(2026, 8, 26, 14, 0, 0, 0, zone)
+        val end = calendarQueryEndEpochMillis(now.toInstant().toEpochMilli(), zone, 0)
+        val expectedMidnight = now.toLocalDate().plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+        org.junit.Assert.assertEquals(expectedMidnight, end)
+    }
+
+    @Test
+    fun calendarQueryEnd_extendsPastMidnightByLookahead() {
+        val zone = java.time.ZoneId.of("Asia/Kolkata")
+        val now = java.time.ZonedDateTime.of(2026, 8, 26, 23, 40, 0, 0, zone)
+        val end = calendarQueryEndEpochMillis(now.toInstant().toEpochMilli(), zone, 120)
+        val expected = now.toInstant().toEpochMilli() + 120 * 60_000L
+        org.junit.Assert.assertEquals(expected, end)
+    }
+
     private val now = 1_000_000L
     private val selectedCalendars = setOf(1L)
 
