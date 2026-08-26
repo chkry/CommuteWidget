@@ -46,6 +46,7 @@ private object PreferenceKeys {
     val REFRESHING_SINCE_EPOCH_MILLIS = longPreferencesKey("refreshing_since_epoch_millis")
     val MAP_RENDER_KEY = stringPreferencesKey("map_render_key")
     val GEOCODE_CACHE_JSON = stringPreferencesKey("geocode_cache_json")
+    val MAP_PILL_CORNER = stringPreferencesKey("map_pill_corner")
     val BEST_DEPARTURE_ENABLED = booleanPreferencesKey("best_departure_enabled")
     val DEPARTURE_SLOT_START_MINUTE_OF_DAY = intPreferencesKey("departure_slot_start_minute_of_day")
     val DEPARTURE_SLOT_END_MINUTE_OF_DAY = intPreferencesKey("departure_slot_end_minute_of_day")
@@ -66,6 +67,7 @@ private fun Preferences.toAppSettings(): AppSettings {
         eventLeaveByBufferMinutes = this[PreferenceKeys.EVENT_LEAVE_BY_BUFFER_MINUTES] ?: 10,
         eventRealtimeThresholdMinutes = this[PreferenceKeys.EVENT_REALTIME_THRESHOLD_MINUTES] ?: 60,
         eventTakeoverMinutes = this[PreferenceKeys.EVENT_TAKEOVER_MINUTES] ?: 120,
+        mapPillCorner = parseMapPillCorner(this[PreferenceKeys.MAP_PILL_CORNER]),
         bestDepartureEnabled = this[PreferenceKeys.BEST_DEPARTURE_ENABLED] ?: true,
         departureSlotStartMinuteOfDay = this[PreferenceKeys.DEPARTURE_SLOT_START_MINUTE_OF_DAY] ?: 840,
         departureSlotEndMinuteOfDay = this[PreferenceKeys.DEPARTURE_SLOT_END_MINUTE_OF_DAY] ?: 1080,
@@ -195,6 +197,12 @@ class SettingsRepository private constructor(
     suspend fun setGeocodeCache(place: Place) {
         dataStore.edit { preferences ->
             preferences[PreferenceKeys.GEOCODE_CACHE_JSON] = encodePlace(place)
+        }
+    }
+
+    suspend fun setMapPillCorner(corner: MapPillCorner) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.MAP_PILL_CORNER] = corner.name
         }
     }
 

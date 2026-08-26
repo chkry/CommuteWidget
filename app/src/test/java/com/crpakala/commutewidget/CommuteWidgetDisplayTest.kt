@@ -31,6 +31,12 @@ class CommuteWidgetDisplayTest {
     }
 
     @Test
+    fun bestDepartureLineText_shortForm() {
+        assertEquals("Best: 5:39 pm", bestDepartureLineText(17 * 60 + 39))
+        assertEquals("Best: 9:05 am", bestDepartureLineText(9 * 60 + 5))
+    }
+
+    @Test
     fun destinationDisplayLabel_fallsBackToWorkWhenSnapshotLabelMissing() {
         assertEquals("To Work", destinationDisplayLabel(Direction.TO_WORK, null))
         assertEquals("To Work", destinationDisplayLabel(Direction.TO_WORK, ""))

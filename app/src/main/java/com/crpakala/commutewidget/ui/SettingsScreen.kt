@@ -66,6 +66,7 @@ import com.crpakala.commutewidget.api.GeocodingClient
 import com.crpakala.commutewidget.data.AppSettings
 import com.crpakala.commutewidget.data.Direction
 import com.crpakala.commutewidget.data.Favourite
+import com.crpakala.commutewidget.data.MapPillCorner
 import com.crpakala.commutewidget.data.Place
 import com.crpakala.commutewidget.data.SettingsRepository
 import com.crpakala.commutewidget.data.TravelMode
@@ -223,9 +224,16 @@ private fun SettingsScreen() {
                     direction = settings.departureSlotDirection,
                     slotStart = settings.departureSlotStartMinuteOfDay,
                     slotEnd = settings.departureSlotEndMinuteOfDay,
+                    pillCorner = settings.mapPillCorner,
                     onEnabledChanged = { enabled ->
                         scope.launch {
                             repository.setBestDepartureEnabled(enabled)
+                            refreshWidget(applicationContext)
+                        }
+                    },
+                    onPillCornerChanged = { corner ->
+                        scope.launch {
+                            repository.setMapPillCorner(corner)
                             refreshWidget(applicationContext)
                         }
                     },
@@ -444,7 +452,9 @@ private fun BestDepartureSection(
     direction: Direction,
     slotStart: Int,
     slotEnd: Int,
+    pillCorner: MapPillCorner,
     onEnabledChanged: (Boolean) -> Unit,
+    onPillCornerChanged: (MapPillCorner) -> Unit,
     onDirectionChanged: (Direction) -> Unit,
     onSlotChanged: (Boolean, Int) -> Unit,
 ) {
@@ -479,6 +489,35 @@ private fun BestDepartureSection(
             if (slotStart >= slotEnd) {
                 Text("Slot start must be before end", color = MaterialTheme.colorScheme.error)
             }
+        }
+        Text("Map pill position", style = MaterialTheme.typography.bodyMedium)
+        Text(
+            "Where the leave-by and best-time pills sit on the widget's map",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = pillCorner == MapPillCorner.TOP_START,
+                onClick = { onPillCornerChanged(MapPillCorner.TOP_START) },
+                label = { Text("Top left") },
+            )
+            FilterChip(
+                selected = pillCorner == MapPillCorner.TOP_END,
+                onClick = { onPillCornerChanged(MapPillCorner.TOP_END) },
+                label = { Text("Top right") },
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = pillCorner == MapPillCorner.BOTTOM_START,
+                onClick = { onPillCornerChanged(MapPillCorner.BOTTOM_START) },
+                label = { Text("Bottom left") },
+            )
+            FilterChip(
+                selected = pillCorner == MapPillCorner.BOTTOM_END,
+                onClick = { onPillCornerChanged(MapPillCorner.BOTTOM_END) },
+                label = { Text("Bottom right") },
+            )
         }
     }
     editingStart?.let { isStart ->

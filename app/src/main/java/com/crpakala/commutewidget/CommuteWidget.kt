@@ -54,6 +54,7 @@ import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import com.crpakala.commutewidget.data.CommuteSnapshot
 import com.crpakala.commutewidget.data.Direction
+import com.crpakala.commutewidget.data.MapPillCorner
 import com.crpakala.commutewidget.data.SettingsRepository
 import com.crpakala.commutewidget.data.SnapshotMode
 import com.crpakala.commutewidget.data.TravelMode
@@ -107,7 +108,7 @@ class CommuteWidget : GlanceAppWidget() {
                 slotEndMinuteOfDay = settings.departureSlotEndMinuteOfDay,
             )
         ) {
-            "Best: leave ${formatClockTime(bestDeparture!!.bestMinuteOfDay)} (${formatEta(bestDeparture.bestDurationSeconds)})"
+            bestDepartureLineText(bestDeparture!!.bestMinuteOfDay)
         } else {
             null
         }
@@ -128,6 +129,7 @@ class CommuteWidget : GlanceAppWidget() {
                         leaveByEnabled = settings.leaveByEnabled,
                         refreshingSince = refreshingSince,
                         bestDepartureLine = bestDepartureLine,
+                        pillCorner = settings.mapPillCorner,
                     ),
                 )
             }
@@ -188,8 +190,9 @@ private data class WidgetExtras(
     val nowMinuteOfDay: Int,
     val leaveByEnabled: Boolean,
     val refreshingSince: Long?,
-    /** Pre-formatted "Best: leave 3:30 pm (38 min)" line, null when disabled/stale/slot passed. */
+    /** Pre-formatted "Best: 3:30 pm" line, null when disabled/stale/slot passed. */
     val bestDepartureLine: String? = null,
+    val pillCorner: MapPillCorner = MapPillCorner.TOP_START,
 )
 
 private data class InfoStyle(
@@ -353,7 +356,6 @@ private fun WideLayout(
                     showRoutedCaption = true,
                     showLeaveBy = false,
                     showDistance = true,
-                    showBestDeparture = true,
                 ),
             )
         }
@@ -362,22 +364,47 @@ private fun WideLayout(
                 .defaultWeight()
                 .fillMaxHeight()
                 .clickable(actionRunCallback<NavigateAction>()),
-            contentAlignment = Alignment.TopStart,
+            contentAlignment = pillCornerAlignment(extras.pillCorner),
         ) {
             MapPane(
                 snapshot = snapshot,
                 bitmap = mapBitmap,
                 modifier = GlanceModifier.fillMaxSize(),
             )
-            // Leave-by rides on the map as a pill; the panel is too narrow for the full string.
-            // Deliberately NOT gated on the bitmap so it can never vanish with a failed map fetch.
-            if (shouldShowLeaveBy(snapshot, extras.leaveByEnabled)) {
-                Box(modifier = GlanceModifier.padding(6.dp)) {
-                    LeaveByPill(snapshot.leaveByMinuteOfDay!!, extras.nowMinuteOfDay)
+            // Pills ride on the map; the panel is too narrow for their full strings. Deliberately
+            // NOT gated on the bitmap so they can never vanish with a failed map fetch. Corner is
+            // owner-configurable so the stack can dodge whatever the route usually covers.
+            val showLeaveByPill = shouldShowLeaveBy(snapshot, extras.leaveByEnabled)
+            if (showLeaveByPill || extras.bestDepartureLine != null) {
+                Column(
+                    modifier = GlanceModifier.padding(6.dp),
+                    horizontalAlignment = pillCornerHorizontalAlignment(extras.pillCorner),
+                ) {
+                    if (showLeaveByPill) {
+                        LeaveByPill(snapshot.leaveByMinuteOfDay!!, extras.nowMinuteOfDay)
+                    }
+                    if (extras.bestDepartureLine != null) {
+                        if (showLeaveByPill) {
+                            Spacer(modifier = GlanceModifier.height(3.dp))
+                        }
+                        MapTextPill(extras.bestDepartureLine)
+                    }
                 }
             }
         }
     }
+}
+
+private fun pillCornerAlignment(corner: MapPillCorner): Alignment = when (corner) {
+    MapPillCorner.TOP_START -> Alignment.TopStart
+    MapPillCorner.TOP_END -> Alignment.TopEnd
+    MapPillCorner.BOTTOM_START -> Alignment.BottomStart
+    MapPillCorner.BOTTOM_END -> Alignment.BottomEnd
+}
+
+private fun pillCornerHorizontalAlignment(corner: MapPillCorner): Alignment.Horizontal = when (corner) {
+    MapPillCorner.TOP_START, MapPillCorner.BOTTOM_START -> Alignment.Horizontal.Start
+    MapPillCorner.TOP_END, MapPillCorner.BOTTOM_END -> Alignment.Horizontal.End
 }
 
 @Composable
@@ -699,6 +726,27 @@ private fun LeaveByPill(minuteOfDay: Int, nowMinuteOfDay: Int) {
     }
 }
 
+/** Opaque generic text pill for the map overlay stack (e.g. "Best: 3:30 pm"). */
+@Composable
+private fun MapTextPill(text: String) {
+    Box(
+        modifier = GlanceModifier
+            .background(GlanceTheme.colors.surfaceVariant)
+            .cornerRadius(10.dp)
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+    ) {
+        Text(
+            text = text,
+            style = TextStyle(
+                color = GlanceTheme.colors.onSurfaceVariant,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+            ),
+            maxLines = 1,
+        )
+    }
+}
+
 /** FIX-9: a "Routed" caption under/beside a CALENDAR_EVENT title when it won the 30-minute located-event preference. */
 @Composable
 private fun RoutedCaption() {
@@ -910,6 +958,10 @@ internal fun formatClockTime(minuteOfDay: Int): String {
 
 internal fun formatLeaveByLine(minuteOfDay: Int): String {
     return "Leave by ${formatClockTime(minuteOfDay)}"
+}
+
+internal fun bestDepartureLineText(minuteOfDay: Int): String {
+    return "Best: ${formatClockTime(minuteOfDay)}"
 }
 
 internal fun formatEventClockTime(eventStartEpochMillis: Long, zone: ZoneId = ZoneId.systemDefault()): String {

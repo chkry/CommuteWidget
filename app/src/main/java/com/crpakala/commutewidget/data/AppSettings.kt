@@ -13,6 +13,8 @@ data class AppSettings(
     val eventRealtimeThresholdMinutes: Int = 60,
     /** A located event starting within this many minutes takes over the widget even inside commute windows. */
     val eventTakeoverMinutes: Int = 120,
+    /** Which map corner hosts the overlay pills (leave-by, best departure) on the 4x2 widget. */
+    val mapPillCorner: MapPillCorner = MapPillCorner.TOP_START,
     /** Best-departure advisor: sample predicted traffic across the departure slot, show the cheapest time. */
     val bestDepartureEnabled: Boolean = true,
     val departureSlotStartMinuteOfDay: Int = 840,
