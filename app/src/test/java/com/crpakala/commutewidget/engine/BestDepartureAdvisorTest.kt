@@ -73,10 +73,16 @@ class BestDepartureAdvisorTest {
     @Test
     fun show_requiresSameDayAndSlotNotPassed() {
         val result = BestDeparture(today, Direction.TO_WORK, 15 * 60 + 30, 2280L)
-        assertTrue(shouldShowBestDeparture(result, true, today, slotEnd, slotEnd))
-        assertFalse(shouldShowBestDeparture(result, true, today, slotEnd + 1, slotEnd))
-        assertFalse(shouldShowBestDeparture(result, true, "2026-08-27", slotStart, slotEnd))
-        assertFalse(shouldShowBestDeparture(result, false, today, slotStart, slotEnd))
-        assertFalse(shouldShowBestDeparture(null, true, today, slotStart, slotEnd))
+        assertTrue(shouldShowBestDeparture(result, true, today, slotEnd, slotEnd, showingCalendarEvent = false))
+        assertFalse(shouldShowBestDeparture(result, true, today, slotEnd + 1, slotEnd, showingCalendarEvent = false))
+        assertFalse(shouldShowBestDeparture(result, true, "2026-08-27", slotStart, slotEnd, showingCalendarEvent = false))
+        assertFalse(shouldShowBestDeparture(result, false, today, slotStart, slotEnd, showingCalendarEvent = false))
+        assertFalse(shouldShowBestDeparture(null, true, today, slotStart, slotEnd, showingCalendarEvent = false))
+    }
+
+    @Test
+    fun show_hiddenWhileCalendarEventDisplayed() {
+        val result = BestDeparture(today, Direction.TO_WORK, 15 * 60 + 30, 2280L)
+        assertFalse(shouldShowBestDeparture(result, true, today, slotStart, slotEnd, showingCalendarEvent = true))
     }
 }

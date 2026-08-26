@@ -152,13 +152,22 @@ internal fun departureSampleInstants(
     return instants
 }
 
-/** Whether the stored result should still render: same-day and the slot end has not passed. */
+/**
+ * Whether the stored result should still render: same-day, the slot end has not passed, and the
+ * widget is not showing a calendar event - the Best pill describes the home/work commute slot,
+ * and next to an event's own leave-by it reads as (wrong) advice about the event.
+ */
 internal fun shouldShowBestDeparture(
     result: BestDeparture?,
     enabled: Boolean,
     today: String,
     nowMinuteOfDay: Int,
     slotEndMinuteOfDay: Int,
+    showingCalendarEvent: Boolean,
 ): Boolean {
-    return enabled && result != null && result.localDate == today && nowMinuteOfDay <= slotEndMinuteOfDay
+    return enabled &&
+        !showingCalendarEvent &&
+        result != null &&
+        result.localDate == today &&
+        nowMinuteOfDay <= slotEndMinuteOfDay
 }

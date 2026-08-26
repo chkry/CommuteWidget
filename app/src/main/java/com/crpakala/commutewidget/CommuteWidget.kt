@@ -106,6 +106,7 @@ class CommuteWidget : GlanceAppWidget() {
                 today = now.toLocalDate().toString(),
                 nowMinuteOfDay = nowMinuteOfDay,
                 slotEndMinuteOfDay = settings.departureSlotEndMinuteOfDay,
+                showingCalendarEvent = snapshot?.mode == SnapshotMode.CALENDAR_EVENT,
             )
         ) {
             bestDepartureLineText(bestDeparture!!.bestMinuteOfDay)
