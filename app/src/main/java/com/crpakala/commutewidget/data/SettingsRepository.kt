@@ -48,9 +48,6 @@ private object PreferenceKeys {
     val GEOCODE_CACHE_JSON = stringPreferencesKey("geocode_cache_json")
     val MAP_PILL_CORNER = stringPreferencesKey("map_pill_corner")
     val BEST_DEPARTURE_ENABLED = booleanPreferencesKey("best_departure_enabled")
-    val DEPARTURE_SLOT_START_MINUTE_OF_DAY = intPreferencesKey("departure_slot_start_minute_of_day")
-    val DEPARTURE_SLOT_END_MINUTE_OF_DAY = intPreferencesKey("departure_slot_end_minute_of_day")
-    val DEPARTURE_SLOT_DIRECTION = stringPreferencesKey("departure_slot_direction")
     val BEST_DEPARTURE_JSON = stringPreferencesKey("best_departure_json")
 }
 
@@ -69,9 +66,6 @@ private fun Preferences.toAppSettings(): AppSettings {
         eventTakeoverMinutes = this[PreferenceKeys.EVENT_TAKEOVER_MINUTES] ?: 120,
         mapPillCorner = parseMapPillCorner(this[PreferenceKeys.MAP_PILL_CORNER]),
         bestDepartureEnabled = this[PreferenceKeys.BEST_DEPARTURE_ENABLED] ?: true,
-        departureSlotStartMinuteOfDay = this[PreferenceKeys.DEPARTURE_SLOT_START_MINUTE_OF_DAY] ?: 840,
-        departureSlotEndMinuteOfDay = this[PreferenceKeys.DEPARTURE_SLOT_END_MINUTE_OF_DAY] ?: 1080,
-        departureSlotDirection = parseDirection(this[PreferenceKeys.DEPARTURE_SLOT_DIRECTION]),
         calendarEnabled = this[PreferenceKeys.CALENDAR_ENABLED] ?: false,
         selectedCalendarIds = decodeLongSet(this[PreferenceKeys.SELECTED_CALENDAR_IDS_JSON]),
         commuteDays = decodeIntSet(this[PreferenceKeys.HISTORY_DAYS_JSON], setOf(1, 2, 3, 4, 5)),
@@ -209,24 +203,6 @@ class SettingsRepository private constructor(
     suspend fun setBestDepartureEnabled(enabled: Boolean) {
         dataStore.edit { preferences ->
             preferences[PreferenceKeys.BEST_DEPARTURE_ENABLED] = enabled
-        }
-    }
-
-    suspend fun setDepartureSlotStartMinuteOfDay(minuteOfDay: Int) {
-        dataStore.edit { preferences ->
-            preferences[PreferenceKeys.DEPARTURE_SLOT_START_MINUTE_OF_DAY] = minuteOfDay
-        }
-    }
-
-    suspend fun setDepartureSlotEndMinuteOfDay(minuteOfDay: Int) {
-        dataStore.edit { preferences ->
-            preferences[PreferenceKeys.DEPARTURE_SLOT_END_MINUTE_OF_DAY] = minuteOfDay
-        }
-    }
-
-    suspend fun setDepartureSlotDirection(direction: Direction) {
-        dataStore.edit { preferences ->
-            preferences[PreferenceKeys.DEPARTURE_SLOT_DIRECTION] = direction.name
         }
     }
 

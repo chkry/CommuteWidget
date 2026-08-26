@@ -15,11 +15,11 @@ data class AppSettings(
     val eventTakeoverMinutes: Int = 120,
     /** Which map corner hosts the overlay pills (leave-by, best departure) on the 4x2 widget. */
     val mapPillCorner: MapPillCorner = MapPillCorner.TOP_START,
-    /** Best-departure advisor: sample predicted traffic across the departure slot, show the cheapest time. */
+    /**
+     * Best-departure advisor: samples predicted traffic across the CURRENT commute window (morning
+     * = home to work, evening = work to home, auto-switching) and shows the cheapest time.
+     */
     val bestDepartureEnabled: Boolean = true,
-    val departureSlotStartMinuteOfDay: Int = 840,
-    val departureSlotEndMinuteOfDay: Int = 1080,
-    val departureSlotDirection: Direction = Direction.TO_WORK,
     val calendarEnabled: Boolean = false,
     val selectedCalendarIds: Set<Long> = emptySet(),
     /**

@@ -221,9 +221,6 @@ private fun SettingsScreen() {
             item {
                 BestDepartureSection(
                     enabled = settings.bestDepartureEnabled,
-                    direction = settings.departureSlotDirection,
-                    slotStart = settings.departureSlotStartMinuteOfDay,
-                    slotEnd = settings.departureSlotEndMinuteOfDay,
                     pillCorner = settings.mapPillCorner,
                     onEnabledChanged = { enabled ->
                         scope.launch {
@@ -234,19 +231,6 @@ private fun SettingsScreen() {
                     onPillCornerChanged = { corner ->
                         scope.launch {
                             repository.setMapPillCorner(corner)
-                            refreshWidget(applicationContext)
-                        }
-                    },
-                    onDirectionChanged = { direction ->
-                        scope.launch {
-                            repository.setDepartureSlotDirection(direction)
-                            refreshWidget(applicationContext)
-                        }
-                    },
-                    onSlotChanged = { isStart, minute ->
-                        scope.launch {
-                            if (isStart) repository.setDepartureSlotStartMinuteOfDay(minute)
-                            else repository.setDepartureSlotEndMinuteOfDay(minute)
                             refreshWidget(applicationContext)
                         }
                     },
@@ -445,50 +429,24 @@ private fun TravelModeSection(travelMode: TravelMode, onSelect: (TravelMode) -> 
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun BestDepartureSection(
     enabled: Boolean,
-    direction: Direction,
-    slotStart: Int,
-    slotEnd: Int,
     pillCorner: MapPillCorner,
     onEnabledChanged: (Boolean) -> Unit,
     onPillCornerChanged: (MapPillCorner) -> Unit,
-    onDirectionChanged: (Direction) -> Unit,
-    onSlotChanged: (Boolean, Int) -> Unit,
 ) {
-    var editingStart by remember { mutableStateOf<Boolean?>(null) }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text("Best departure", style = MaterialTheme.typography.titleMedium)
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Column(modifier = Modifier.weight(1f)) {
                 Text("Suggest the best time to leave")
                 Text(
-                    "Samples Google's predicted traffic across your departure slot once a day and shows the cheapest time on the widget",
+                    "Follows your commute windows automatically: mornings show the best time to leave for work, evenings the best time to head home, from Google's predicted traffic",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
             Switch(checked = enabled, onCheckedChange = onEnabledChanged)
-        }
-        if (enabled) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(
-                    selected = direction == Direction.TO_WORK,
-                    onClick = { onDirectionChanged(Direction.TO_WORK) },
-                    label = { Text("Home to Work") },
-                )
-                FilterChip(
-                    selected = direction == Direction.TO_HOME,
-                    onClick = { onDirectionChanged(Direction.TO_HOME) },
-                    label = { Text("Work to Home") },
-                )
-            }
-            TimeRow("Departure slot start", slotStart) { editingStart = true }
-            TimeRow("Departure slot end", slotEnd) { editingStart = false }
-            if (slotStart >= slotEnd) {
-                Text("Slot start must be before end", color = MaterialTheme.colorScheme.error)
-            }
         }
         Text("Map pill position", style = MaterialTheme.typography.bodyMedium)
         Text(
@@ -518,16 +476,6 @@ private fun BestDepartureSection(
                 onClick = { onPillCornerChanged(MapPillCorner.BOTTOM_END) },
                 label = { Text("Bottom right") },
             )
-        }
-    }
-    editingStart?.let { isStart ->
-        val minute = if (isStart) slotStart else slotEnd
-        key(isStart, minute) {
-            val picker = rememberTimePickerState(minute / 60, minute % 60, is24Hour = false)
-            TimePickerDialog(picker, { editingStart = null }) {
-                onSlotChanged(isStart, picker.hour * 60 + picker.minute)
-                editingStart = null
-            }
         }
     }
 }

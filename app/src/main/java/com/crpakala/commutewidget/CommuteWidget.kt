@@ -60,6 +60,7 @@ import com.crpakala.commutewidget.data.SnapshotMode
 import com.crpakala.commutewidget.data.TravelMode
 import com.crpakala.commutewidget.data.isRefreshingActive
 import com.crpakala.commutewidget.engine.CommuteRefresher
+import com.crpakala.commutewidget.engine.currentBestDepartureTarget
 import com.crpakala.commutewidget.engine.mapInSampleSize
 import com.crpakala.commutewidget.engine.shouldShowBestDeparture
 import com.crpakala.commutewidget.schedule.CommuteScheduler
@@ -99,13 +100,20 @@ class CommuteWidget : GlanceAppWidget() {
         val configured = settings.apiKey.isNotBlank() && settings.home != null && settings.work != null
         val refreshingSince = repo.refreshingSince()
         val bestDeparture = repo.bestDeparture()
+        val bestDepartureTarget = currentBestDepartureTarget(
+            nowMinuteOfDay = nowMinuteOfDay,
+            morningStart = settings.morningSlotStartMinuteOfDay,
+            morningEnd = settings.morningSlotEndMinuteOfDay,
+            eveningStart = settings.eveningSlotStartMinuteOfDay,
+            eveningEnd = settings.eveningSlotEndMinuteOfDay,
+        )
         val bestDepartureLine = if (
             shouldShowBestDeparture(
                 result = bestDeparture,
                 enabled = settings.bestDepartureEnabled,
+                todayIsCommuteDay = now.dayOfWeek.value in settings.commuteDays,
                 today = now.toLocalDate().toString(),
-                nowMinuteOfDay = nowMinuteOfDay,
-                slotEndMinuteOfDay = settings.departureSlotEndMinuteOfDay,
+                target = bestDepartureTarget,
                 showingCalendarEvent = snapshot?.mode == SnapshotMode.CALENDAR_EVENT,
             )
         ) {
