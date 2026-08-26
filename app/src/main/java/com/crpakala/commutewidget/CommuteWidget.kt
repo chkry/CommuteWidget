@@ -203,6 +203,9 @@ private data class InfoStyle(
     val showDistance: Boolean,
     val showTrafficBar: Boolean,
     val inlineEta: Boolean,
+    // WIDE renders the leave-by as an overlay pill on the map instead of a panel line;
+    // the 40% info panel is too narrow for the full "Leave by h:mm am" string.
+    val showLeaveBy: Boolean = true,
 )
 
 @Composable
@@ -372,6 +375,7 @@ private fun WideLayout(
                     showDistance = !quiet,
                     showTrafficBar = snapshot.mode == SnapshotMode.COMMUTE,
                     inlineEta = false,
+                    showLeaveBy = false,
                 ),
             )
             if (!quiet) {
@@ -401,12 +405,21 @@ private fun WideLayout(
                 .defaultWeight()
                 .fillMaxHeight()
                 .clickable(mapAction),
+            contentAlignment = Alignment.BottomStart,
         ) {
             MapPane(
                 snapshot = snapshot,
                 bitmap = mapBitmap,
                 modifier = GlanceModifier.fillMaxSize(),
             )
+            // The 40% info panel is too narrow for the leave-by string on this size, so it
+            // rides on the map as an overlay pill. Only over a real map image: the no-map
+            // placeholder already carries a "Leave by" text line of its own.
+            if (mapBitmap != null && shouldShowLeaveBy(snapshot, extras.leaveByEnabled)) {
+                Box(modifier = GlanceModifier.padding(6.dp)) {
+                    LeaveByChip(snapshot.leaveByMinuteOfDay!!, extras.nowMinuteOfDay, 10.sp)
+                }
+            }
         }
     }
 }
@@ -518,7 +531,7 @@ private fun CommuteInfo(
     if (style.showTrafficBar) {
         TrafficBar(accent)
     }
-    if (shouldShowLeaveBy(snapshot, extras.leaveByEnabled)) {
+    if (style.showLeaveBy && shouldShowLeaveBy(snapshot, extras.leaveByEnabled)) {
         Spacer(modifier = GlanceModifier.height(2.dp))
         LeaveByChip(snapshot.leaveByMinuteOfDay!!, extras.nowMinuteOfDay, style.captionFontSize)
     }
@@ -542,7 +555,7 @@ private fun CalendarEventInfo(
     snapshot.eventStartEpochMillis?.let { start ->
         CaptionText(formatEventAtTime(start), style.captionFontSize)
     }
-    if (shouldShowLeaveBy(snapshot, extras.leaveByEnabled)) {
+    if (style.showLeaveBy && shouldShowLeaveBy(snapshot, extras.leaveByEnabled)) {
         Spacer(modifier = GlanceModifier.height(2.dp))
         LeaveByChip(snapshot.leaveByMinuteOfDay!!, extras.nowMinuteOfDay, style.captionFontSize)
     }
