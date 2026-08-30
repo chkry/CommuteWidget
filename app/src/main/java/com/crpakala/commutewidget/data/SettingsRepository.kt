@@ -51,6 +51,35 @@ private object PreferenceKeys {
     val WIDGET_TEXT_SCALE_PERCENT = intPreferencesKey("widget_text_scale_percent")
     val BEST_DEPARTURE_ENABLED = booleanPreferencesKey("best_departure_enabled")
     val BEST_DEPARTURE_JSON = stringPreferencesKey("best_departure_json")
+    val MORNING_SUPPLEMENTS_ENABLED = booleanPreferencesKey("morning_supplements_enabled")
+    val EVENING_PROTEIN_ENABLED = booleanPreferencesKey("evening_protein_enabled")
+    val WATER_REMINDERS_ENABLED = booleanPreferencesKey("water_reminders_enabled")
+    val EVENING_WALK_ENABLED = booleanPreferencesKey("evening_walk_enabled")
+    val SLEEP_BRIEF_ENABLED = booleanPreferencesKey("sleep_brief_enabled")
+    val AUDIOBOOK_SUPPRESSION_ENABLED = booleanPreferencesKey("audiobook_suppression_enabled")
+    val SLEEP_DEBT_SOFTEN_ENABLED = booleanPreferencesKey("sleep_debt_soften_enabled")
+    val GYM_PROTEIN_PRIORITY_ENABLED = booleanPreferencesKey("gym_protein_priority_enabled")
+    val RESTLESS_NIGHT_SHIELD_ENABLED = booleanPreferencesKey("restless_night_shield_enabled")
+    val WALK_POST_AUDIBLE_LATCH_ENABLED = booleanPreferencesKey("walk_post_audible_latch_enabled")
+    val WALK_DAYLIGHT_PREFERENCE_ENABLED = booleanPreferencesKey("walk_daylight_preference_enabled")
+    val FOCUS_GAP_CHIP_ENABLED = booleanPreferencesKey("focus_gap_chip_enabled")
+    val POST_GYM_WATER_PULSE_ENABLED = booleanPreferencesKey("post_gym_water_pulse_enabled")
+    val MORNING_LIGHT_LINE_ENABLED = booleanPreferencesKey("morning_light_line_enabled")
+    val CAFFEINE_CUTOFF_LINE_ENABLED = booleanPreferencesKey("caffeine_cutoff_line_enabled")
+    val STEP_GOAL = intPreferencesKey("step_goal")
+    val WATER_REMINDERS_PER_DAY = intPreferencesKey("water_reminders_per_day")
+    val MORNING_SUPPLEMENTS_START_MINUTE_OF_DAY =
+        intPreferencesKey("morning_supplements_start_minute_of_day")
+    val MORNING_SUPPLEMENTS_END_MINUTE_OF_DAY =
+        intPreferencesKey("morning_supplements_end_minute_of_day")
+    val PROTEIN_START_MINUTE_OF_DAY = intPreferencesKey("protein_start_minute_of_day")
+    val PROTEIN_END_MINUTE_OF_DAY = intPreferencesKey("protein_end_minute_of_day")
+    val WALK_SEARCH_START_MINUTE_OF_DAY = intPreferencesKey("walk_search_start_minute_of_day")
+    val WALK_SEARCH_END_MINUTE_OF_DAY = intPreferencesKey("walk_search_end_minute_of_day")
+    val CAFFEINE_CUTOFF_MINUTE_OF_DAY = intPreferencesKey("caffeine_cutoff_minute_of_day")
+    val COMMUTE_AUDIO_PACKAGES_JSON = stringPreferencesKey("commute_audio_packages_json")
+    val HEALTH_DAY_STATE_JSON = stringPreferencesKey("health_day_state_json")
+    val HEALTH_HISTORY_JSON = stringPreferencesKey("health_history_json")
 }
 
 private fun Preferences.toAppSettings(): AppSettings {
@@ -78,6 +107,36 @@ private fun Preferences.toAppSettings(): AppSettings {
         eveningSlotStartMinuteOfDay = this[PreferenceKeys.EVENING_SLOT_START_MINUTE_OF_DAY] ?: 1020,
         eveningSlotEndMinuteOfDay = this[PreferenceKeys.EVENING_SLOT_END_MINUTE_OF_DAY] ?: 1200,
         calendarTickEnabled = this[PreferenceKeys.CALENDAR_TICK_ENABLED] ?: true,
+        morningSupplementsEnabled = this[PreferenceKeys.MORNING_SUPPLEMENTS_ENABLED] ?: true,
+        eveningProteinEnabled = this[PreferenceKeys.EVENING_PROTEIN_ENABLED] ?: true,
+        waterRemindersEnabled = this[PreferenceKeys.WATER_REMINDERS_ENABLED] ?: true,
+        eveningWalkEnabled = this[PreferenceKeys.EVENING_WALK_ENABLED] ?: true,
+        sleepBriefEnabled = this[PreferenceKeys.SLEEP_BRIEF_ENABLED] ?: true,
+        audiobookSuppressionEnabled = this[PreferenceKeys.AUDIOBOOK_SUPPRESSION_ENABLED] ?: true,
+        sleepDebtSoftenEnabled = this[PreferenceKeys.SLEEP_DEBT_SOFTEN_ENABLED] ?: false,
+        gymProteinPriorityEnabled = this[PreferenceKeys.GYM_PROTEIN_PRIORITY_ENABLED] ?: false,
+        restlessNightShieldEnabled = this[PreferenceKeys.RESTLESS_NIGHT_SHIELD_ENABLED] ?: false,
+        walkPostAudibleLatchEnabled = this[PreferenceKeys.WALK_POST_AUDIBLE_LATCH_ENABLED] ?: false,
+        walkDaylightPreferenceEnabled = this[PreferenceKeys.WALK_DAYLIGHT_PREFERENCE_ENABLED] ?: false,
+        focusGapChipEnabled = this[PreferenceKeys.FOCUS_GAP_CHIP_ENABLED] ?: false,
+        postGymWaterPulseEnabled = this[PreferenceKeys.POST_GYM_WATER_PULSE_ENABLED] ?: false,
+        morningLightLineEnabled = this[PreferenceKeys.MORNING_LIGHT_LINE_ENABLED] ?: false,
+        caffeineCutoffLineEnabled = this[PreferenceKeys.CAFFEINE_CUTOFF_LINE_ENABLED] ?: false,
+        stepGoal = this[PreferenceKeys.STEP_GOAL] ?: 8000,
+        waterRemindersPerDay = this[PreferenceKeys.WATER_REMINDERS_PER_DAY] ?: 5,
+        morningSupplementsStartMinuteOfDay =
+            this[PreferenceKeys.MORNING_SUPPLEMENTS_START_MINUTE_OF_DAY] ?: 420,
+        morningSupplementsEndMinuteOfDay =
+            this[PreferenceKeys.MORNING_SUPPLEMENTS_END_MINUTE_OF_DAY] ?: 600,
+        proteinStartMinuteOfDay = this[PreferenceKeys.PROTEIN_START_MINUTE_OF_DAY] ?: 1080,
+        proteinEndMinuteOfDay = this[PreferenceKeys.PROTEIN_END_MINUTE_OF_DAY] ?: 1260,
+        walkSearchStartMinuteOfDay = this[PreferenceKeys.WALK_SEARCH_START_MINUTE_OF_DAY] ?: 1080,
+        walkSearchEndMinuteOfDay = this[PreferenceKeys.WALK_SEARCH_END_MINUTE_OF_DAY] ?: 1290,
+        caffeineCutoffMinuteOfDay = this[PreferenceKeys.CAFFEINE_CUTOFF_MINUTE_OF_DAY] ?: 840,
+        commuteAudioPackages = decodeStringSet(
+            this[PreferenceKeys.COMMUTE_AUDIO_PACKAGES_JSON],
+            setOf("com.audible.application"),
+        ),
     )
 }
 
@@ -255,6 +314,156 @@ class SettingsRepository private constructor(
         }
     }
 
+    suspend fun setMorningSupplementsEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.MORNING_SUPPLEMENTS_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setEveningProteinEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.EVENING_PROTEIN_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setWaterRemindersEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.WATER_REMINDERS_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setEveningWalkEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.EVENING_WALK_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setSleepBriefEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.SLEEP_BRIEF_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setAudiobookSuppressionEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.AUDIOBOOK_SUPPRESSION_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setSleepDebtSoftenEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.SLEEP_DEBT_SOFTEN_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setGymProteinPriorityEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.GYM_PROTEIN_PRIORITY_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setRestlessNightShieldEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.RESTLESS_NIGHT_SHIELD_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setWalkPostAudibleLatchEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.WALK_POST_AUDIBLE_LATCH_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setWalkDaylightPreferenceEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.WALK_DAYLIGHT_PREFERENCE_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setFocusGapChipEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.FOCUS_GAP_CHIP_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setPostGymWaterPulseEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.POST_GYM_WATER_PULSE_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setMorningLightLineEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.MORNING_LIGHT_LINE_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setCaffeineCutoffLineEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.CAFFEINE_CUTOFF_LINE_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setStepGoal(stepGoal: Int) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.STEP_GOAL] = stepGoal
+        }
+    }
+
+    suspend fun setWaterRemindersPerDay(remindersPerDay: Int) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.WATER_REMINDERS_PER_DAY] = remindersPerDay
+        }
+    }
+
+    suspend fun setMorningSupplementsStartMinuteOfDay(minuteOfDay: Int) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.MORNING_SUPPLEMENTS_START_MINUTE_OF_DAY] = minuteOfDay
+        }
+    }
+
+    suspend fun setMorningSupplementsEndMinuteOfDay(minuteOfDay: Int) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.MORNING_SUPPLEMENTS_END_MINUTE_OF_DAY] = minuteOfDay
+        }
+    }
+
+    suspend fun setProteinStartMinuteOfDay(minuteOfDay: Int) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.PROTEIN_START_MINUTE_OF_DAY] = minuteOfDay
+        }
+    }
+
+    suspend fun setProteinEndMinuteOfDay(minuteOfDay: Int) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.PROTEIN_END_MINUTE_OF_DAY] = minuteOfDay
+        }
+    }
+
+    suspend fun setWalkSearchStartMinuteOfDay(minuteOfDay: Int) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.WALK_SEARCH_START_MINUTE_OF_DAY] = minuteOfDay
+        }
+    }
+
+    suspend fun setWalkSearchEndMinuteOfDay(minuteOfDay: Int) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.WALK_SEARCH_END_MINUTE_OF_DAY] = minuteOfDay
+        }
+    }
+
+    suspend fun setCaffeineCutoffMinuteOfDay(minuteOfDay: Int) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.CAFFEINE_CUTOFF_MINUTE_OF_DAY] = minuteOfDay
+        }
+    }
+
+    suspend fun setCommuteAudioPackages(packages: Set<String>) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.COMMUTE_AUDIO_PACKAGES_JSON] = encodeStringSet(packages)
+        }
+    }
+
     suspend fun setMorningSlotStartMinuteOfDay(minuteOfDay: Int) {
         dataStore.edit { preferences ->
             preferences[PreferenceKeys.MORNING_SLOT_START_MINUTE_OF_DAY] = minuteOfDay
@@ -310,6 +519,46 @@ class SettingsRepository private constructor(
     suspend fun saveSnapshot(snapshot: CommuteSnapshot) {
         dataStore.edit { preferences ->
             preferences[PreferenceKeys.SNAPSHOT_JSON] = encodeCommuteSnapshot(snapshot)
+        }
+    }
+
+    suspend fun healthDayState(): HealthDayState? =
+        decodeHealthDayState(dataStore.data.first()[PreferenceKeys.HEALTH_DAY_STATE_JSON])
+
+    /**
+     * Atomically reads, transforms, and persists the current day's state.
+     * Returning null removes the stored state.
+     */
+    suspend fun updateHealthDayState(
+        transform: (HealthDayState?) -> HealthDayState?,
+    ) {
+        dataStore.edit { preferences ->
+            val updated = transform(decodeHealthDayState(preferences[PreferenceKeys.HEALTH_DAY_STATE_JSON]))
+            if (updated == null) {
+                preferences.remove(PreferenceKeys.HEALTH_DAY_STATE_JSON)
+            } else {
+                preferences[PreferenceKeys.HEALTH_DAY_STATE_JSON] = encodeHealthDayState(updated)
+            }
+        }
+    }
+
+    suspend fun healthHistory(): HealthHistory? =
+        decodeHealthHistory(dataStore.data.first()[PreferenceKeys.HEALTH_HISTORY_JSON])
+
+    /**
+     * Atomically reads, transforms, and persists the health history.
+     * Returning null removes the stored history.
+     */
+    suspend fun updateHealthHistory(
+        transform: (HealthHistory?) -> HealthHistory?,
+    ) {
+        dataStore.edit { preferences ->
+            val updated = transform(decodeHealthHistory(preferences[PreferenceKeys.HEALTH_HISTORY_JSON]))
+            if (updated == null) {
+                preferences.remove(PreferenceKeys.HEALTH_HISTORY_JSON)
+            } else {
+                preferences[PreferenceKeys.HEALTH_HISTORY_JSON] = encodeHealthHistory(updated)
+            }
         }
     }
 

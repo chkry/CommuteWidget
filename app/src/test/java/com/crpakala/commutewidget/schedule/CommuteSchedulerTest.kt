@@ -1,9 +1,12 @@
 package com.crpakala.commutewidget.schedule
 
+import com.crpakala.commutewidget.data.AppSettings
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -126,4 +129,60 @@ class CommuteSchedulerTest {
         hour: Int,
         minute: Int,
     ): ZonedDateTime = ZonedDateTime.of(year, month, day, hour, minute, 0, 0, zone)
+
+    /**
+     * Sprint 2: [CommuteScheduler.anyHealthFeatureEnabled] gates whether "health_morning" and
+     * "health_boundary" are armed at all - every independent nudge-introducing toggle must arm
+     * it alone, and sub-toggles that only modify an already-gated feature must not.
+     */
+    private val allHealthFeaturesDisabled = AppSettings(
+        morningSupplementsEnabled = false,
+        eveningProteinEnabled = false,
+        waterRemindersEnabled = false,
+        eveningWalkEnabled = false,
+        sleepBriefEnabled = false,
+        restlessNightShieldEnabled = false,
+        focusGapChipEnabled = false,
+        postGymWaterPulseEnabled = false,
+        morningLightLineEnabled = false,
+        caffeineCutoffLineEnabled = false,
+    )
+
+    @Test
+    fun allHealthFeaturesDisabled_isNotEnabled() {
+        assertFalse(CommuteScheduler.anyHealthFeatureEnabled(allHealthFeaturesDisabled))
+    }
+
+    @Test
+    fun defaultSettings_isEnabled() {
+        // AppSettings defaults several health toggles to true.
+        assertTrue(CommuteScheduler.anyHealthFeatureEnabled(AppSettings()))
+    }
+
+    @Test
+    fun eachIndependentToggle_aloneIsEnoughToEnable() {
+        assertTrue(CommuteScheduler.anyHealthFeatureEnabled(allHealthFeaturesDisabled.copy(morningSupplementsEnabled = true)))
+        assertTrue(CommuteScheduler.anyHealthFeatureEnabled(allHealthFeaturesDisabled.copy(eveningProteinEnabled = true)))
+        assertTrue(CommuteScheduler.anyHealthFeatureEnabled(allHealthFeaturesDisabled.copy(waterRemindersEnabled = true)))
+        assertTrue(CommuteScheduler.anyHealthFeatureEnabled(allHealthFeaturesDisabled.copy(eveningWalkEnabled = true)))
+        assertTrue(CommuteScheduler.anyHealthFeatureEnabled(allHealthFeaturesDisabled.copy(sleepBriefEnabled = true)))
+        assertTrue(CommuteScheduler.anyHealthFeatureEnabled(allHealthFeaturesDisabled.copy(restlessNightShieldEnabled = true)))
+        assertTrue(CommuteScheduler.anyHealthFeatureEnabled(allHealthFeaturesDisabled.copy(focusGapChipEnabled = true)))
+        assertTrue(CommuteScheduler.anyHealthFeatureEnabled(allHealthFeaturesDisabled.copy(postGymWaterPulseEnabled = true)))
+        assertTrue(CommuteScheduler.anyHealthFeatureEnabled(allHealthFeaturesDisabled.copy(morningLightLineEnabled = true)))
+        assertTrue(CommuteScheduler.anyHealthFeatureEnabled(allHealthFeaturesDisabled.copy(caffeineCutoffLineEnabled = true)))
+    }
+
+    @Test
+    fun subTogglesAloneDoNotEnable_theirOwningFeatureMustAlsoBeOn() {
+        val result = allHealthFeaturesDisabled.copy(
+            gymProteinPriorityEnabled = true,
+            sleepDebtSoftenEnabled = true,
+            walkPostAudibleLatchEnabled = true,
+            walkDaylightPreferenceEnabled = true,
+            audiobookSuppressionEnabled = true,
+        )
+
+        assertFalse(CommuteScheduler.anyHealthFeatureEnabled(result))
+    }
 }

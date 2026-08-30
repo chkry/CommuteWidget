@@ -62,8 +62,10 @@ import com.crpakala.commutewidget.data.TravelMode
 import com.crpakala.commutewidget.data.isRefreshingActive
 import com.crpakala.commutewidget.engine.CommuteRefresher
 import com.crpakala.commutewidget.engine.currentBestDepartureTarget
+import com.crpakala.commutewidget.engine.health.NudgeCandidate
 import com.crpakala.commutewidget.engine.mapInSampleSize
 import com.crpakala.commutewidget.engine.shouldShowBestDeparture
+import com.crpakala.commutewidget.health.CommuteAudioDetector
 import com.crpakala.commutewidget.schedule.CommuteScheduler
 import java.io.File
 import java.time.Instant
@@ -131,6 +133,21 @@ class CommuteWidget : GlanceAppWidget() {
                 ?.let { formatAlarmLine(it.triggerTime) }
         }.getOrNull()
 
+        val audiobookPlaying = settings.audiobookSuppressionEnabled &&
+            CommuteAudioDetector.isCommuteAudioPlaying(context, settings.commuteAudioPackages)
+        val healthChrome = if (snapshot != null) {
+            resolveVisibleHealthChrome(
+                snapshotNudges = snapshot.healthNudges,
+                dayState = repo.healthDayState(),
+                todayIsoDate = now.toLocalDate().toString(),
+                nowMinuteOfDay = nowMinuteOfDay,
+                mode = snapshot.mode,
+                audiobookPlaying = audiobookPlaying,
+            )
+        } else {
+            VisibleHealthChrome(pills = emptyList(), line = null)
+        }
+
         val lightScheme = dynamicLightColorScheme(context)
         val darkScheme = dynamicDarkColorScheme(context)
         val colors = ColorProviders(
@@ -158,6 +175,31 @@ class CommuteWidget : GlanceAppWidget() {
                         nextAlarmLine = nextAlarmLine,
                         pillCorner = settings.mapPillCorner,
                         textScale = settings.widgetTextScalePercent.coerceIn(70, 150) / 100f,
+                        sleepBriefEnabled = settings.sleepBriefEnabled,
+                        healthPills = healthChrome.pills,
+                        healthLineLabel = healthChrome.line?.let(::healthLineCaption),
+                        healthColors = HealthChromeColors(
+                            container = dayNightColorProvider(
+                                day = lightScheme.surfaceContainerHigh,
+                                night = darkScheme.surfaceContainerHigh,
+                            ),
+                            outline = dayNightColorProvider(
+                                day = lightScheme.primary.copy(alpha = 0.55f),
+                                night = darkScheme.primary.copy(alpha = 0.55f),
+                            ),
+                            outlineDemoted = dayNightColorProvider(
+                                day = lightScheme.primary.copy(alpha = 0.55f * HEALTH_DEMOTION_ALPHA),
+                                night = darkScheme.primary.copy(alpha = 0.55f * HEALTH_DEMOTION_ALPHA),
+                            ),
+                            text = dayNightColorProvider(
+                                day = lightScheme.onSurface,
+                                night = darkScheme.onSurface,
+                            ),
+                            textDemoted = dayNightColorProvider(
+                                day = lightScheme.onSurface.copy(alpha = HEALTH_DEMOTION_ALPHA),
+                                night = darkScheme.onSurface.copy(alpha = HEALTH_DEMOTION_ALPHA),
+                            ),
+                        ),
                     ),
                 )
             }
@@ -213,6 +255,14 @@ class NavigateAction : ActionCallback {
     }
 }
 
+private data class HealthChromeColors(
+    val container: ColorProvider,
+    val outline: ColorProvider,
+    val outlineDemoted: ColorProvider,
+    val text: ColorProvider,
+    val textDemoted: ColorProvider,
+)
+
 private data class WidgetExtras(
     val nowEpochMillis: Long,
     val nowMinuteOfDay: Int,
@@ -224,6 +274,10 @@ private data class WidgetExtras(
     val nextAlarmLine: String? = null,
     val pillCorner: MapPillCorner = MapPillCorner.TOP_START,
     val textScale: Float = 1f,
+    val sleepBriefEnabled: Boolean = false,
+    val healthPills: List<NudgeCandidate> = emptyList(),
+    val healthLineLabel: String? = null,
+    val healthColors: HealthChromeColors? = null,
 )
 
 /** Owner-configurable text scaling applied to every user-visible size on the widget. */
@@ -247,6 +301,10 @@ private data class InfoStyle(
      * SMALL skips them for space. Mirrors [showRoutedCaption] size gating.
      */
     val showExtendedCaptions: Boolean = false,
+    /** LARGE keeps the full sleep-prefixed brief; WIDE truncates when a sleep prefix is present. */
+    val fullMorningBrief: Boolean = false,
+    /** LARGE commute info column can host the health caption without displacing the ETA. */
+    val showHealthLine: Boolean = false,
 )
 
 @Composable
@@ -405,7 +463,6 @@ private fun WideLayout(
                 .defaultWeight()
                 .fillMaxHeight()
                 .clickable(actionRunCallback<NavigateAction>()),
-            contentAlignment = pillCornerAlignment(extras.pillCorner),
         ) {
             MapPane(
                 snapshot = snapshot,
@@ -417,19 +474,36 @@ private fun WideLayout(
             // owner-configurable so the stack can dodge whatever the route usually covers.
             val showLeaveByPill = shouldShowLeaveBy(snapshot, extras.leaveByEnabled)
             if (showLeaveByPill || extras.bestDepartureLine != null) {
-                Row(
-                    modifier = GlanceModifier.padding(6.dp),
-                    verticalAlignment = Alignment.Vertical.CenterVertically,
+                Box(
+                    modifier = GlanceModifier.fillMaxSize(),
+                    contentAlignment = pillCornerAlignment(extras.pillCorner),
                 ) {
-                    if (showLeaveByPill) {
-                        LeaveByPill(snapshot.leaveByMinuteOfDay!!, extras.nowMinuteOfDay, extras.textScale)
-                    }
-                    if (extras.bestDepartureLine != null) {
+                    Row(
+                        modifier = GlanceModifier.padding(6.dp),
+                        verticalAlignment = Alignment.Vertical.CenterVertically,
+                    ) {
                         if (showLeaveByPill) {
-                            Spacer(modifier = GlanceModifier.width(4.dp))
+                            LeaveByPill(snapshot.leaveByMinuteOfDay!!, extras.nowMinuteOfDay, extras.textScale)
                         }
-                        MapTextPill(extras.bestDepartureLine, extras.textScale)
+                        if (extras.bestDepartureLine != null) {
+                            if (showLeaveByPill) {
+                                Spacer(modifier = GlanceModifier.width(4.dp))
+                            }
+                            MapTextPill(extras.bestDepartureLine, extras.textScale)
+                        }
                     }
+                }
+            }
+            if (extras.healthPills.isNotEmpty()) {
+                Box(
+                    modifier = GlanceModifier.fillMaxSize(),
+                    contentAlignment = pillCornerAlignment(oppositeCorner(extras.pillCorner)),
+                ) {
+                    HealthPillStack(
+                        pills = extras.healthPills,
+                        extras = extras,
+                        expandMorningLabel = false,
+                    )
                 }
             }
         }
@@ -480,6 +554,8 @@ private fun LargeLayout(
                         showRoutedCaption = true,
                         showBestDeparture = true,
                         showExtendedCaptions = true,
+                        fullMorningBrief = true,
+                        showHealthLine = true,
                     ),
                 )
             }
@@ -490,6 +566,18 @@ private fun LargeLayout(
                     .clickable(actionRunCallback<NavigateAction>()),
             )
         }
+        if (extras.healthPills.isNotEmpty()) {
+            Box(
+                modifier = GlanceModifier.fillMaxSize(),
+                contentAlignment = pillCornerAlignment(oppositeCorner(extras.pillCorner)),
+            ) {
+                HealthPillStack(
+                    pills = extras.healthPills,
+                    extras = extras,
+                    expandMorningLabel = true,
+                )
+            }
+        }
     }
 }
 
@@ -499,129 +587,168 @@ private fun CalendarEmptyCard(
     snapshot: CommuteSnapshot,
     extras: WidgetExtras,
 ) {
-    val textScale = extras.textScale
-    val windDown = isWindDown(snapshot)
+    val size = LocalSize.current
+    val showHealth = size.width >= WIDE_BREAKPOINT.width
+    val expandMorningLabel =
+        size.width >= LARGE_BREAKPOINT.width && size.height >= LARGE_BREAKPOINT.height
+    val chips = if (showHealth) extras.healthPills else emptyList()
+    val lineLabel = extras.healthLineLabel.takeIf { showHealth }
+    val hasHealthFooter = chips.isNotEmpty() || lineLabel != null
     Box(
         modifier = modifier.clickable(actionRunCallback<RefreshAction>()).padding(12.dp),
-        contentAlignment = Alignment.CenterStart,
+        contentAlignment = if (hasHealthFooter) Alignment.TopStart else Alignment.CenterStart,
     ) {
-        Column {
-            if (windDown) {
-                Text(
-                    text = "Tomorrow",
-                    style = TextStyle(
-                        color = GlanceTheme.colors.onSurfaceVariant,
-                        fontSize = scaledSp(11, textScale),
-                        fontWeight = FontWeight.Medium,
-                    ),
-                    maxLines = 1,
-                )
-                Text(
-                    text = "${snapshot.tomorrowEventTitle} at ${formatEventClockTime(snapshot.tomorrowEventStartEpochMillis!!)}",
-                    style = TextStyle(
-                        color = GlanceTheme.colors.onSurface,
-                        fontSize = scaledSp(16, textScale),
-                        fontWeight = FontWeight.Medium,
-                    ),
-                    maxLines = 1,
-                )
-                if (extras.nextAlarmLine != null) {
-                    AlarmLine(extras.nextAlarmLine, textScale)
+        Column(modifier = if (hasHealthFooter) GlanceModifier.fillMaxSize() else GlanceModifier) {
+            if (hasHealthFooter) {
+                Column(
+                    modifier = GlanceModifier.defaultWeight().fillMaxWidth(),
+                    verticalAlignment = Alignment.Vertical.CenterVertically,
+                ) {
+                    CalendarEmptyCardBody(snapshot, extras)
                 }
-                Spacer(modifier = GlanceModifier.height(4.dp))
-            }
-            when (calendarEmptyCase(snapshot)) {
-                CalendarEmptyCase.UNLOCATED_EVENT -> {
+                Spacer(modifier = GlanceModifier.height(8.dp))
+                if (lineLabel != null) {
                     Text(
-                        text = calendarEventTitle(snapshot.destinationLabel),
-                        style = TextStyle(
-                            color = GlanceTheme.colors.onSurface,
-                            fontSize = scaledSp(14, textScale),
-                            fontWeight = FontWeight.Medium,
-                        ),
-                        maxLines = 1,
-                    )
-                    Text(
-                        text = formatEventClockTime(snapshot.eventStartEpochMillis!!),
-                        style = TextStyle(
-                            color = GlanceTheme.colors.onSurface,
-                            fontSize = scaledSp(28, textScale),
-                            fontWeight = FontWeight.Bold,
-                        ),
-                        maxLines = 1,
-                    )
-                    val freeMinutes = eventCountdownMinutes(
-                        snapshot.eventStartEpochMillis,
-                        extras.nowEpochMillis,
-                    )
-                    if (freeMinutes != null) {
-                        Text(
-                            text = formatFreeFor(freeMinutes),
-                            style = TextStyle(
-                                color = GlanceTheme.colors.onSurfaceVariant,
-                                fontSize = scaledSp(11, textScale),
-                            ),
-                            maxLines = 1,
-                        )
-                    }
-                }
-                CalendarEmptyCase.NEXT_WINDOW -> {
-                    Text(
-                        text = "Next up",
+                        text = lineLabel,
                         style = TextStyle(
                             color = GlanceTheme.colors.onSurfaceVariant,
-                            fontSize = scaledSp(11, textScale),
-                            fontWeight = FontWeight.Medium,
-                        ),
-                        maxLines = 1,
-                    )
-                    Text(
-                        text = snapshot.nextWindowLabel!!,
-                        style = TextStyle(
-                            color = GlanceTheme.colors.onSurface,
-                            fontSize = scaledSp(18, textScale),
-                            fontWeight = FontWeight.Medium,
-                        ),
-                        maxLines = 1,
-                    )
-                    Text(
-                        text = formatClockTime(snapshot.nextWindowStartMinuteOfDay!!),
-                        style = TextStyle(
-                            color = GlanceTheme.colors.onSurface,
-                            fontSize = if (windDown) scaledSp(18, textScale) else scaledSp(28, textScale),
-                            fontWeight = FontWeight.Bold,
+                            fontSize = scaledSp(10, extras.textScale),
                         ),
                         maxLines = 1,
                     )
                 }
-                CalendarEmptyCase.NONE -> {
-                    Text(
-                        text = "No commute or events scheduled",
-                        style = TextStyle(
-                            color = GlanceTheme.colors.onSurface,
-                            fontSize = scaledSp(14, textScale),
-                            fontWeight = FontWeight.Medium,
-                        ),
-                        maxLines = 3,
+                if (chips.isNotEmpty()) {
+                    HealthChipRow(
+                        pills = chips,
+                        extras = extras,
+                        expandMorningLabel = expandMorningLabel,
                     )
-                    if (!windDown && extras.nextAlarmLine != null) {
-                        AlarmLine(extras.nextAlarmLine, textScale)
-                    }
                 }
+            } else {
+                CalendarEmptyCardBody(snapshot, extras)
             }
-            if (extras.bestDepartureLine != null) {
-                Spacer(modifier = GlanceModifier.height(4.dp))
+        }
+    }
+}
+
+@Composable
+private fun CalendarEmptyCardBody(snapshot: CommuteSnapshot, extras: WidgetExtras) {
+    val textScale = extras.textScale
+    val windDown = isWindDown(snapshot)
+    if (windDown) {
+        Text(
+            text = "Tomorrow",
+            style = TextStyle(
+                color = GlanceTheme.colors.onSurfaceVariant,
+                fontSize = scaledSp(11, textScale),
+                fontWeight = FontWeight.Medium,
+            ),
+            maxLines = 1,
+        )
+        Text(
+            text = "${snapshot.tomorrowEventTitle} at ${formatEventClockTime(snapshot.tomorrowEventStartEpochMillis!!)}",
+            style = TextStyle(
+                color = GlanceTheme.colors.onSurface,
+                fontSize = scaledSp(16, textScale),
+                fontWeight = FontWeight.Medium,
+            ),
+            maxLines = 1,
+        )
+        if (extras.nextAlarmLine != null) {
+            AlarmLine(extras.nextAlarmLine, textScale)
+        }
+        Spacer(modifier = GlanceModifier.height(4.dp))
+    }
+    when (calendarEmptyCase(snapshot)) {
+        CalendarEmptyCase.UNLOCATED_EVENT -> {
+            Text(
+                text = calendarEventTitle(snapshot.destinationLabel),
+                style = TextStyle(
+                    color = GlanceTheme.colors.onSurface,
+                    fontSize = scaledSp(14, textScale),
+                    fontWeight = FontWeight.Medium,
+                ),
+                maxLines = 1,
+            )
+            Text(
+                text = formatEventClockTime(snapshot.eventStartEpochMillis!!),
+                style = TextStyle(
+                    color = GlanceTheme.colors.onSurface,
+                    fontSize = scaledSp(28, textScale),
+                    fontWeight = FontWeight.Bold,
+                ),
+                maxLines = 1,
+            )
+            val freeMinutes = eventCountdownMinutes(
+                snapshot.eventStartEpochMillis,
+                extras.nowEpochMillis,
+            )
+            if (freeMinutes != null) {
                 Text(
-                    text = extras.bestDepartureLine,
+                    text = formatFreeFor(freeMinutes),
                     style = TextStyle(
                         color = GlanceTheme.colors.onSurfaceVariant,
                         fontSize = scaledSp(11, textScale),
-                        fontWeight = FontWeight.Medium,
                     ),
                     maxLines = 1,
                 )
             }
         }
+        CalendarEmptyCase.NEXT_WINDOW -> {
+            Text(
+                text = "Next up",
+                style = TextStyle(
+                    color = GlanceTheme.colors.onSurfaceVariant,
+                    fontSize = scaledSp(11, textScale),
+                    fontWeight = FontWeight.Medium,
+                ),
+                maxLines = 1,
+            )
+            Text(
+                text = snapshot.nextWindowLabel!!,
+                style = TextStyle(
+                    color = GlanceTheme.colors.onSurface,
+                    fontSize = scaledSp(18, textScale),
+                    fontWeight = FontWeight.Medium,
+                ),
+                maxLines = 1,
+            )
+            Text(
+                text = formatClockTime(snapshot.nextWindowStartMinuteOfDay!!),
+                style = TextStyle(
+                    color = GlanceTheme.colors.onSurface,
+                    fontSize = if (windDown) scaledSp(18, textScale) else scaledSp(28, textScale),
+                    fontWeight = FontWeight.Bold,
+                ),
+                maxLines = 1,
+            )
+        }
+        CalendarEmptyCase.NONE -> {
+            Text(
+                text = "No commute or events scheduled",
+                style = TextStyle(
+                    color = GlanceTheme.colors.onSurface,
+                    fontSize = scaledSp(14, textScale),
+                    fontWeight = FontWeight.Medium,
+                ),
+                maxLines = 3,
+            )
+            if (!windDown && extras.nextAlarmLine != null) {
+                AlarmLine(extras.nextAlarmLine, textScale)
+            }
+        }
+    }
+    if (extras.bestDepartureLine != null) {
+        Spacer(modifier = GlanceModifier.height(4.dp))
+        Text(
+            text = extras.bestDepartureLine,
+            style = TextStyle(
+                color = GlanceTheme.colors.onSurfaceVariant,
+                fontSize = scaledSp(11, textScale),
+                fontWeight = FontWeight.Medium,
+            ),
+            maxLines = 1,
+        )
     }
 }
 
@@ -654,9 +781,37 @@ private fun RoutedInfo(
             maxLines = 1,
         )
     }
-    if (shouldShowTodayBrief(snapshot, style.showExtendedCaptions)) {
+    if (shouldShowTodayBrief(snapshot, style.showExtendedCaptions, extras.sleepBriefEnabled)) {
+        val truncation = pickBriefTruncation(
+            isLarge = style.fullMorningBrief,
+            hasSleepPrefix = extras.sleepBriefEnabled && snapshot.sleepEstimateMinutes != null,
+        )
+        val brief = buildBriefLine(
+            sleepEstimateMinutes = snapshot.sleepEstimateMinutes,
+            shortSleepDay = snapshot.shortSleepDay,
+            sleepBriefEnabled = extras.sleepBriefEnabled,
+            meetingCount = snapshot.todayEventCount,
+            firstStartEpochMillis = snapshot.todayFirstEventStartEpochMillis,
+            truncation = truncation,
+        )
+        if (brief != null) {
+            Text(
+                text = brief,
+                style = TextStyle(
+                    color = GlanceTheme.colors.onSurfaceVariant,
+                    fontSize = scaledSp(10, extras.textScale),
+                ),
+                maxLines = 1,
+            )
+        }
+    }
+    if (
+        style.showHealthLine &&
+        snapshot.mode == SnapshotMode.COMMUTE &&
+        extras.healthLineLabel != null
+    ) {
         Text(
-            text = formatTodayBrief(snapshot.todayEventCount!!, snapshot.todayFirstEventStartEpochMillis),
+            text = extras.healthLineLabel,
             style = TextStyle(
                 color = GlanceTheme.colors.onSurfaceVariant,
                 fontSize = scaledSp(10, extras.textScale),
@@ -848,6 +1003,111 @@ private fun MapTextPill(text: String, textScale: Float = 1f) {
 }
 
 @Composable
+private fun HealthPillStack(
+    pills: List<NudgeCandidate>,
+    extras: WidgetExtras,
+    expandMorningLabel: Boolean,
+) {
+    val colors = extras.healthColors ?: return
+    Column(modifier = GlanceModifier.padding(6.dp)) {
+        pills.forEachIndexed { index, candidate ->
+            if (index > 0) {
+                Spacer(modifier = GlanceModifier.height(4.dp))
+            }
+            HealthActionChrome(
+                candidate = candidate,
+                extras = extras,
+                colors = colors,
+                expandMorningLabel = expandMorningLabel,
+                minHeightDp = 40,
+            )
+        }
+    }
+}
+
+@Composable
+private fun HealthChipRow(
+    pills: List<NudgeCandidate>,
+    extras: WidgetExtras,
+    expandMorningLabel: Boolean,
+) {
+    val colors = extras.healthColors ?: return
+    Row(verticalAlignment = Alignment.Vertical.CenterVertically) {
+        pills.forEachIndexed { index, candidate ->
+            if (index > 0) {
+                Spacer(modifier = GlanceModifier.width(6.dp))
+            }
+            HealthActionChrome(
+                candidate = candidate,
+                extras = extras,
+                colors = colors,
+                expandMorningLabel = expandMorningLabel,
+                minHeightDp = 48,
+            )
+        }
+    }
+}
+
+/**
+ * Outlined health action control. Fill uses surfaceContainerHigh (passed in via extras because
+ * Glance 1.1 ColorProviders does not expose that Material 3 token). Outline is a 1dp nested-Box
+ * stand-in: Glance has no border modifier. Color is never traffic-tinted and never inherits
+ * pending/stale ETA treatment.
+ */
+@Composable
+private fun HealthActionChrome(
+    candidate: NudgeCandidate,
+    extras: WidgetExtras,
+    colors: HealthChromeColors,
+    expandMorningLabel: Boolean,
+    minHeightDp: Int,
+) {
+    val demoted = candidate.demoted
+    val outline = if (demoted) colors.outlineDemoted else colors.outline
+    val textColor = if (demoted) colors.textDemoted else colors.text
+    val glyph = healthGlyph(candidate.kind)
+    val label = mapHealthLabel(candidate.kind, candidate.label, expandMorningLabel)
+    val action = healthNudgeClickAction(candidate)
+    val chrome = GlanceModifier
+        .background(outline)
+        .cornerRadius(10.dp)
+        .padding(1.dp)
+        .let { base -> if (action != null) base.clickable(action) else base }
+    Box(modifier = chrome) {
+        Box(
+            modifier = GlanceModifier
+                .background(colors.container)
+                .cornerRadius(9.dp)
+                .height(minHeightDp.dp)
+                .padding(horizontal = 8.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Row(verticalAlignment = Alignment.Vertical.CenterVertically) {
+                if (glyph.isNotEmpty()) {
+                    Text(
+                        text = glyph,
+                        style = TextStyle(
+                            color = textColor,
+                            fontSize = 12.sp,
+                        ),
+                    )
+                    Spacer(modifier = GlanceModifier.width(4.dp))
+                }
+                Text(
+                    text = label,
+                    style = TextStyle(
+                        color = textColor,
+                        fontSize = scaledSp(12, extras.textScale),
+                        fontWeight = FontWeight.Medium,
+                    ),
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun AlarmLine(text: String, textScale: Float) {
     Text(
         text = text,
@@ -990,13 +1250,18 @@ internal fun shouldShowEventCountdown(snapshot: CommuteSnapshot, captionAllowedF
  * Morning-brief caption on a To Work COMMUTE snapshot when today's remaining event count is
  * populated and positive. Size-gated the same way as [shouldShowRoutedCaption] (WIDE/LARGE).
  */
-internal fun shouldShowTodayBrief(snapshot: CommuteSnapshot, captionAllowedForSize: Boolean): Boolean {
+internal fun shouldShowTodayBrief(
+    snapshot: CommuteSnapshot,
+    captionAllowedForSize: Boolean,
+    sleepBriefEnabled: Boolean = false,
+): Boolean {
     val count = snapshot.todayEventCount
+    val hasMeetings = count != null && count > 0
+    val hasSleep = sleepBriefEnabled && snapshot.sleepEstimateMinutes != null
     return captionAllowedForSize &&
         snapshot.mode == SnapshotMode.COMMUTE &&
         snapshot.direction == Direction.TO_WORK &&
-        count != null &&
-        count > 0
+        (hasMeetings || hasSleep)
 }
 
 /** True when both tomorrow-event fields are present on a calendar-empty snapshot. */

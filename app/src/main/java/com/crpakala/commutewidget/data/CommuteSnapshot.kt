@@ -63,4 +63,7 @@ data class CommuteSnapshot(
      * [SnapshotMode.COMMUTE] snapshots, for the morning-brief line.
      */
     val todayFirstEventStartEpochMillis: Long? = null,
+    val healthNudges: List<HealthNudge> = emptyList(),
+    val sleepEstimateMinutes: Int? = null,
+    val shortSleepDay: Boolean = false,
 )

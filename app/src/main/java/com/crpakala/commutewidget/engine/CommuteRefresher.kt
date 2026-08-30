@@ -434,6 +434,10 @@ object CommuteRefresher {
                 settings.selectedCalendarIds.isNotEmpty()
         }?.todaySummary(settings.selectedCalendarIds, nowEpochMillis, now.zone)
 
+        // Sprint 2: baked in at computation time per the architecture contract - the widget only
+        // re-filters these against day state and its own live audiobook check at render time.
+        val healthComputation = computeHealthFieldsSafely(context, settings, nowEpochMillis, now.zone, previousSnapshot)
+
         repo.saveSnapshot(
             CommuteSnapshot(
                 direction = direction,
@@ -454,6 +458,9 @@ object CommuteRefresher {
                 nextWindowStartMinuteOfDay = null,
                 todayEventCount = todaySummary?.remainingCount,
                 todayFirstEventStartEpochMillis = todaySummary?.firstStartEpochMillis,
+                healthNudges = healthComputation.healthNudges,
+                sleepEstimateMinutes = healthComputation.sleepEstimateMinutes,
+                shortSleepDay = healthComputation.shortSleepDay,
             ),
         )
 
@@ -492,6 +499,12 @@ object CommuteRefresher {
         EventLeaveByScheduler.cancel(context)
         CommuteLeaveByScheduler.cancel(context)
 
+        // Sprint 2: fetched once and reused for every branch below (no writes happen before any
+        // of them, so one read is equivalent to reading again per-branch) - both for [resolveMapImagePath]'s
+        // existing map-reuse decision and as this refresh's health-fallback baseline.
+        val previousSnapshot = repo.snapshot()
+        val healthComputation = computeHealthFieldsSafely(context, settings, nowEpochMillis, now.zone, previousSnapshot)
+
         val calendarReader = CalendarReader(context)
         val canReadCalendar = settings.calendarEnabled &&
             calendarReader.hasPermission() &&
@@ -521,6 +534,7 @@ object CommuteRefresher {
                     nextWindowResult = nextWindowResult,
                     tomorrowEventTitle = tomorrowEvent?.title,
                     tomorrowEventStartEpochMillis = tomorrowEvent?.startEpochMillis,
+                    healthComputation = healthComputation,
                 ),
             )
             return
@@ -546,6 +560,9 @@ object CommuteRefresher {
                     eventStartEpochMillis = event.startEpochMillis,
                     nextWindowLabel = null,
                     nextWindowStartMinuteOfDay = null,
+                    healthNudges = healthComputation.healthNudges,
+                    sleepEstimateMinutes = healthComputation.sleepEstimateMinutes,
+                    shortSleepDay = healthComputation.shortSleepDay,
                 ),
             )
             return
@@ -633,7 +650,7 @@ object CommuteRefresher {
         // now serving RefreshTrigger.TICK's calendar-staleness role) - a TICK reuses the previous
         // map when it is still the same located event (same direction + destination coordinates)
         // rather than paying for a fresh Static Maps fetch on every 20-minute staleness tick.
-        val previousSnapshot = repo.snapshot()
+        // (previousSnapshot was already fetched above, before the event branches.)
         val mapImagePath = when (
             val mapResult = resolveMapImagePath(context, repo, trigger, previousSnapshot, direction, destination, origin, route, settings.apiKey)
         ) {
@@ -677,6 +694,9 @@ object CommuteRefresher {
                 nextWindowLabel = null,
                 nextWindowStartMinuteOfDay = null,
                 routedOverEarlier = event.preferredOverEarlierEvent,
+                healthNudges = healthComputation.healthNudges,
+                sleepEstimateMinutes = healthComputation.sleepEstimateMinutes,
+                shortSleepDay = healthComputation.shortSleepDay,
             ),
         )
 
@@ -704,6 +724,7 @@ object CommuteRefresher {
         nextWindowResult: NextWindow?,
         tomorrowEventTitle: String? = null,
         tomorrowEventStartEpochMillis: Long? = null,
+        healthComputation: HealthComputation = HealthComputation(),
     ): CommuteSnapshot = CommuteSnapshot(
         direction = direction,
         durationSeconds = 0L,
@@ -723,6 +744,9 @@ object CommuteRefresher {
         nextWindowStartMinuteOfDay = nextWindowResult?.startMinuteOfDay,
         tomorrowEventTitle = tomorrowEventTitle,
         tomorrowEventStartEpochMillis = tomorrowEventStartEpochMillis,
+        healthNudges = healthComputation.healthNudges,
+        sleepEstimateMinutes = healthComputation.sleepEstimateMinutes,
+        shortSleepDay = healthComputation.shortSleepDay,
     )
 
     private fun commuteLeaveByPlanFor(
@@ -827,6 +851,35 @@ object CommuteRefresher {
 internal fun travelModeFor(travelMode: TravelMode): RouteTravelMode = when (travelMode) {
     TravelMode.DRIVE -> RouteTravelMode.DRIVE
     TravelMode.TWO_WHEELER -> RouteTravelMode.TWO_WHEELER
+}
+
+/**
+ * Sprint 2: [computeHealthState] already degrades every internal sub-step to null/empty/false and
+ * never throws (see its own doc), but that means a genuinely-failed pass and a legitimately-empty
+ * pass both come back as [HealthComputation]'s all-defaults value - which would incorrectly blank
+ * out whatever health nudges were already on screen. This wrapper is the outer safety net its doc
+ * calls for (DataStore/WorkManager calls it makes are not exhaustively covered by its own inner
+ * catches): on any exception actually escaping it, [previous]'s three health fields are carried
+ * forward unchanged instead, exactly like [failureSnapshot] does for a route/map failure - a
+ * health-computation failure must never blank the widget's health nudges, and must never fail the
+ * route refresh that called it.
+ */
+private suspend fun computeHealthFieldsSafely(
+    context: Context,
+    settings: AppSettings,
+    nowEpochMillis: Long,
+    zone: ZoneId,
+    previous: CommuteSnapshot?,
+): HealthComputation = try {
+    computeHealthState(context, settings, nowEpochMillis, zone)
+} catch (e: CancellationException) {
+    throw e
+} catch (_: Exception) {
+    HealthComputation(
+        healthNudges = previous?.healthNudges ?: emptyList(),
+        sleepEstimateMinutes = previous?.sleepEstimateMinutes,
+        shortSleepDay = previous?.shortSleepDay ?: false,
+    )
 }
 
 /**
@@ -1045,6 +1098,11 @@ internal fun failureSnapshot(
         eventStartEpochMillis = eventStartEpochMillisOverride,
         nextWindowLabel = null,
         nextWindowStartMinuteOfDay = null,
+        // Sprint 2: health nudges are orthogonal to the route/mode/target this snapshot describes
+        // - a target change (unlike route/map/leave-by/next-window) must not blank them out.
+        healthNudges = previous?.healthNudges ?: emptyList(),
+        sleepEstimateMinutes = previous?.sleepEstimateMinutes,
+        shortSleepDay = previous?.shortSleepDay ?: false,
     )
 }
 

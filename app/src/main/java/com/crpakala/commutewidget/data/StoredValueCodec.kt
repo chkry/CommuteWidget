@@ -60,6 +60,7 @@ fun decodeFavourites(json: String?): List<Favourite> {
 
 private val longListSerializer = ListSerializer(serializer<Long>())
 private val intListSerializer = ListSerializer(serializer<Int>())
+private val stringListSerializer = ListSerializer(serializer<String>())
 
 fun encodeLongSet(values: Set<Long>): String =
     commuteJson.encodeToString(longListSerializer, values.sorted())
@@ -83,6 +84,42 @@ fun decodeIntSet(json: String?, default: Set<Int> = emptySet()): Set<Int> {
     return runCatching {
         commuteJson.decodeFromString(intListSerializer, json).toSet()
     }.getOrElse { default }
+}
+
+fun encodeStringSet(values: Set<String>): String =
+    commuteJson.encodeToString(stringListSerializer, values.sorted())
+
+fun decodeStringSet(json: String?, default: Set<String> = emptySet()): Set<String> {
+    if (json.isNullOrBlank()) {
+        return default
+    }
+    return runCatching {
+        commuteJson.decodeFromString(stringListSerializer, json).toSet()
+    }.getOrElse { default }
+}
+
+fun encodeHealthDayState(state: HealthDayState): String =
+    commuteJson.encodeToString(HealthDayState.serializer(), state)
+
+fun decodeHealthDayState(json: String?): HealthDayState? {
+    if (json.isNullOrBlank()) {
+        return null
+    }
+    return runCatching {
+        commuteJson.decodeFromString(HealthDayState.serializer(), json)
+    }.getOrNull()
+}
+
+fun encodeHealthHistory(history: HealthHistory): String =
+    commuteJson.encodeToString(HealthHistory.serializer(), history)
+
+fun decodeHealthHistory(json: String?): HealthHistory? {
+    if (json.isNullOrBlank()) {
+        return null
+    }
+    return runCatching {
+        commuteJson.decodeFromString(HealthHistory.serializer(), json)
+    }.getOrNull()
 }
 
 fun eventIdentityKey(eventStartEpochMillis: Long, title: String): String =

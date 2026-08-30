@@ -55,6 +55,13 @@ object CommuteScheduler {
         } else {
             CalendarChangeScheduler.cancel(appContext)
         }
+        if (anyHealthFeatureEnabled(settings)) {
+            HealthMorningScheduler.schedule(appContext)
+            HealthBoundaryScheduler.schedule(appContext, settings)
+        } else {
+            HealthMorningScheduler.cancel(appContext)
+            HealthBoundaryScheduler.cancel(appContext)
+        }
     }
 
     fun ensureScheduledAsync(context: Context) {
@@ -101,6 +108,27 @@ object CommuteScheduler {
         ) ?: return
         scheduleWindowBoundaryAt(context, next, existingWorkPolicy)
     }
+
+    /**
+     * Sprint 2: whether the "health_morning"/"health_boundary" chains are worth running at all -
+     * true when any independent health nudge feature is on. Deliberately excludes sub-toggles
+     * that only ever modify an already-gated feature's behavior rather than introducing a nudge
+     * of their own ([AppSettings.gymProteinPriorityEnabled], [AppSettings.sleepDebtSoftenEnabled],
+     * [AppSettings.walkPostAudibleLatchEnabled], [AppSettings.walkDaylightPreferenceEnabled],
+     * [AppSettings.audiobookSuppressionEnabled]): each of those is meaningless with its owning
+     * toggle off, so it never needs to arm the chain on its own.
+     */
+    internal fun anyHealthFeatureEnabled(settings: AppSettings): Boolean =
+        settings.morningSupplementsEnabled ||
+            settings.eveningProteinEnabled ||
+            settings.waterRemindersEnabled ||
+            settings.eveningWalkEnabled ||
+            settings.sleepBriefEnabled ||
+            settings.restlessNightShieldEnabled ||
+            settings.focusGapChipEnabled ||
+            settings.postGymWaterPulseEnabled ||
+            settings.morningLightLineEnabled ||
+            settings.caffeineCutoffLineEnabled
 
     internal fun scheduleWindowBoundaryAt(
         context: Context,

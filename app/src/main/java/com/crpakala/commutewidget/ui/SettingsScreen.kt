@@ -8,6 +8,7 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.health.connect.client.PermissionController
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -39,6 +40,7 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -72,6 +74,9 @@ import com.crpakala.commutewidget.data.SettingsRepository
 import com.crpakala.commutewidget.data.TravelMode
 import com.crpakala.commutewidget.calendar.CalendarReader
 import com.crpakala.commutewidget.calendar.DeviceCalendar
+import com.crpakala.commutewidget.health.CommuteAudioDetector
+import com.crpakala.commutewidget.health.HealthConnectFacade
+import com.crpakala.commutewidget.health.ScreenEventsReader
 import com.crpakala.commutewidget.schedule.CommuteScheduler
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -237,24 +242,6 @@ private fun SettingsScreen() {
                 )
             }
             item {
-                AppearanceSection(
-                    opacityPercent = settings.widgetBackgroundOpacityPercent,
-                    textScalePercent = settings.widgetTextScalePercent,
-                    onOpacityChanged = { percent ->
-                        scope.launch {
-                            repository.setWidgetBackgroundOpacityPercent(percent)
-                            refreshWidget(applicationContext)
-                        }
-                    },
-                    onTextScaleChanged = { percent ->
-                        scope.launch {
-                            repository.setWidgetTextScalePercent(percent)
-                            refreshWidget(applicationContext)
-                        }
-                    },
-                )
-            }
-            item {
                 CalendarSection(
                     enabled = settings.calendarEnabled,
                     selectedIds = settings.selectedCalendarIds,
@@ -284,6 +271,36 @@ private fun SettingsScreen() {
                     onEventTakeoverMinutesChanged = { minutes ->
                         scope.launch {
                             repository.setEventTakeoverMinutes(minutes)
+                            refreshWidget(applicationContext)
+                        }
+                    },
+                )
+            }
+            item {
+                HealthSection(
+                    settings = settings,
+                    onSettingsChange = { update ->
+                        scope.launch {
+                            update(repository)
+                            CommuteScheduler.ensureScheduled(applicationContext)
+                            refreshWidget(applicationContext)
+                        }
+                    },
+                )
+            }
+            item {
+                AppearanceSection(
+                    opacityPercent = settings.widgetBackgroundOpacityPercent,
+                    textScalePercent = settings.widgetTextScalePercent,
+                    onOpacityChanged = { percent ->
+                        scope.launch {
+                            repository.setWidgetBackgroundOpacityPercent(percent)
+                            refreshWidget(applicationContext)
+                        }
+                    },
+                    onTextScaleChanged = { percent ->
+                        scope.launch {
+                            repository.setWidgetTextScalePercent(percent)
                             refreshWidget(applicationContext)
                         }
                     },
@@ -926,6 +943,379 @@ private fun CalendarChoice(calendar: DeviceCalendar, checked: Boolean, onChecked
         }
     }
 }
+
+private enum class HealthTime {
+    MORNING_SUPPLEMENTS_START,
+    MORNING_SUPPLEMENTS_END,
+    PROTEIN_START,
+    PROTEIN_END,
+    WALK_START,
+    WALK_END,
+    CAFFEINE_CUTOFF,
+}
+
+private enum class HealthNumber { WATER_REMINDERS, STEP_GOAL }
+
+@Composable
+private fun HealthSection(
+    settings: AppSettings,
+    onSettingsChange: (suspend (SettingsRepository) -> Unit) -> Unit,
+) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var permissionVersion by remember { mutableIntStateOf(0) }
+    val healthAvailable = remember(permissionVersion) { HealthConnectFacade.isAvailable(context) }
+    var grantedHealthPermissions by remember { mutableStateOf<Set<String>>(emptySet()) }
+    val usageAccessGranted = remember(permissionVersion) { ScreenEventsReader.hasUsageAccess(context) }
+    val notificationAccessGranted = remember(permissionVersion) {
+        CommuteAudioDetector.hasNotificationAccess(context)
+    }
+    val healthPermissionLauncher = rememberLauncherForActivityResult(
+        PermissionController.createRequestPermissionResultContract(),
+    ) { permissionVersion++ }
+    var selectedTime by remember { mutableStateOf<HealthTime?>(null) }
+    var selectedNumber by remember { mutableStateOf<HealthNumber?>(null) }
+    var editingPackages by remember { mutableStateOf(false) }
+
+    LaunchedEffect(healthAvailable, permissionVersion) {
+        grantedHealthPermissions = if (healthAvailable) {
+            HealthConnectFacade.grantedPermissions(context)
+        } else {
+            emptySet()
+        }
+    }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) permissionVersion++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("Health", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Private on-device reminders and Health Connect logging.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        HealthPermissionRow(
+            label = "Health Connect",
+            status = when {
+                !healthAvailable -> "Health Connect unavailable"
+                hasAllHealthPermissions(grantedHealthPermissions, HealthConnectFacade.REQUIRED_PERMISSIONS) -> "Granted"
+                else -> "Not granted"
+            },
+            enabled = healthAvailable,
+            onGrant = { healthPermissionLauncher.launch(HealthConnectFacade.REQUIRED_PERMISSIONS) },
+        )
+        HealthPermissionRow(
+            label = "Usage access",
+            status = if (usageAccessGranted) "Granted" else "Not granted",
+            enabled = true,
+            onGrant = { context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) },
+        )
+        HealthPermissionRow(
+            label = "Notification access",
+            status = if (notificationAccessGranted) "Granted" else "Not granted",
+            enabled = true,
+            onGrant = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) },
+        )
+
+        HealthToggleRow(
+            "Morning supplements",
+            "Remind during your morning window",
+            settings.morningSupplementsEnabled,
+        ) { enabled ->
+            onSettingsChange { repository ->
+                repository.setMorningSupplementsEnabled(enabled)
+            }
+        }
+        if (settings.morningSupplementsEnabled) {
+            TimeRow("Start", settings.morningSupplementsStartMinuteOfDay) {
+                selectedTime = HealthTime.MORNING_SUPPLEMENTS_START
+            }
+            TimeRow("End", settings.morningSupplementsEndMinuteOfDay) {
+                selectedTime = HealthTime.MORNING_SUPPLEMENTS_END
+            }
+        }
+        HealthToggleRow("Evening protein", "Remind during your evening window", settings.eveningProteinEnabled) { enabled ->
+            onSettingsChange { repository -> repository.setEveningProteinEnabled(enabled) }
+        }
+        if (settings.eveningProteinEnabled) {
+            TimeRow("Start", settings.proteinStartMinuteOfDay) { selectedTime = HealthTime.PROTEIN_START }
+            TimeRow("End", settings.proteinEndMinuteOfDay) { selectedTime = HealthTime.PROTEIN_END }
+        }
+        HealthToggleRow("Water reminders", "Small hydration prompts across the day", settings.waterRemindersEnabled) { enabled ->
+            onSettingsChange { repository -> repository.setWaterRemindersEnabled(enabled) }
+        }
+        if (settings.waterRemindersEnabled) {
+            NumberRow("Reminders per day", settings.waterRemindersPerDay) {
+                selectedNumber = HealthNumber.WATER_REMINDERS
+            }
+            Text("250 ml per tap - logged to Health Connect", style = MaterialTheme.typography.bodySmall)
+        }
+        HealthToggleRow("Evening walk", "Suggest a walk from your activity and schedule", settings.eveningWalkEnabled) { enabled ->
+            onSettingsChange { repository -> repository.setEveningWalkEnabled(enabled) }
+        }
+        if (settings.eveningWalkEnabled) {
+            TimeRow("Search start", settings.walkSearchStartMinuteOfDay) { selectedTime = HealthTime.WALK_START }
+            TimeRow("Search end", settings.walkSearchEndMinuteOfDay) { selectedTime = HealthTime.WALK_END }
+            NumberRow("Step goal", settings.stepGoal) { selectedNumber = HealthNumber.STEP_GOAL }
+            Text("Uses your step goal and calendar", style = MaterialTheme.typography.bodySmall)
+        }
+        HealthToggleRow("Sleep estimate in morning brief", "Estimate sleep from screen activity", settings.sleepBriefEnabled) { enabled ->
+            onSettingsChange { repository -> repository.setSleepBriefEnabled(enabled) }
+        }
+        HealthToggleRow(
+            "Suppress during audiobooks",
+            "Hide health nudges while selected apps are playing",
+            settings.audiobookSuppressionEnabled,
+        ) { enabled ->
+            onSettingsChange { repository -> repository.setAudiobookSuppressionEnabled(enabled) }
+        }
+        if (settings.audiobookSuppressionEnabled) {
+            TextButton(onClick = { editingPackages = true }) { Text("Edit audiobook apps") }
+            Text(
+                settings.commuteAudioPackages.sorted().joinToString().ifBlank { "No audiobook apps selected" },
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+
+        Text("Experimental nudges", style = MaterialTheme.typography.titleSmall)
+        HealthToggleRow("Soften after short sleep", "Rewrite the brief after a short night", settings.sleepDebtSoftenEnabled) { enabled ->
+            onSettingsChange { repository -> repository.setSleepDebtSoftenEnabled(enabled) }
+        }
+        HealthToggleRow("Prioritize protein on gym days", "Protein first on gym days", settings.gymProteinPriorityEnabled) { enabled ->
+            onSettingsChange { repository -> repository.setGymProteinPriorityEnabled(enabled) }
+        }
+        HealthToggleRow("Rough-night shield", "Mute morning nudges after a rough night", settings.restlessNightShieldEnabled) { enabled ->
+            onSettingsChange { repository -> repository.setRestlessNightShieldEnabled(enabled) }
+        }
+        HealthToggleRow("Post-drive walk", "Suggest the walk after the drive home", settings.walkPostAudibleLatchEnabled) { enabled ->
+            onSettingsChange { repository -> repository.setWalkPostAudibleLatchEnabled(enabled) }
+        }
+        HealthToggleRow("Prefer daylight walks", "Prefer pre-sunset walk slots", settings.walkDaylightPreferenceEnabled) { enabled ->
+            onSettingsChange { repository -> repository.setWalkDaylightPreferenceEnabled(enabled) }
+        }
+        HealthToggleRow("Focus gap chip", "Focus chip in free calendar gaps", settings.focusGapChipEnabled) { enabled ->
+            onSettingsChange { repository -> repository.setFocusGapChipEnabled(enabled) }
+        }
+        HealthToggleRow("Post-gym water", "Extra water slot after workouts", settings.postGymWaterPulseEnabled) { enabled ->
+            onSettingsChange { repository -> repository.setPostGymWaterPulseEnabled(enabled) }
+        }
+        HealthToggleRow("Morning light", "Morning light reminder line", settings.morningLightLineEnabled) { enabled ->
+            onSettingsChange { repository -> repository.setMorningLightLineEnabled(enabled) }
+        }
+        HealthToggleRow("Caffeine cutoff", "Coffee cutoff line", settings.caffeineCutoffLineEnabled) { enabled ->
+            onSettingsChange { repository -> repository.setCaffeineCutoffLineEnabled(enabled) }
+        }
+        if (settings.caffeineCutoffLineEnabled) {
+            TimeRow("Cutoff time", settings.caffeineCutoffMinuteOfDay) { selectedTime = HealthTime.CAFFEINE_CUTOFF }
+        }
+    }
+    HealthTimeDialog(selectedTime, settings, onSettingsChange) { selectedTime = null }
+    HealthNumberDialog(selectedNumber, settings, onSettingsChange) { selectedNumber = null }
+    if (editingPackages) {
+        AudioPackagesDialog(
+            initialPackages = settings.commuteAudioPackages,
+            onDismiss = { editingPackages = false },
+            onSave = {
+                onSettingsChange { repository -> repository.setCommuteAudioPackages(it) }
+                editingPackages = false
+            },
+        )
+    }
+}
+
+@Composable
+private fun HealthPermissionRow(label: String, status: String, enabled: Boolean, onGrant: () -> Unit) {
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label)
+            Text(status, style = MaterialTheme.typography.bodySmall)
+        }
+        Button(enabled = enabled && status != "Granted", onClick = onGrant) { Text("Grant") }
+    }
+}
+
+@Composable
+private fun HealthToggleRow(label: String, description: String, enabled: Boolean, onChanged: (Boolean) -> Unit) {
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label)
+            Text(description, style = MaterialTheme.typography.bodySmall)
+        }
+        Switch(checked = enabled, onCheckedChange = onChanged)
+    }
+}
+
+@Composable
+private fun NumberRow(label: String, value: Int, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(label)
+        Text(value.toString(), color = MaterialTheme.colorScheme.primary)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HealthTimeDialog(
+    selection: HealthTime?,
+    settings: AppSettings,
+    onSettingsChange: (suspend (SettingsRepository) -> Unit) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    selection ?: return
+    val minute = when (selection) {
+        HealthTime.MORNING_SUPPLEMENTS_START -> settings.morningSupplementsStartMinuteOfDay
+        HealthTime.MORNING_SUPPLEMENTS_END -> settings.morningSupplementsEndMinuteOfDay
+        HealthTime.PROTEIN_START -> settings.proteinStartMinuteOfDay
+        HealthTime.PROTEIN_END -> settings.proteinEndMinuteOfDay
+        HealthTime.WALK_START -> settings.walkSearchStartMinuteOfDay
+        HealthTime.WALK_END -> settings.walkSearchEndMinuteOfDay
+        HealthTime.CAFFEINE_CUTOFF -> settings.caffeineCutoffMinuteOfDay
+    }
+    key(selection, minute) {
+        val picker = rememberTimePickerState(minute / 60, minute % 60, is24Hour = false)
+        TimePickerDialog(picker, onDismiss) {
+            val selectedMinute = picker.hour * 60 + picker.minute
+            onSettingsChange { repository ->
+                when (selection) {
+                    HealthTime.MORNING_SUPPLEMENTS_START ->
+                        repository.setMorningSupplementsStartMinuteOfDay(selectedMinute)
+                    HealthTime.MORNING_SUPPLEMENTS_END ->
+                        repository.setMorningSupplementsEndMinuteOfDay(selectedMinute)
+                    HealthTime.PROTEIN_START -> repository.setProteinStartMinuteOfDay(selectedMinute)
+                    HealthTime.PROTEIN_END -> repository.setProteinEndMinuteOfDay(selectedMinute)
+                    HealthTime.WALK_START -> repository.setWalkSearchStartMinuteOfDay(selectedMinute)
+                    HealthTime.WALK_END -> repository.setWalkSearchEndMinuteOfDay(selectedMinute)
+                    HealthTime.CAFFEINE_CUTOFF ->
+                        repository.setCaffeineCutoffMinuteOfDay(selectedMinute)
+                }
+            }
+            onDismiss()
+        }
+    }
+}
+
+@Composable
+private fun HealthNumberDialog(
+    selection: HealthNumber?,
+    settings: AppSettings,
+    onSettingsChange: (suspend (SettingsRepository) -> Unit) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    selection ?: return
+    val initial = when (selection) {
+        HealthNumber.WATER_REMINDERS -> settings.waterRemindersPerDay
+        HealthNumber.STEP_GOAL -> settings.stepGoal
+    }
+    val title = when (selection) {
+        HealthNumber.WATER_REMINDERS -> "Reminders per day"
+        HealthNumber.STEP_GOAL -> "Step goal"
+    }
+    val min = when (selection) {
+        HealthNumber.WATER_REMINDERS -> 3
+        HealthNumber.STEP_GOAL -> 2_000
+    }
+    val max = when (selection) {
+        HealthNumber.WATER_REMINDERS -> 8
+        HealthNumber.STEP_GOAL -> 20_000
+    }
+    NumberDialog(initial, title, min, max, onDismiss) { value ->
+        onSettingsChange { repository ->
+            when (selection) {
+                HealthNumber.WATER_REMINDERS -> repository.setWaterRemindersPerDay(value)
+                HealthNumber.STEP_GOAL -> repository.setStepGoal(value)
+            }
+        }
+        onDismiss()
+    }
+}
+
+@Composable
+private fun NumberDialog(
+    initialValue: Int,
+    title: String,
+    min: Int,
+    max: Int,
+    onDismiss: () -> Unit,
+    onSave: (Int) -> Unit,
+) {
+    var value by remember { mutableStateOf(initialValue.toString()) }
+    val parsed = value.toIntOrNull()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            OutlinedTextField(
+                value = value,
+                onValueChange = { value = it },
+                label = { Text("$min-$max") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                isError = parsed == null || parsed !in min..max,
+            )
+        },
+        confirmButton = {
+            TextButton(
+                enabled = parsed in min..max,
+                onClick = { onSave(requireNotNull(parsed)) },
+            ) { Text("Save") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun AudioPackagesDialog(
+    initialPackages: Set<String>,
+    onDismiss: () -> Unit,
+    onSave: (Set<String>) -> Unit,
+) {
+    var packages by remember(initialPackages) { mutableStateOf(initialPackages) }
+    var packageName by remember { mutableStateOf("") }
+    val normalized = packageName.trim().lowercase(Locale.ROOT)
+    val validPackage = isValidPackageName(normalized) && normalized !in packages
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Audiobook apps") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                packages.sorted().forEach { existing ->
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(existing, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { packages = packages - existing }) { Text("Remove") }
+                    }
+                }
+                OutlinedTextField(
+                    value = packageName,
+                    onValueChange = { packageName = it },
+                    label = { Text("Package name") },
+                    isError = packageName.isNotBlank() && !validPackage,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                TextButton(
+                    enabled = validPackage,
+                    onClick = {
+                        packages = packages + normalized
+                        packageName = ""
+                    },
+                ) { Text("Add") }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSave(packages) }) { Text("Save") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+internal fun hasAllHealthPermissions(granted: Set<String>, required: Set<String>): Boolean =
+    granted.containsAll(required)
+
+internal fun isValidPackageName(value: String): Boolean =
+    value.isNotBlank() && value == value.lowercase(Locale.ROOT) && '.' in value
 
 private enum class CommuteWindowTime { MORNING_START, MORNING_END, EVENING_START, EVENING_END }
 

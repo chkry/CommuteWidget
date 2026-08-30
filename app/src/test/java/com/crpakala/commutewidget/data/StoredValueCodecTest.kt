@@ -3,6 +3,7 @@ package com.crpakala.commutewidget.data
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class StoredValueCodecTest {
@@ -377,5 +378,222 @@ class StoredValueCodecTest {
         val second = eventIdentityKey(1_756_257_000_000L, "Client meeting")
         assertEquals(first, second)
         assertEquals("1756257000000|Client meeting", first)
+    }
+
+    @Test
+    fun commuteSnapshotJson_currentPreHealthFormatDecodesWithHealthFieldDefaults() {
+        val currentJson = """
+            {
+              "direction": "TO_WORK",
+              "durationSeconds": 1200,
+              "durationNoTrafficSeconds": 1000,
+              "distanceMeters": 8000,
+              "mapImagePath": "/cache/commute-map.png",
+              "fetchedAtEpochMillis": 1700000000000,
+              "lastFetchFailed": false,
+              "lastErrorMessage": null,
+              "destinationLabel": "Work",
+              "destinationLat": 12.9716,
+              "destinationLng": 77.5946,
+              "leaveByMinuteOfDay": 540,
+              "mode": "COMMUTE",
+              "eventStartEpochMillis": null,
+              "nextWindowLabel": null,
+              "nextWindowStartMinuteOfDay": null,
+              "routedOverEarlier": false
+            }
+        """.trimIndent()
+
+        val decoded = decodeCommuteSnapshot(currentJson)
+        requireNotNull(decoded)
+        assertEquals(emptyList<HealthNudge>(), decoded.healthNudges)
+        assertNull(decoded.sleepEstimateMinutes)
+        assertFalse(decoded.shortSleepDay)
+    }
+
+    @Test
+    fun commuteSnapshotJson_healthNudgesRoundTrip() {
+        val snapshot = CommuteSnapshot(
+            direction = Direction.TO_HOME,
+            durationSeconds = 1200L,
+            durationNoTrafficSeconds = 1000L,
+            distanceMeters = 8000L,
+            mapImagePath = null,
+            fetchedAtEpochMillis = 1_700_000_000_000L,
+            lastFetchFailed = false,
+            lastErrorMessage = null,
+            healthNudges = listOf(
+                HealthNudge(
+                    kind = HealthNudgeKind.WATER,
+                    label = "Water",
+                    startMinuteOfDay = 600,
+                    endMinuteOfDay = 720,
+                    targetMinuteOfDay = 660,
+                    demoted = true,
+                ),
+            ),
+            sleepEstimateMinutes = 390,
+            shortSleepDay = true,
+        )
+
+        assertEquals(snapshot, decodeCommuteSnapshot(encodeCommuteSnapshot(snapshot)))
+    }
+
+    @Test
+    fun healthDayStateJson_roundTrip() {
+        val state = HealthDayState(
+            date = "2026-08-31",
+            morningSupplementsTakenMinute = 450,
+            proteinTakenMinute = 1140,
+            waterTapMinutes = listOf(540, 720),
+            waterSlotPlanMinutes = listOf(540, 720, 900),
+            walkDismissed = true,
+            dismissedFocusGapStartMinutes = listOf(840),
+            gymDetected = true,
+            waterPulseShownMinute = 1200,
+        )
+
+        assertEquals(state, decodeHealthDayState(encodeHealthDayState(state)))
+    }
+
+    @Test
+    fun healthHistoryJson_roundTrip() {
+        val history = HealthHistory(
+            days = listOf(
+                HealthDayRecord(date = "2026-08-30", steps = 7000, sleepMinutes = 420),
+                HealthDayRecord(date = "2026-08-31", overnightUnlockCount = 3),
+            ),
+        )
+
+        assertEquals(history, decodeHealthHistory(encodeHealthHistory(history)))
+    }
+
+    @Test
+    fun healthJson_invalidBlankAndNullReturnNull() {
+        assertNull(decodeHealthDayState("{not json}"))
+        assertNull(decodeHealthDayState(""))
+        assertNull(decodeHealthDayState(null))
+        assertNull(decodeHealthHistory("{not json}"))
+        assertNull(decodeHealthHistory(" "))
+        assertNull(decodeHealthHistory(null))
+    }
+
+    @Test
+    fun healthDayStateJson_oldFormatDecodesWithNewFieldDefaults() {
+        val oldJson = """
+            {
+              "date": "2026-08-31",
+              "morningSupplementsTakenMinute": 450,
+              "proteinTakenMinute": null,
+              "waterTapMinutes": [540],
+              "waterSlotPlanMinutes": [540, 720],
+              "walkDismissed": false,
+              "dismissedFocusGapStartMinutes": [],
+              "gymDetected": true
+            }
+        """.trimIndent()
+
+        val decoded = decodeHealthDayState(oldJson)
+        requireNotNull(decoded)
+        assertEquals("2026-08-31", decoded.date)
+        assertEquals(450, decoded.morningSupplementsTakenMinute)
+        assertEquals(listOf(540), decoded.waterTapMinutes)
+        assertEquals(listOf(540, 720), decoded.waterSlotPlanMinutes)
+        assertFalse(decoded.walkDismissed)
+        assertEquals(emptyList<Int>(), decoded.dismissedFocusGapStartMinutes)
+        assertEquals(true, decoded.gymDetected)
+        assertNull(decoded.waterPulseShownMinute)
+    }
+
+    /**
+     * Sprint 2 adds `audibleLastPlayingMinute` and `walkNotified` to [HealthDayState]. A
+     * pre-Sprint-2 stored day-state JSON (predating both fields) must still decode, with both new
+     * fields defaulting rather than failing to parse - see [HealthDayState]'s field docs.
+     */
+    @Test
+    fun healthDayStateJson_preSprint2FormatDecodesWithLatchAndWalkNotifiedDefaults() {
+        val preSprint2Json = """
+            {
+              "date": "2026-08-31",
+              "morningSupplementsTakenMinute": null,
+              "proteinTakenMinute": null,
+              "waterTapMinutes": [],
+              "waterSlotPlanMinutes": [450, 630, 810, 990, 1170],
+              "walkDismissed": false,
+              "dismissedFocusGapStartMinutes": [],
+              "gymDetected": false,
+              "waterPulseShownMinute": null
+            }
+        """.trimIndent()
+
+        val decoded = decodeHealthDayState(preSprint2Json)
+        requireNotNull(decoded)
+        assertEquals("2026-08-31", decoded.date)
+        assertNull(decoded.audibleLastPlayingMinute)
+        assertFalse(decoded.walkNotified)
+    }
+
+    @Test
+    fun healthDayStateJson_audibleLatchAndWalkNotifiedRoundTrip() {
+        val state = HealthDayState(
+            date = "2026-08-31",
+            audibleLastPlayingMinute = 1_050,
+            walkNotified = true,
+        )
+
+        val decoded = decodeHealthDayState(encodeHealthDayState(state))
+        requireNotNull(decoded)
+        assertEquals(1_050, decoded.audibleLastPlayingMinute)
+        assertTrue(decoded.walkNotified)
+    }
+
+    /**
+     * Sprint 2 adds `sleepStartEpochMillis` to [HealthDayRecord]. A pre-Sprint-2 stored history
+     * JSON (predating the field) must still decode, with the new field defaulting to null.
+     */
+    @Test
+    fun healthHistoryJson_preSprint2FormatDecodesWithSleepStartEpochMillisDefault() {
+        val preSprint2Json = """
+            {
+              "days": [
+                {"date": "2026-08-30", "steps": 7000, "sleepMinutes": 420, "overnightUnlockCount": 1}
+              ]
+            }
+        """.trimIndent()
+
+        val decoded = decodeHealthHistory(preSprint2Json)
+        requireNotNull(decoded)
+        assertNull(decoded.days.single().sleepStartEpochMillis)
+    }
+
+    @Test
+    fun healthHistoryJson_sleepStartEpochMillisRoundTrips() {
+        val history = HealthHistory(
+            days = listOf(
+                HealthDayRecord(date = "2026-08-30", sleepMinutes = 420, sleepStartEpochMillis = 1_700_000_000_000L),
+            ),
+        )
+
+        val decoded = decodeHealthHistory(encodeHealthHistory(history))
+        requireNotNull(decoded)
+        assertEquals(1_700_000_000_000L, decoded.days.single().sleepStartEpochMillis)
+    }
+
+    @Test
+    fun healthHistory_prunedAndUpsertedReplacesAndKeepsNewestFourteen() {
+        val unsortedHistory = HealthHistory(
+            days = (1..15).reversed().map { day ->
+                HealthDayRecord(date = "2026-08-${day.toString().padStart(2, '0')}", steps = day)
+            },
+        )
+
+        val updated = unsortedHistory.prunedAndUpserted(
+            HealthDayRecord(date = "2026-08-15", steps = 15_000),
+        )
+
+        assertEquals(14, updated.days.size)
+        assertEquals("2026-08-02", updated.days.first().date)
+        assertEquals("2026-08-15", updated.days.last().date)
+        assertEquals(15_000, updated.days.last().steps)
     }
 }

@@ -2,8 +2,11 @@ package com.crpakala.commutewidget.engine
 
 import com.crpakala.commutewidget.data.CommuteSnapshot
 import com.crpakala.commutewidget.data.Direction
+import com.crpakala.commutewidget.data.HealthNudge
+import com.crpakala.commutewidget.data.HealthNudgeKind
 import com.crpakala.commutewidget.data.SnapshotMode
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -71,6 +74,69 @@ class FailureSnapshotTest {
         nextWindowLabel = "To Work",
         nextWindowStartMinuteOfDay = 420,
     )
+
+    /** Sprint 2: a stale snapshot carrying non-default health fields, for the carry-through tests below. */
+    private val staleCommuteWithHealth = staleCommute.copy(
+        healthNudges = listOf(
+            HealthNudge(kind = HealthNudgeKind.WATER, label = "Water", startMinuteOfDay = 480, endMinuteOfDay = 510),
+        ),
+        sleepEstimateMinutes = 390,
+        shortSleepDay = true,
+    )
+
+    @Test
+    fun noPrevious_healthFieldsDefaultToEmptyRatherThanCrashing() {
+        val result = failureSnapshot(
+            previous = null,
+            direction = Direction.TO_WORK,
+            message = "Route fetch failed",
+            modeOverride = SnapshotMode.COMMUTE,
+            destinationLabelOverride = "Work",
+        )
+
+        assertEquals(emptyList<HealthNudge>(), result.healthNudges)
+        assertNull(result.sleepEstimateMinutes)
+        assertFalse(result.shortSleepDay)
+    }
+
+    @Test
+    fun sameTarget_preservesHealthFieldsAsLastKnownGood() {
+        // Already true via previous.copy() (health fields are untouched by that copy), but
+        // asserted explicitly since it is the load-bearing half of Sprint 2's carry-through
+        // contract - see the target-changes test below for the half that needed a real fix.
+        val result = failureSnapshot(
+            previous = staleCommuteWithHealth,
+            direction = Direction.TO_WORK,
+            message = "Route fetch failed",
+            modeOverride = SnapshotMode.COMMUTE,
+            destinationLabelOverride = "Work",
+        )
+
+        assertEquals(staleCommuteWithHealth.healthNudges, result.healthNudges)
+        assertEquals(390, result.sleepEstimateMinutes)
+        assertTrue(result.shortSleepDay)
+    }
+
+    @Test
+    fun targetChanges_stillCarriesHealthFieldsForwardEvenThoughRouteFieldsAreCleared() {
+        // Health nudges are orthogonal to the route/mode/target a failure snapshot describes -
+        // a mode/destination change must clear stale route/map/leave-by/next-window data (the
+        // existing guard this test file otherwise covers) but must NOT blank the health nudges.
+        val result = failureSnapshot(
+            previous = staleCommuteWithHealth,
+            direction = Direction.TO_WORK,
+            message = "Geocode failed",
+            modeOverride = SnapshotMode.CALENDAR_EVENT,
+            destinationLabelOverride = "Team sync",
+            eventStartEpochMillisOverride = 5_000_000L,
+        )
+
+        assertEquals(staleCommuteWithHealth.healthNudges, result.healthNudges)
+        assertEquals(390, result.sleepEstimateMinutes)
+        assertTrue(result.shortSleepDay)
+        // Confirm this is still exercising the target-change branch (route data cleared as before).
+        assertNull(result.mapImagePath)
+    }
 
     @Test
     fun noPrevious_buildsFreshEmptyFailureSnapshotForRequestedMode() {

@@ -28,6 +28,7 @@ The audit and design rulings driving these changes are documented in `UX-AUDIT.m
 - Scheduled automatic background updates at window boundaries (4 calls per day) powered by Android WorkManager across device reboots.
 - Graceful offline and failure state caching with relative error tracking and automatic 60-second recovery.
 - In-app configuration for addresses, saved places, commute days, commute windows, leave-by targets, early arrival buffers, live traffic thresholds, geocoding selection, transit modes, and calendar selection.
+- On-device health layer (v6): supplement pills, water reminders with Health Connect logging, evening walk advisor, sleep prefix on the morning brief, and audiobook-aware suppression, each independently toggleable with zero new Google API calls (see `HEALTH-FEATURES.md`).
 
 ## Google Cloud API Key Setup
 
@@ -99,6 +100,9 @@ CommuteWidget requests runtime permissions based on configured features:
 - **Calendar (`READ_CALENDAR`)**: Required if the Calendar feature is enabled.
   The app prompts for this permission when turning on calendar integration in settings.
 - **System Alarm**: Reading the next scheduled device alarm from the system alarm clock operates on-device and requires no permissions.
+- **Health Connect, Usage access, Notification access**: Required for the health layer features you enable.
+  Grant all three from the **Health** section in app settings.
+  See the Health section below for Samsung Health sync prerequisites.
 
 ## In-App Setup
 
@@ -201,6 +205,52 @@ The widget selects its active display mode according to configured schedules and
 - Manage up to 4 saved locations in app settings with custom labels and geocoded addresses.
 - Saved places replace on-widget favourite chips and timed overrides.
 - Tapping the Navigate button beside any saved place in settings opens Google Maps turn-by-turn navigation directly to that destination.
+
+## Health
+
+The v6 health layer adds private on-device wellness nudges to the widget.
+Full parameter and evidence detail lives in `HEALTH-FEATURES.md`.
+
+### Setup
+
+1. Open CommuteWidget settings and scroll to **Health**.
+2. Grant **Health Connect** (steps, exercise read; hydration write; background read).
+3. Grant **Usage access** if you want sleep estimation in the morning brief.
+4. Grant **Notification access** if you want audiobook playback to suppress health nudges during drives.
+5. Sync **Samsung Health to Health Connect**: in Samsung Health settings, open Health Connect permissions, enable Consents, and turn on Sync with Samsung account so steps and workouts reach Health Connect.
+
+Each feature has its own toggle.
+There is no master health switch.
+Core toggles default ON; experimental nudges default OFF under **Experimental nudges**.
+
+### Daily behavior
+
+- **Morning supplements** (`Vitamins + Cr`): one tap marks vitamins and creatine taken; window 07:00-10:00 with carry-over until midnight (hidden after 21:30 if still untaken).
+- **Evening protein** (`Protein`): one tap marks protein taken; window 18:00-21:00 with carry-over to midnight.
+- **Water reminders**: dynamic slots across the day (default five); tap logs 250 ml to Health Connect and dismisses the pill.
+- **Evening walk**: suggests a calendar-aware walk time when steps lag the goal (default 8000) or the afternoon is sedentary; one notification at walk start.
+- **Sleep prefix**: on To Work commute, prepends `Slept ~6h 40m` to the morning brief when UsageStats yields a valid estimate.
+- **Audiobook suppression**: while a configured audiobook app (default Audible) is playing, all health nudges hide.
+
+Health pills appear on 4x2 and 4x4 map layouts (max two, opposite corner from commute pills).
+Water never appears on commute maps.
+The 2x2 size shows no health UI.
+
+### Toggle list
+
+**Core (default ON):** Morning supplements, Evening protein, Water reminders, Evening walk, Sleep estimate in morning brief, Suppress during audiobooks.
+
+**Experimental (default OFF):** Soften after short sleep, Prioritize protein on gym days, Rough-night shield, Post-drive walk, Prefer daylight walks, Focus gap chip, Post-gym water, Morning light, Caffeine cutoff.
+
+### Health troubleshooting
+
+| Issue | Cause | Solution |
+| --- | --- | --- |
+| No sleep prefix on morning brief | Usage access not granted, or estimated sleep under 3 hours | Grant Usage access in Health settings; a very short estimate is intentionally hidden |
+| Water pill does not dismiss after tap | Health Connect write failed or WRITE_HYDRATION not granted | Re-grant Health Connect permissions and tap again; the pill stays until a confirmed write |
+| No health nudges during a drive | Audiobook suppression is active by design | Expected while a configured audiobook app is playing; disable **Suppress during audiobooks** if you want nudges during playback |
+| Walk or step nudges never appear | Health Connect steps not syncing | Complete Samsung Health to Health Connect sync (permissions, Consents, account sync) |
+| Health pills missing on 2x2 widget | By design | Resize to 4x2 or 4x4 for health pills and card chips |
 
 ## Troubleshooting
 

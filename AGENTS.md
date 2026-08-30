@@ -13,7 +13,7 @@ Single user, single device; there is no backward-compatibility audience beyond t
 ## Build, verify, ship
 
 - Toolchain env: `source ./env.sh` from the repo root before any Gradle command (sets JAVA_HOME, ANDROID_HOME, PATH).
-- Verify: `./gradlew assembleDebug test lint` must be green before any commit; current suite is 294 JUnit4 unit tests, lint has 0 errors (pinned-version advisories are accepted).
+- Verify: `./gradlew assembleDebug test lint` must be green before any commit; current suite is 517 JUnit4 unit tests, lint has 0 errors (pinned-version advisories are accepted).
 - Tests are plain JVM JUnit4; there is no Robolectric and no instrumentation - test pure functions, extract logic to make it pure.
 - Install: `adb install -r app/build/outputs/apk/debug/app-debug.apk` (owner's phone is often connected; installing after shipping is established practice).
 - Git: repo-local identity `chkry <chkryreddy@gmail.com>`; remote `origin` uses the `github-personal` SSH alias (personal key), never the machine's default work identity.
@@ -26,9 +26,13 @@ Single user, single device; there is no backward-compatibility audience beyond t
 - `engine/CommuteRefresher.kt`: the refresh pipeline; `engine/WidgetMode.kt`: window-model resolution; `engine/BestDepartureAdvisor.kt`: predicted-traffic sampling.
 - `api/`: Google clients (RoutesClient with optional future departureTime, StaticMapUrl with traffic-colored segments, GeocodingClient, MapImageFetcher, Polylines).
 - `calendar/CalendarReader.kt`: content-provider reads with pure, tested selection functions.
-- `data/`: Preferences DataStore repository (singleton), AppSettings, CommuteSnapshot (the cache the widget renders from), codecs with safe fallbacks.
-- `schedule/`: WorkManager workers (WindowBoundaryWorker, CalendarTickWorker, CalendarChangeWorker, CommuteLeaveByWorker, EventLeaveByWorker) and CommuteScheduler.ensureScheduled.
-- `ui/SettingsScreen.kt` + MainActivity: single-screen Compose settings.
+- `data/`: Preferences DataStore repository (singleton), AppSettings, CommuteSnapshot (the cache the widget renders from), HealthModels/HealthDayState/HealthHistory, codecs with safe fallbacks.
+- `health/`: platform wrappers (HealthConnectFacade, ScreenEventsReader, CommuteAudioDetector, HealthNotificationListener).
+- `engine/health/`: pure health logic (SleepLogic, WaterLogic, WalkAndSunsetLogic, NudgeLogic, HealthParams).
+- `engine/HealthNudgeComputer.kt`: orchestrates health reads and nudge computation into snapshot health fields.
+- `HealthWidgetUi.kt` + `HealthActions.kt`: health pill/chip rendering and idempotent tap actions.
+- `schedule/`: WorkManager workers (WindowBoundaryWorker, CalendarTickWorker, CalendarChangeWorker, CommuteLeaveByWorker, EventLeaveByWorker, HealthMorningWorker, HealthBoundaryWorker, HealthWalkNotifyWorker) and CommuteScheduler.ensureScheduled.
+- `ui/SettingsScreen.kt` + MainActivity: single-screen Compose settings (Health section with permission grants and toggles).
 
 ## Behavioral model (as approved by the owner)
 
@@ -41,6 +45,8 @@ Single user, single device; there is no backward-compatibility audience beyond t
 - A WorkManager content-URI observer on the calendar provider refreshes within about a minute of any calendar change.
 - Routine automations (all on-device): wind-down card (tomorrow's first event + next clock-app alarm), countdown captions ("in 1h 45m" / "Free for 2h 10m"), morning brief ("3 meetings - first 10:00 am"), alarm line on the empty card.
 - Widget appearance: owner-configurable background opacity (One UI translucency), text scale, and map-pill corner; ETA is traffic-colored (green/amber/red) with a traffic dot; pending renders as 45 percent alpha of the accent; stale (over 10 minutes) renders grey.
+- Health layer (v6): six core features (sleep estimation via UsageStats with 14-day rolling history as nudge input only, evening walk advisor, water reminders with Health Connect hydration writes, supplement routines, audiobook commute detection via MediaSession, Health Connect 1.1.0 for steps/exercise) plus nine experimental toggles default OFF under **Experimental nudges** (sleep-debt brief soften, gym-day protein priority, restless-night focus shield, post-Audible walk latch, daylight walk preference, focus gap chip, post-gym water pulse, morning-light line, caffeine-cutoff line).
+- Health suppression hierarchy: audiobook playback suppresses ALL health nudges; restless-night shield suppresses water and walk until first event ends or 10:00; water never renders on commute maps; max two health pills on map, max two card chips; 2x2 renders zero health UI; health elements never inherit pending alpha or stale grey.
 
 ## Decision log (dated, with the why)
 
@@ -53,6 +59,7 @@ Single user, single device; there is no backward-compatibility audience beyond t
 - 2026-08-26 post-audit latency: map render-hash cache (SHA-256 over polyline + traffic segments + endpoints + dimensions - anything less shows stale congestion colors); Static Maps requested at 600@2x so the downsample step no-ops; calendar-event geocode cached by location text and run concurrently with the location fix.
 - 2026-08-26 pills: leave-by and best-departure render as opaque pills on the map (the 4x2 info panel cannot fit them), side by side, in an owner-configurable corner; ETA hour format is compact ("1h 15m").
 - 2026-08-26 phantom alarm: the alarm line filters `getNextAlarmClock` by the show intent's creator package against a clock-app allowlist, because Samsung Modes and Routines registers schedule triggers as system alarm clocks.
+- 2026-08-31 health layer v6: Health Connect only over Samsung SDK (boring/stable, goals set in-app); UsageStats sleep estimation (no wearable); MediaSession audiobook commute detection; 14-day rolling history allowed back as nudge input only with no stats UI; 8 extras built default-off, triage + wind-down nudge to backlog; walk notification is the only new notification; ~10-14 on-device wakeups/day approved; zero new Google API calls.
 
 ## Hard-won invariants (violating these reintroduces shipped bugs)
 
@@ -66,6 +73,11 @@ Single user, single device; there is no backward-compatibility audience beyond t
 - Any new background fetching beyond taps, window boundaries, and the accepted tick is a cost decision the owner must approve explicitly; it is never a silent default.
 - Glance renders exactly two static compositions (pending, settled); no animation, no shimmer, no looping.
 - ensureScheduled cancels legacy unique work names (v2 fixed refreshes, v4 slot chain) as device-migration hygiene; keep those cancellations.
+- Health computation must never fail a route refresh: `computeHealthFieldsSafely` wraps `computeHealthState` in runCatching and carries previous health fields on exception.
+- Failure snapshots must carry through `healthNudges`, `sleepEstimateMinutes`, and `shortSleepDay` from the previous snapshot (same-target failures preserve stale health data).
+- Health tap actions are idempotent local writes with `NonCancellable` + `updateAll` and never trigger network; water tap records only on confirmed Health Connect write (write failure keeps the pill).
+- Restless-night shield is applied at computation time; the widget render path always passes `shieldActive = false` to avoid double suppression.
+- `HealthDayState`/`HealthHistory` additions follow the same additive-with-decode-test rule as `CommuteSnapshot`.
 
 ## Known edges (flagged, accepted, not bugs)
 
@@ -83,5 +95,6 @@ Single user, single device; there is no backward-compatibility audience beyond t
 ## Where to look next
 
 - UX-AUDIT.md: the full audit, debate rulings, and the prioritized fix list (FIX-10..15 and 17 partially implemented since; FIX-14/15 and unified scheduling remain unimplemented candidates).
+- HEALTH-FEATURES.md: owner-facing health layer reference (toggles, parameters, evidence labels, scheduling, permissions).
 - README.md: owner-facing setup, behavior, and troubleshooting; keep it updated when behavior changes.
 - The owner drives work through an interview-then-plan flow with approval gates; propose, get approval, then build in verifiable increments.

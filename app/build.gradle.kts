@@ -44,6 +44,7 @@ dependencies {
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.play.services.location)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.androidx.health.connect.client)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
 
