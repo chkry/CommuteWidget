@@ -1035,17 +1035,22 @@ private fun HealthPillStack(
     expandMorningLabel: Boolean,
 ) {
     val colors = extras.healthColors ?: return
-    Column(modifier = GlanceModifier.padding(6.dp)) {
+    // Owner ruling 2026-08-31: mirror the commute pill pair exactly - side by side in a Row
+    // (6dp outer padding, 4dp between), each pill sized by padding like LeaveByPill.
+    Row(
+        modifier = GlanceModifier.padding(6.dp),
+        verticalAlignment = Alignment.Vertical.CenterVertically,
+    ) {
         pills.forEachIndexed { index, candidate ->
             if (index > 0) {
-                Spacer(modifier = GlanceModifier.height(4.dp))
+                Spacer(modifier = GlanceModifier.width(4.dp))
             }
             HealthActionChrome(
                 candidate = candidate,
                 extras = extras,
                 colors = colors,
                 expandMorningLabel = expandMorningLabel,
-                minHeightDp = 40,
+                minHeightDp = 0,
                 mapStyle = true,
             )
         }
@@ -1102,11 +1107,12 @@ private fun HealthActionChrome(
     val glyph = healthGlyph(candidate.kind)
     val label = mapHealthLabel(candidate.kind, candidate.label, expandMorningLabel)
     val action = healthNudgeClickAction(candidate)
+    // Map pills size themselves by padding exactly like LeaveByPill (8dp x 3dp); card chips keep
+    // an explicit min height for a comfortable 48dp tap target.
     val chrome = GlanceModifier
         .let { base -> if (mapStyle) base.background(GlanceTheme.colors.surfaceVariant) else base }
         .cornerRadius(10.dp)
-        .height(minHeightDp.dp)
-        .padding(horizontal = 8.dp)
+        .let { base -> if (mapStyle) base.padding(horizontal = 8.dp, vertical = 3.dp) else base.height(minHeightDp.dp).padding(horizontal = 8.dp) }
         .let { base -> if (action != null) base.clickable(action) else base }
     Box(modifier = chrome, contentAlignment = Alignment.Center) {
         Row(verticalAlignment = Alignment.Vertical.CenterVertically) {
@@ -1115,7 +1121,7 @@ private fun HealthActionChrome(
                     text = glyph,
                     style = TextStyle(
                         color = textColor,
-                        fontSize = 12.sp,
+                        fontSize = scaledSp(12, extras.textScale),
                     ),
                 )
                 Spacer(modifier = GlanceModifier.width(4.dp))
