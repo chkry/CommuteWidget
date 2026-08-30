@@ -167,15 +167,11 @@ class CommuteWidget : GlanceAppWidget() {
                 VisibleHealthChrome(pills = emptyList(), line = null)
             }
 
-            val backgroundOpacityPercent = settings.widgetBackgroundOpacityPercent.coerceIn(30, 100)
-            val backgroundAlpha = backgroundOpacityPercent / 100f
+            val backgroundAlpha = settings.widgetBackgroundOpacityPercent.coerceIn(30, 100) / 100f
             val background = dayNightColorProvider(
                 day = lightScheme.surface.copy(alpha = backgroundAlpha),
                 night = darkScheme.surface.copy(alpha = backgroundAlpha),
             )
-            // Owner request 2026-08-31 (revised): pill fill uses exactly the same transparency
-            // as the widget background; the border alone provides the layer separation.
-            val pillFillAlpha = backgroundAlpha
             GlanceTheme(colors = colors) {
                 WidgetScaffold(
                     configured = configured,
@@ -195,23 +191,11 @@ class CommuteWidget : GlanceAppWidget() {
                         healthPills = healthChrome.pills,
                         healthLineLabel = healthChrome.line?.let(::healthLineCaption),
                         healthColors = HealthChromeColors(
-                            container = dayNightColorProvider(
-                                day = lightScheme.surfaceContainerHigh.copy(alpha = pillFillAlpha),
-                                night = darkScheme.surfaceContainerHigh.copy(alpha = pillFillAlpha),
+                            mapTextDemoted = dayNightColorProvider(
+                                day = lightScheme.onSurfaceVariant.copy(alpha = HEALTH_DEMOTION_ALPHA),
+                                night = darkScheme.onSurfaceVariant.copy(alpha = HEALTH_DEMOTION_ALPHA),
                             ),
-                            outline = dayNightColorProvider(
-                                day = lightScheme.primary.copy(alpha = 0.75f),
-                                night = darkScheme.primary.copy(alpha = 0.75f),
-                            ),
-                            outlineDemoted = dayNightColorProvider(
-                                day = lightScheme.primary.copy(alpha = 0.75f * HEALTH_DEMOTION_ALPHA),
-                                night = darkScheme.primary.copy(alpha = 0.75f * HEALTH_DEMOTION_ALPHA),
-                            ),
-                            text = dayNightColorProvider(
-                                day = lightScheme.onSurface,
-                                night = darkScheme.onSurface,
-                            ),
-                            textDemoted = dayNightColorProvider(
+                            cardTextDemoted = dayNightColorProvider(
                                 day = lightScheme.onSurface.copy(alpha = HEALTH_DEMOTION_ALPHA),
                                 night = darkScheme.onSurface.copy(alpha = HEALTH_DEMOTION_ALPHA),
                             ),
@@ -272,11 +256,8 @@ class NavigateAction : ActionCallback {
 }
 
 private data class HealthChromeColors(
-    val container: ColorProvider,
-    val outline: ColorProvider,
-    val outlineDemoted: ColorProvider,
-    val text: ColorProvider,
-    val textDemoted: ColorProvider,
+    val mapTextDemoted: ColorProvider,
+    val cardTextDemoted: ColorProvider,
 )
 
 private data class WidgetExtras(
@@ -1065,6 +1046,7 @@ private fun HealthPillStack(
                 colors = colors,
                 expandMorningLabel = expandMorningLabel,
                 minHeightDp = 40,
+                mapStyle = true,
             )
         }
     }
@@ -1088,16 +1070,18 @@ private fun HealthChipRow(
                 colors = colors,
                 expandMorningLabel = expandMorningLabel,
                 minHeightDp = 48,
+                mapStyle = false,
             )
         }
     }
 }
 
 /**
- * Outlined health action control. Fill uses surfaceContainerHigh (passed in via extras because
- * Glance 1.1 ColorProviders does not expose that Material 3 token). Outline is a 1dp nested-Box
- * stand-in: Glance has no border modifier. Color is never traffic-tinted and never inherits
- * pending/stale ETA treatment.
+ * Health action control. Owner ruling 2026-08-31: on maps it reuses the leave-by/best pill
+ * colors verbatim (opaque surfaceVariant fill, onSurfaceVariant text, corner 10dp, no border);
+ * on cards it draws NO fill at all so the chip interior is exactly the card background - any
+ * translucent fill would stack on the background and read as more opaque than it. Demotion is
+ * text alpha only. Never traffic-tinted, never inherits pending/stale ETA treatment.
  */
 @Composable
 private fun HealthActionChrome(
@@ -1106,48 +1090,45 @@ private fun HealthActionChrome(
     colors: HealthChromeColors,
     expandMorningLabel: Boolean,
     minHeightDp: Int,
+    mapStyle: Boolean,
 ) {
     val demoted = candidate.demoted
-    val outline = if (demoted) colors.outlineDemoted else colors.outline
-    val textColor = if (demoted) colors.textDemoted else colors.text
+    val textColor = when {
+        mapStyle && demoted -> colors.mapTextDemoted
+        mapStyle -> GlanceTheme.colors.onSurfaceVariant
+        demoted -> colors.cardTextDemoted
+        else -> GlanceTheme.colors.onSurface
+    }
     val glyph = healthGlyph(candidate.kind)
     val label = mapHealthLabel(candidate.kind, candidate.label, expandMorningLabel)
     val action = healthNudgeClickAction(candidate)
     val chrome = GlanceModifier
-        .background(outline)
+        .let { base -> if (mapStyle) base.background(GlanceTheme.colors.surfaceVariant) else base }
         .cornerRadius(10.dp)
-        .padding(1.dp)
+        .height(minHeightDp.dp)
+        .padding(horizontal = 8.dp)
         .let { base -> if (action != null) base.clickable(action) else base }
-    Box(modifier = chrome) {
-        Box(
-            modifier = GlanceModifier
-                .background(colors.container)
-                .cornerRadius(9.dp)
-                .height(minHeightDp.dp)
-                .padding(horizontal = 8.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Row(verticalAlignment = Alignment.Vertical.CenterVertically) {
-                if (glyph.isNotEmpty()) {
-                    Text(
-                        text = glyph,
-                        style = TextStyle(
-                            color = textColor,
-                            fontSize = 12.sp,
-                        ),
-                    )
-                    Spacer(modifier = GlanceModifier.width(4.dp))
-                }
+    Box(modifier = chrome, contentAlignment = Alignment.Center) {
+        Row(verticalAlignment = Alignment.Vertical.CenterVertically) {
+            if (glyph.isNotEmpty()) {
                 Text(
-                    text = label,
+                    text = glyph,
                     style = TextStyle(
                         color = textColor,
-                        fontSize = scaledSp(12, extras.textScale),
-                        fontWeight = FontWeight.Medium,
+                        fontSize = 12.sp,
                     ),
-                    maxLines = 1,
                 )
+                Spacer(modifier = GlanceModifier.width(4.dp))
             }
+            Text(
+                text = label,
+                style = TextStyle(
+                    color = textColor,
+                    fontSize = scaledSp(12, extras.textScale),
+                    fontWeight = FontWeight.Medium,
+                ),
+                maxLines = 1,
+            )
         }
     }
 }
