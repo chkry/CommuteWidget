@@ -173,9 +173,9 @@ class CommuteWidget : GlanceAppWidget() {
                 day = lightScheme.surface.copy(alpha = backgroundAlpha),
                 night = darkScheme.surface.copy(alpha = backgroundAlpha),
             )
-            // Owner request 2026-08-31: pill fill tracks the widget background, 10 points more
-            // opaque, so pills read as a layer above the surface at any chosen translucency.
-            val pillFillAlpha = (backgroundOpacityPercent + 10).coerceAtMost(100) / 100f
+            // Owner request 2026-08-31 (revised): pill fill uses exactly the same transparency
+            // as the widget background; the border alone provides the layer separation.
+            val pillFillAlpha = backgroundAlpha
             GlanceTheme(colors = colors) {
                 WidgetScaffold(
                     configured = configured,
