@@ -9,6 +9,9 @@ import android.graphics.BitmapFactory
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.TextUnit
@@ -94,72 +97,85 @@ class CommuteWidget : GlanceAppWidget() {
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val repo = SettingsRepository.get(context)
-        val settings = repo.settingsSnapshot()
-        val snapshot = repo.snapshot()
-        val mapBitmap = loadMapBitmap(snapshot?.mapImagePath)
-        val nowEpochMillis = System.currentTimeMillis()
-        val now = ZonedDateTime.now()
-        val nowMinuteOfDay = now.hour * 60 + now.minute
-        val configured = settings.apiKey.isNotBlank() && settings.home != null && settings.work != null
-        val refreshingSince = repo.refreshingSince()
-        val bestDeparture = repo.bestDeparture()
-        val bestDepartureTarget = currentBestDepartureTarget(
-            nowMinuteOfDay = nowMinuteOfDay,
-            morningStart = settings.morningSlotStartMinuteOfDay,
-            morningEnd = settings.morningSlotEndMinuteOfDay,
-            eveningStart = settings.eveningSlotStartMinuteOfDay,
-            eveningEnd = settings.eveningSlotEndMinuteOfDay,
-        )
-        val bestDepartureLine = if (
-            shouldShowBestDeparture(
-                result = bestDeparture,
-                enabled = settings.bestDepartureEnabled,
-                todayIsCommuteDay = now.dayOfWeek.value in settings.commuteDays,
-                today = now.toLocalDate().toString(),
-                target = bestDepartureTarget,
-                showingCalendarEvent = snapshot?.mode == SnapshotMode.CALENDAR_EVENT,
-            )
-        ) {
-            bestDepartureLineText(bestDeparture!!.bestMinuteOfDay)
-        } else {
-            null
-        }
-        val nextAlarmLine = runCatching {
-            val info = (context.getSystemService(Context.ALARM_SERVICE) as AlarmManager).nextAlarmClock
-            // Only real clock-app alarms: Samsung Modes and Routines (and similar apps) register
-            // schedule triggers as system alarm clocks, which read as phantom alarms the owner
-            // never set. The show intent's creator package identifies the actual owner.
-            info?.takeIf { isClockAppAlarm(it.showIntent?.creatorPackage) }
-                ?.let { formatAlarmLine(it.triggerTime) }
-        }.getOrNull()
-
-        val audiobookPlaying = settings.audiobookSuppressionEnabled &&
-            CommuteAudioDetector.isCommuteAudioPlaying(context, settings.commuteAudioPackages)
-        val healthChrome = if (snapshot != null) {
-            resolveVisibleHealthChrome(
-                snapshotNudges = snapshot.healthNudges,
-                dayState = repo.healthDayState(),
-                todayIsoDate = now.toLocalDate().toString(),
-                nowMinuteOfDay = nowMinuteOfDay,
-                mode = snapshot.mode,
-                audiobookPlaying = audiobookPlaying,
-            )
-        } else {
-            VisibleHealthChrome(pills = emptyList(), line = null)
-        }
-
+        val initialData = repo.widgetRenderDataSnapshot()
         val lightScheme = dynamicLightColorScheme(context)
         val darkScheme = dynamicDarkColorScheme(context)
         val colors = ColorProviders(
             light = lightScheme,
             dark = darkScheme,
         )
-        val backgroundAlpha = settings.widgetBackgroundOpacityPercent.coerceIn(30, 100) / 100f
-        val background = dayNightColorProvider(
-            day = lightScheme.surface.copy(alpha = backgroundAlpha),
-            night = darkScheme.surface.copy(alpha = backgroundAlpha),
-        )
         provideContent {
+            // Bug fix 2026-08-31: everything dynamic is read INSIDE the composition. A live
+            // Glance session only recomposes on observed state change - values captured before
+            // provideContent stay frozen until the session dies, and Samsung's app freezer keeps
+            // sessions alive for a long time. That left tap-dismissed health pills visible even
+            // though the tap had written its state. Collecting the DataStore flow here makes
+            // every write (tap actions, refresher, workers, settings screen) recompose and
+            // republish the widget immediately, with or without an explicit updateAll.
+            val data by repo.widgetRenderData.collectAsState(initial = initialData)
+            val settings = data.settings
+            val snapshot = data.snapshot
+            val mapBitmap = remember(snapshot?.mapImagePath, snapshot?.fetchedAtEpochMillis) {
+                loadMapBitmap(snapshot?.mapImagePath)
+            }
+            val nowEpochMillis = System.currentTimeMillis()
+            val now = ZonedDateTime.now()
+            val nowMinuteOfDay = now.hour * 60 + now.minute
+            val configured = settings.apiKey.isNotBlank() && settings.home != null && settings.work != null
+            val bestDepartureTarget = currentBestDepartureTarget(
+                nowMinuteOfDay = nowMinuteOfDay,
+                morningStart = settings.morningSlotStartMinuteOfDay,
+                morningEnd = settings.morningSlotEndMinuteOfDay,
+                eveningStart = settings.eveningSlotStartMinuteOfDay,
+                eveningEnd = settings.eveningSlotEndMinuteOfDay,
+            )
+            val bestDepartureLine = if (
+                shouldShowBestDeparture(
+                    result = data.bestDeparture,
+                    enabled = settings.bestDepartureEnabled,
+                    todayIsCommuteDay = now.dayOfWeek.value in settings.commuteDays,
+                    today = now.toLocalDate().toString(),
+                    target = bestDepartureTarget,
+                    showingCalendarEvent = snapshot?.mode == SnapshotMode.CALENDAR_EVENT,
+                )
+            ) {
+                bestDepartureLineText(data.bestDeparture!!.bestMinuteOfDay)
+            } else {
+                null
+            }
+            val nextAlarmLine = runCatching {
+                val info = (context.getSystemService(Context.ALARM_SERVICE) as AlarmManager).nextAlarmClock
+                // Only real clock-app alarms: Samsung Modes and Routines (and similar apps) register
+                // schedule triggers as system alarm clocks, which read as phantom alarms the owner
+                // never set. The show intent's creator package identifies the actual owner.
+                info?.takeIf { isClockAppAlarm(it.showIntent?.creatorPackage) }
+                    ?.let { formatAlarmLine(it.triggerTime) }
+            }.getOrNull()
+
+            val audiobookPlaying = settings.audiobookSuppressionEnabled &&
+                CommuteAudioDetector.isCommuteAudioPlaying(context, settings.commuteAudioPackages)
+            val healthChrome = if (snapshot != null) {
+                resolveVisibleHealthChrome(
+                    snapshotNudges = snapshot.healthNudges,
+                    dayState = data.healthDayState,
+                    todayIsoDate = now.toLocalDate().toString(),
+                    nowMinuteOfDay = nowMinuteOfDay,
+                    mode = snapshot.mode,
+                    audiobookPlaying = audiobookPlaying,
+                )
+            } else {
+                VisibleHealthChrome(pills = emptyList(), line = null)
+            }
+
+            val backgroundOpacityPercent = settings.widgetBackgroundOpacityPercent.coerceIn(30, 100)
+            val backgroundAlpha = backgroundOpacityPercent / 100f
+            val background = dayNightColorProvider(
+                day = lightScheme.surface.copy(alpha = backgroundAlpha),
+                night = darkScheme.surface.copy(alpha = backgroundAlpha),
+            )
+            // Owner request 2026-08-31: pill fill tracks the widget background, 10 points more
+            // opaque, so pills read as a layer above the surface at any chosen translucency.
+            val pillFillAlpha = (backgroundOpacityPercent + 10).coerceAtMost(100) / 100f
             GlanceTheme(colors = colors) {
                 WidgetScaffold(
                     configured = configured,
@@ -170,7 +186,7 @@ class CommuteWidget : GlanceAppWidget() {
                         nowEpochMillis = nowEpochMillis,
                         nowMinuteOfDay = nowMinuteOfDay,
                         leaveByEnabled = settings.leaveByEnabled,
-                        refreshingSince = refreshingSince,
+                        refreshingSince = data.refreshingSince,
                         bestDepartureLine = bestDepartureLine,
                         nextAlarmLine = nextAlarmLine,
                         pillCorner = settings.mapPillCorner,
@@ -180,16 +196,16 @@ class CommuteWidget : GlanceAppWidget() {
                         healthLineLabel = healthChrome.line?.let(::healthLineCaption),
                         healthColors = HealthChromeColors(
                             container = dayNightColorProvider(
-                                day = lightScheme.surfaceContainerHigh,
-                                night = darkScheme.surfaceContainerHigh,
+                                day = lightScheme.surfaceContainerHigh.copy(alpha = pillFillAlpha),
+                                night = darkScheme.surfaceContainerHigh.copy(alpha = pillFillAlpha),
                             ),
                             outline = dayNightColorProvider(
-                                day = lightScheme.primary.copy(alpha = 0.55f),
-                                night = darkScheme.primary.copy(alpha = 0.55f),
+                                day = lightScheme.primary.copy(alpha = 0.75f),
+                                night = darkScheme.primary.copy(alpha = 0.75f),
                             ),
                             outlineDemoted = dayNightColorProvider(
-                                day = lightScheme.primary.copy(alpha = 0.55f * HEALTH_DEMOTION_ALPHA),
-                                night = darkScheme.primary.copy(alpha = 0.55f * HEALTH_DEMOTION_ALPHA),
+                                day = lightScheme.primary.copy(alpha = 0.75f * HEALTH_DEMOTION_ALPHA),
+                                night = darkScheme.primary.copy(alpha = 0.75f * HEALTH_DEMOTION_ALPHA),
                             ),
                             text = dayNightColorProvider(
                                 day = lightScheme.onSurface,

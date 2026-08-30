@@ -140,6 +140,20 @@ private fun Preferences.toAppSettings(): AppSettings {
     )
 }
 
+/**
+ * Everything the widget composition renders from, decoded once per DataStore emission. The
+ * widget collects this INSIDE its composition so any write (tap actions, refresher, workers,
+ * settings screen) recomposes a live Glance session immediately - data captured before
+ * provideContent would stay frozen until the session died.
+ */
+data class WidgetRenderData(
+    val settings: AppSettings,
+    val snapshot: CommuteSnapshot?,
+    val refreshingSince: Long?,
+    val bestDeparture: BestDeparture?,
+    val healthDayState: HealthDayState?,
+)
+
 class SettingsRepository private constructor(
     private val dataStore: DataStore<Preferences>,
 ) {
@@ -154,6 +168,18 @@ class SettingsRepository private constructor(
     val refreshingSinceFlow: Flow<Long?> = dataStore.data.map { preferences ->
         preferences[PreferenceKeys.REFRESHING_SINCE_EPOCH_MILLIS]
     }
+
+    val widgetRenderData: Flow<WidgetRenderData> = dataStore.data.map { preferences ->
+        WidgetRenderData(
+            settings = preferences.toAppSettings(),
+            snapshot = decodeCommuteSnapshot(preferences[PreferenceKeys.SNAPSHOT_JSON]),
+            refreshingSince = preferences[PreferenceKeys.REFRESHING_SINCE_EPOCH_MILLIS],
+            bestDeparture = decodeBestDeparture(preferences[PreferenceKeys.BEST_DEPARTURE_JSON]),
+            healthDayState = decodeHealthDayState(preferences[PreferenceKeys.HEALTH_DAY_STATE_JSON]),
+        )
+    }
+
+    suspend fun widgetRenderDataSnapshot(): WidgetRenderData = widgetRenderData.first()
 
     suspend fun settingsSnapshot(): AppSettings = settings.first()
 
