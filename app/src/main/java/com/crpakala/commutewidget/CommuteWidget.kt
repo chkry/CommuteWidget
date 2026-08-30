@@ -635,6 +635,24 @@ private fun CalendarEmptyCard(
 private fun CalendarEmptyCardBody(snapshot: CommuteSnapshot, extras: WidgetExtras) {
     val textScale = extras.textScale
     val windDown = isWindDown(snapshot)
+    // Owner request 2026-08-31: the sleep estimate shows every day, so calendar-mode cards carry
+    // the same brief segment commute mornings get ("Slept ~6h 40m" / "Short sleep").
+    val sleepCaption = sleepBriefSegment(
+        sleepEstimateMinutes = snapshot.sleepEstimateMinutes,
+        shortSleepDay = snapshot.shortSleepDay,
+        sleepBriefEnabled = extras.sleepBriefEnabled,
+    )
+    if (sleepCaption != null) {
+        Text(
+            text = sleepCaption,
+            style = TextStyle(
+                color = GlanceTheme.colors.onSurfaceVariant,
+                fontSize = scaledSp(11, textScale),
+                fontWeight = FontWeight.Medium,
+            ),
+            maxLines = 1,
+        )
+    }
     if (windDown) {
         Text(
             text = "Tomorrow",

@@ -27,6 +27,7 @@ import com.crpakala.commutewidget.engine.health.localSunsetMinuteOfDay
 import com.crpakala.commutewidget.engine.health.medianSleepMinutes
 import com.crpakala.commutewidget.engine.health.morningLightEligible
 import com.crpakala.commutewidget.engine.health.planWaterSlots
+import com.crpakala.commutewidget.engine.health.sleepPillCandidate
 import com.crpakala.commutewidget.engine.health.suggestWalk
 import com.crpakala.commutewidget.engine.health.supplementCandidates
 import com.crpakala.commutewidget.engine.health.typicalBedtimeMinuteOfDay
@@ -256,7 +257,7 @@ private suspend fun computeHealthStateUnsafe(
         )?.let { candidates += it }
     }
 
-    if (settings.morningLightLineEnabled) {
+    if (settings.morningLightLineEnabled && !dayState.morningLightDismissed) {
         val toWorkWindow = settings.morningSlotStartMinuteOfDay..settings.morningSlotEndMinuteOfDay
         if (morningLightEligible(nowMinuteOfDay, toWorkWindow)) {
             candidates += NudgeCandidate(
@@ -266,6 +267,12 @@ private suspend fun computeHealthStateUnsafe(
                 endMinuteOfDay = toWorkWindow.last,
             )
         }
+    }
+
+    // Owner request 2026-08-31: the sleep estimate shows every day - the brief carries it on
+    // commute mornings, cards carry it as a caption, and event maps get this dismissable pill.
+    if (settings.sleepBriefEnabled && !dayState.sleepPillDismissed) {
+        sleepPillCandidate(sleepEstimateMinutes)?.let { candidates += it }
     }
 
     if (settings.caffeineCutoffLineEnabled) {
@@ -581,4 +588,5 @@ internal fun NudgeKind.toHealthNudgeKind(): HealthNudgeKind = when (this) {
     NudgeKind.FOCUS_GAP -> HealthNudgeKind.FOCUS_GAP
     NudgeKind.MORNING_LIGHT -> HealthNudgeKind.MORNING_LIGHT
     NudgeKind.CAFFEINE_CUTOFF -> HealthNudgeKind.CAFFEINE_CUTOFF
+    NudgeKind.SLEEP_ESTIMATE -> HealthNudgeKind.SLEEP_ESTIMATE
 }

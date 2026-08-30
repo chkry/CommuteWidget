@@ -30,6 +30,7 @@ enum class NudgeKind {
     FOCUS_GAP,
     MORNING_LIGHT,
     CAFFEINE_CUTOFF,
+    SLEEP_ESTIMATE,
 }
 
 data class NudgeCandidate(

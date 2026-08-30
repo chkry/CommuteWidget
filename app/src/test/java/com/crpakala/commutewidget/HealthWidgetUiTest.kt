@@ -379,8 +379,79 @@ class HealthWidgetUiTest {
         assertEquals("💧", healthGlyph(NudgeKind.WATER))
         assertEquals("🚶", healthGlyph(NudgeKind.WALK))
         assertEquals("◎", healthGlyph(NudgeKind.FOCUS_GAP))
-        assertEquals("", healthGlyph(NudgeKind.MORNING_LIGHT))
+        assertEquals("🌙", healthGlyph(NudgeKind.SLEEP_ESTIMATE))
+        assertEquals("☀", healthGlyph(NudgeKind.MORNING_LIGHT))
         assertEquals("", healthGlyph(NudgeKind.CAFFEINE_CUTOFF))
+    }
+
+    @Test
+    fun filterHealthNudges_dismissedSleepAndMorningLightAreDropped() {
+        val dismissedState = emptyState().copy(sleepPillDismissed = true, morningLightDismissed = true)
+        val remaining = filterHealthNudgesAgainstDayState(
+            nudges = listOf(
+                nudge(HealthNudgeKind.SLEEP_ESTIMATE, "Slept 6h 40m"),
+                nudge(HealthNudgeKind.MORNING_LIGHT, "Morning light", start = 420, end = 600),
+                nudge(HealthNudgeKind.CAFFEINE_CUTOFF, "Coffee by 2:00 pm", start = 750, end = 840),
+            ),
+            dayState = dismissedState,
+            todayIsoDate = today,
+            nowMinuteOfDay = 500,
+        )
+        assertEquals(listOf(HealthNudgeKind.CAFFEINE_CUTOFF), remaining.map { it.kind })
+    }
+
+    @Test
+    fun applySleepPillDismissed_setsFlagAndIsIdempotent() {
+        val first = applySleepPillDismissed(emptyState(), today)
+        assertTrue(first.sleepPillDismissed)
+        assertEquals(first, applySleepPillDismissed(first, today))
+    }
+
+    @Test
+    fun applyMorningLightDismissed_freshDayStateStartsClean() {
+        val yesterdayState = applyMorningLightDismissed(emptyState(), today)
+        assertTrue(yesterdayState.morningLightDismissed)
+        val nextDay = applyMorningLightDismissed(yesterdayState, "2099-01-01")
+        assertEquals("2099-01-01", nextDay.date)
+        assertTrue(nextDay.morningLightDismissed)
+        assertFalse(nextDay.sleepPillDismissed)
+    }
+
+    @Test
+    fun resolveVisibleHealthChrome_eventMapShowsSleepAndMorningLightAsPills() {
+        val chrome = resolveVisibleHealthChrome(
+            snapshotNudges = listOf(
+                nudge(HealthNudgeKind.SLEEP_ESTIMATE, "Slept 6h 40m"),
+                nudge(HealthNudgeKind.MORNING_LIGHT, "Morning light", start = 420, end = 600),
+            ),
+            dayState = emptyState(),
+            todayIsoDate = today,
+            nowMinuteOfDay = 500,
+            mode = SnapshotMode.CALENDAR_EVENT,
+            audiobookPlaying = false,
+        )
+        assertEquals(
+            listOf(NudgeKind.SLEEP_ESTIMATE, NudgeKind.MORNING_LIGHT),
+            chrome.pills.map { it.kind },
+        )
+        assertNull(chrome.line)
+    }
+
+    @Test
+    fun resolveVisibleHealthChrome_cardShowsMorningLightAsLineNotPill() {
+        val chrome = resolveVisibleHealthChrome(
+            snapshotNudges = listOf(
+                nudge(HealthNudgeKind.SLEEP_ESTIMATE, "Slept 6h 40m"),
+                nudge(HealthNudgeKind.MORNING_LIGHT, "Morning light", start = 420, end = 600),
+            ),
+            dayState = emptyState(),
+            todayIsoDate = today,
+            nowMinuteOfDay = 500,
+            mode = SnapshotMode.CALENDAR_EMPTY,
+            audiobookPlaying = false,
+        )
+        assertTrue(chrome.pills.isEmpty())
+        assertEquals(NudgeKind.MORNING_LIGHT, chrome.line?.kind)
     }
 
     @Test

@@ -216,8 +216,10 @@ fun selectVisibleNudges(
     return candidates
         .withIndex()
         .filter { (_, candidate) ->
-            candidate.kind != NudgeKind.MORNING_LIGHT &&
-                candidate.kind != NudgeKind.CAFFEINE_CUTOFF &&
+            candidate.kind != NudgeKind.CAFFEINE_CUTOFF &&
+                // Owner request 2026-08-31: sleep and morning-light render as dismissable pills,
+                // but only on an event map; they stay line-only on commute maps and cards.
+                !(candidate.kind in INFO_PILL_KINDS && surface != NudgeSurface.MAP_EVENT) &&
                 !(shieldActive && candidate.kind in SHIELD_SUPPRESSED_KINDS) &&
                 !(surface == NudgeSurface.MAP_COMMUTE && candidate.kind == NudgeKind.WATER) &&
                 !(surface != NudgeSurface.CARD && candidate.kind == NudgeKind.FOCUS_GAP)
@@ -231,19 +233,45 @@ fun lineCandidates(
     candidates: List<NudgeCandidate>,
     surface: NudgeSurface,
 ): List<NudgeCandidate> {
+    // Owner request 2026-08-31: the morning-light line shows on commute maps AND cards (all
+    // days); on an event map it renders as a dismissable pill instead, never a line.
     val morning = candidates.firstOrNull {
-        it.kind == NudgeKind.MORNING_LIGHT && surface == NudgeSurface.MAP_COMMUTE
+        it.kind == NudgeKind.MORNING_LIGHT && surface != NudgeSurface.MAP_EVENT
     }
     val caffeine = candidates.firstOrNull { it.kind == NudgeKind.CAFFEINE_CUTOFF }
     return listOfNotNull(morning ?: caffeine).take(1)
 }
 
+/**
+ * Owner request 2026-08-31: last night's estimate as a pill candidate for event maps. Label
+ * drops the estimate tilde to stay inside the 13-character pill budget ("Slept 6h 40m").
+ */
+fun sleepPillCandidate(sleepMinutes: Int?): NudgeCandidate? {
+    if (sleepMinutes == null) return null
+    val clamped = sleepMinutes.coerceAtLeast(0)
+    val hours = clamped / 60
+    val remainder = clamped % 60
+    val body = when {
+        hours <= 0 -> "${remainder}m"
+        remainder == 0 -> "${hours}h"
+        else -> "${hours}h ${remainder}m"
+    }
+    return NudgeCandidate(
+        kind = NudgeKind.SLEEP_ESTIMATE,
+        label = "Slept $body",
+        startMinuteOfDay = 0,
+        endMinuteOfDay = 24 * 60,
+    )
+}
+
 private fun selectionPriority(candidate: NudgeCandidate): Int = when {
     candidate.kind in SUPPLEMENT_KINDS && !candidate.demoted -> 0
-    candidate.kind == NudgeKind.WATER -> 1
-    candidate.kind in SUPPLEMENT_KINDS -> 2
-    candidate.kind == NudgeKind.WALK -> 3
-    candidate.kind == NudgeKind.FOCUS_GAP -> 4
+    candidate.kind == NudgeKind.SLEEP_ESTIMATE -> 1
+    candidate.kind == NudgeKind.MORNING_LIGHT -> 2
+    candidate.kind == NudgeKind.WATER -> 3
+    candidate.kind in SUPPLEMENT_KINDS -> 4
+    candidate.kind == NudgeKind.WALK -> 5
+    candidate.kind == NudgeKind.FOCUS_GAP -> 6
     else -> Int.MAX_VALUE
 }
 
@@ -264,4 +292,9 @@ private val SUPPLEMENT_KINDS = setOf(
 private val SHIELD_SUPPRESSED_KINDS = setOf(
     NudgeKind.WATER,
     NudgeKind.WALK,
+)
+
+private val INFO_PILL_KINDS = setOf(
+    NudgeKind.SLEEP_ESTIMATE,
+    NudgeKind.MORNING_LIGHT,
 )

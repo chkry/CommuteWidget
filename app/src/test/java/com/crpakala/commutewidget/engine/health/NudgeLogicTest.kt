@@ -412,6 +412,66 @@ class NudgeLogicTest {
         assertEquals(NudgeKind.CAFFEINE_CUTOFF, result.single().kind)
     }
 
+    @Test
+    fun morningLightLine_showsOnCards() {
+        val result = lineCandidates(
+            listOf(candidate(NudgeKind.CAFFEINE_CUTOFF), candidate(NudgeKind.MORNING_LIGHT)),
+            NudgeSurface.CARD,
+        )
+
+        assertEquals(NudgeKind.MORNING_LIGHT, result.single().kind)
+    }
+
+    @Test
+    fun sleepAndMorningLight_arePillsOnEventMapOnly() {
+        val candidates = listOf(candidate(NudgeKind.SLEEP_ESTIMATE), candidate(NudgeKind.MORNING_LIGHT))
+
+        assertEquals(
+            listOf(NudgeKind.SLEEP_ESTIMATE, NudgeKind.MORNING_LIGHT),
+            selectVisibleNudges(candidates, NudgeSurface.MAP_EVENT, false, false).map { it.kind },
+        )
+        assertTrue(selectVisibleNudges(candidates, NudgeSurface.MAP_COMMUTE, false, false).isEmpty())
+        assertTrue(selectVisibleNudges(candidates, NudgeSurface.CARD, false, false).isEmpty())
+    }
+
+    @Test
+    fun eventMapPriority_supplementThenSleepThenLightThenWater() {
+        val result = selectVisibleNudges(
+            listOf(
+                candidate(NudgeKind.WATER),
+                candidate(NudgeKind.MORNING_LIGHT),
+                candidate(NudgeKind.SLEEP_ESTIMATE),
+                candidate(NudgeKind.SUPPLEMENT_MORNING),
+            ),
+            NudgeSurface.MAP_EVENT,
+            audiobookPlaying = false,
+            shieldActive = false,
+            maxVisible = 4,
+        )
+
+        assertEquals(
+            listOf(
+                NudgeKind.SUPPLEMENT_MORNING,
+                NudgeKind.SLEEP_ESTIMATE,
+                NudgeKind.MORNING_LIGHT,
+                NudgeKind.WATER,
+            ),
+            result.map { it.kind },
+        )
+    }
+
+    @Test
+    fun sleepPillCandidate_formatsCompactLabelAllDay() {
+        val pill = sleepPillCandidate(400)!!
+        assertEquals(NudgeKind.SLEEP_ESTIMATE, pill.kind)
+        assertEquals("Slept 6h 40m", pill.label)
+        assertEquals(0, pill.startMinuteOfDay)
+        assertEquals(24 * 60, pill.endMinuteOfDay)
+        assertEquals("Slept 7h", sleepPillCandidate(420)!!.label)
+        assertEquals("Slept 45m", sleepPillCandidate(45)!!.label)
+        assertEquals(null, sleepPillCandidate(null))
+    }
+
     private fun supplements(
         now: Int,
         morningTaken: Int? = null,

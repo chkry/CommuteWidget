@@ -11,6 +11,7 @@ enum class HealthNudgeKind {
     FOCUS_GAP,
     MORNING_LIGHT,
     CAFFEINE_CUTOFF,
+    SLEEP_ESTIMATE,
 }
 
 @Serializable
@@ -45,6 +46,10 @@ data class HealthDayState(
     val audibleLastPlayingMinute: Int? = null,
     /** Sprint 2: true once [com.crpakala.commutewidget.schedule.HealthWalkNotifyWorker] has posted today's walk notification - the dedup guard. */
     val walkNotified: Boolean = false,
+    /** Owner request 2026-08-31: the "Slept ..." event-map pill was tap-dismissed for today. */
+    val sleepPillDismissed: Boolean = false,
+    /** Owner request 2026-08-31: the morning-light nudge was tap-dismissed for today (hides its event-map pill and its card/commute lines). */
+    val morningLightDismissed: Boolean = false,
 )
 
 @Serializable

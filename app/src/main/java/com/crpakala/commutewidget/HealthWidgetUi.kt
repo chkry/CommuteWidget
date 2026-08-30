@@ -54,6 +54,7 @@ internal fun toEngineNudgeKind(kind: HealthNudgeKind): NudgeKind = when (kind) {
     HealthNudgeKind.FOCUS_GAP -> NudgeKind.FOCUS_GAP
     HealthNudgeKind.MORNING_LIGHT -> NudgeKind.MORNING_LIGHT
     HealthNudgeKind.CAFFEINE_CUTOFF -> NudgeKind.CAFFEINE_CUTOFF
+    HealthNudgeKind.SLEEP_ESTIMATE -> NudgeKind.SLEEP_ESTIMATE
 }
 
 internal fun toEngineNudgeCandidate(nudge: HealthNudge): NudgeCandidate = NudgeCandidate(
@@ -91,9 +92,9 @@ internal fun filterHealthNudgesAgainstDayState(
             }
             HealthNudgeKind.WALK -> !state.walkDismissed
             HealthNudgeKind.FOCUS_GAP -> nudge.startMinuteOfDay !in state.dismissedFocusGapStartMinutes
-            HealthNudgeKind.MORNING_LIGHT,
-            HealthNudgeKind.CAFFEINE_CUTOFF,
-            -> true
+            HealthNudgeKind.MORNING_LIGHT -> !state.morningLightDismissed
+            HealthNudgeKind.SLEEP_ESTIMATE -> !state.sleepPillDismissed
+            HealthNudgeKind.CAFFEINE_CUTOFF -> true
         }
     }
 }
@@ -199,9 +200,9 @@ internal fun healthGlyph(kind: NudgeKind): String = when (kind) {
     NudgeKind.WATER -> "💧"
     NudgeKind.WALK -> "🚶"
     NudgeKind.FOCUS_GAP -> "◎"
-    NudgeKind.MORNING_LIGHT,
-    NudgeKind.CAFFEINE_CUTOFF,
-    -> ""
+    NudgeKind.SLEEP_ESTIMATE -> "🌙"
+    NudgeKind.MORNING_LIGHT -> "☀"
+    NudgeKind.CAFFEINE_CUTOFF -> ""
 }
 
 internal fun healthLineCaption(candidate: NudgeCandidate): String {
@@ -259,4 +260,18 @@ internal fun applyFocusGapDismissed(
     return today.copy(
         dismissedFocusGapStartMinutes = today.dismissedFocusGapStartMinutes + gapStartMinute,
     )
+}
+
+internal fun applySleepPillDismissed(
+    state: HealthDayState?,
+    todayIsoDate: String,
+): HealthDayState {
+    return healthDayStateForToday(state, todayIsoDate).copy(sleepPillDismissed = true)
+}
+
+internal fun applyMorningLightDismissed(
+    state: HealthDayState?,
+    todayIsoDate: String,
+): HealthDayState {
+    return healthDayStateForToday(state, todayIsoDate).copy(morningLightDismissed = true)
 }

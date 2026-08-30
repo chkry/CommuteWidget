@@ -548,6 +548,29 @@ class StoredValueCodecTest {
     }
 
     /**
+     * The 2026-08-31 owner request adds `sleepPillDismissed` and `morningLightDismissed`. A
+     * stored day-state JSON predating both fields must decode with both defaulting to false.
+     */
+    @Test
+    fun healthDayStateJson_preInfoPillFormatDecodesWithDismissalDefaults() {
+        val preInfoPillJson = """
+            {
+              "date": "2026-08-31",
+              "waterTapMinutes": [540],
+              "waterSlotPlanMinutes": [450, 630],
+              "audibleLastPlayingMinute": 1050,
+              "walkNotified": true
+            }
+        """.trimIndent()
+
+        val decoded = decodeHealthDayState(preInfoPillJson)
+        requireNotNull(decoded)
+        assertEquals("2026-08-31", decoded.date)
+        assertFalse(decoded.sleepPillDismissed)
+        assertFalse(decoded.morningLightDismissed)
+    }
+
+    /**
      * Sprint 2 adds `sleepStartEpochMillis` to [HealthDayRecord]. A pre-Sprint-2 stored history
      * JSON (predating the field) must still decode, with the new field defaulting to null.
      */
