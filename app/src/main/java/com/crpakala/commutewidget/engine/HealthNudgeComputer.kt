@@ -4,6 +4,8 @@ import android.content.Context
 import com.crpakala.commutewidget.calendar.CalendarReader
 import com.crpakala.commutewidget.calendar.TodayEvent
 import com.crpakala.commutewidget.data.AppSettings
+import com.crpakala.commutewidget.data.CommuteSnapshot
+import com.crpakala.commutewidget.data.CustomPillOccurrence
 import com.crpakala.commutewidget.data.HealthDayRecord
 import com.crpakala.commutewidget.data.HealthDayState
 import com.crpakala.commutewidget.data.HealthHistory
@@ -11,6 +13,9 @@ import com.crpakala.commutewidget.data.HealthNudge
 import com.crpakala.commutewidget.data.HealthNudgeKind
 import com.crpakala.commutewidget.data.SettingsRepository
 import com.crpakala.commutewidget.data.prunedAndUpserted
+import com.crpakala.commutewidget.engine.health.CustomPillDefinition
+import com.crpakala.commutewidget.engine.health.CustomPillOccurrenceCandidate
+import com.crpakala.commutewidget.engine.health.CustomPillOccurrenceState
 import com.crpakala.commutewidget.engine.health.EventSpan
 import com.crpakala.commutewidget.engine.health.HealthParams
 import com.crpakala.commutewidget.engine.health.NudgeCandidate
@@ -20,6 +25,8 @@ import com.crpakala.commutewidget.engine.health.SleepEstimate
 import com.crpakala.commutewidget.engine.health.WalkSuggestion
 import com.crpakala.commutewidget.engine.health.briefPrefix
 import com.crpakala.commutewidget.engine.health.caffeineLineCandidate
+import com.crpakala.commutewidget.engine.health.computeVisibleCustomPillOccurrences
+import com.crpakala.commutewidget.engine.health.customPillAudiobookSuppression
 import com.crpakala.commutewidget.engine.health.estimateSleep
 import com.crpakala.commutewidget.engine.health.focusGapCandidate
 import com.crpakala.commutewidget.engine.health.focusShieldActive
@@ -58,6 +65,23 @@ data class HealthComputation(
     val healthNudges: List<HealthNudge> = emptyList(),
     val sleepEstimateMinutes: Int? = null,
     val shortSleepDay: Boolean = false,
+    val customPillOccurrences: List<CustomPillOccurrence> = emptyList(),
+)
+
+/**
+ * Applies one [HealthComputation]'s results onto an existing snapshot, touching ONLY the health
+ * fields (route/map/leave-by/window fields are preserved). The single shared definition of
+ * "which snapshot fields belong to health" for every non-route health rewrite -
+ * [com.crpakala.commutewidget.schedule.HealthFieldsRefresher] (the boundary worker and the
+ * Reminders screen) must use this rather than hand-copying fields, so a future health field
+ * cannot be forgotten in one copy site (the sprint 5 review caught exactly that:
+ * `customPillOccurrences` missing from the worker's hand-rolled copy).
+ */
+internal fun CommuteSnapshot.withHealthComputation(computation: HealthComputation): CommuteSnapshot = copy(
+    healthNudges = computation.healthNudges,
+    sleepEstimateMinutes = computation.sleepEstimateMinutes,
+    shortSleepDay = computation.shortSleepDay,
+    customPillOccurrences = computation.customPillOccurrences,
 )
 
 /**
@@ -198,6 +222,27 @@ private suspend fun computeHealthStateUnsafe(
         params = params,
     )
 
+    // Custom pill reminders: a wholly separate pipeline from the NudgeCandidate/HealthNudge one
+    // below - no shield, no surface, no shared visibility cap - so it is resolved independently
+    // here rather than folded into `candidates`. Suppression takes the live `audioPlaying` read
+    // this pass already took, gated by the owner's "Suppress during audiobooks" toggle - the same
+    // (toggle AND playing) gate the widget applies to built-in health chrome at render time
+    // (sprint 5 review: raw `audioPlaying` alone kept hiding pills with the toggle switched off).
+    val customPillDefinitions = settings.customPills.map {
+        CustomPillDefinition(id = it.id, label = it.name, slotsMinutesOfDay = it.slotsMinutesOfDay, days = it.days)
+    }
+    val customPillVisible = computeVisibleCustomPillOccurrences(
+        pills = customPillDefinitions,
+        takenSlots = dayState.customPillTakenSlots,
+        dayOfWeek = now.dayOfWeek.value,
+        nowMinuteOfDay = nowMinuteOfDay,
+        activeWindowMinutes = settings.customPillActiveWindowMinutes,
+        audiobookSuppressed = customPillAudiobookSuppression(
+            suppressionEnabled = settings.audiobookSuppressionEnabled,
+            audioPlaying = audioPlaying,
+        ),
+    )
+
     val candidates = mutableListOf<NudgeCandidate>()
 
     candidates += supplementCandidates(
@@ -296,6 +341,7 @@ private suspend fun computeHealthStateUnsafe(
         healthNudges = filtered.map { it.toHealthNudge() },
         sleepEstimateMinutes = sleepEstimateMinutes,
         shortSleepDay = shortSleepDay,
+        customPillOccurrences = customPillVisible.map { it.toCustomPillOccurrence() },
     )
 }
 
@@ -578,6 +624,13 @@ internal fun NudgeCandidate.toHealthNudge(): HealthNudge = HealthNudge(
     endMinuteOfDay = endMinuteOfDay,
     targetMinuteOfDay = targetMinuteOfDay,
     demoted = demoted,
+)
+
+internal fun CustomPillOccurrenceCandidate.toCustomPillOccurrence(): CustomPillOccurrence = CustomPillOccurrence(
+    pillId = pillId,
+    label = label,
+    slotMinuteOfDay = slotMinuteOfDay,
+    active = state == CustomPillOccurrenceState.ACTIVE,
 )
 
 internal fun NudgeKind.toHealthNudgeKind(): HealthNudgeKind = when (this) {

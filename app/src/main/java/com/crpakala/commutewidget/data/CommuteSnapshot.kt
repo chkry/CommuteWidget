@@ -2,6 +2,22 @@ package com.crpakala.commutewidget.data
 
 import kotlinx.serialization.Serializable
 
+/**
+ * Custom pill reminders: one eligible occurrence of a user-defined reminder pill, already
+ * resolved and ordered at computation time (see
+ * [com.crpakala.commutewidget.engine.health.computeVisibleCustomPillOccurrences]). The widget
+ * re-filters against the live taken set and applies the max-3 display cap plus "+N" overflow at
+ * render time - see `resolveCustomPillRowContent` in `HealthWidgetUi.kt`. [active] is `true` for
+ * the ACTIVE state and `false` for the dimmed CARRY_OVER state.
+ */
+@Serializable
+data class CustomPillOccurrence(
+    val pillId: String,
+    val label: String,
+    val slotMinuteOfDay: Int,
+    val active: Boolean,
+)
+
 @Serializable
 data class CommuteSnapshot(
     val direction: Direction,
@@ -66,4 +82,12 @@ data class CommuteSnapshot(
     val healthNudges: List<HealthNudge> = emptyList(),
     val sleepEstimateMinutes: Int? = null,
     val shortSleepDay: Boolean = false,
+    /**
+     * Custom pill reminders: the FULL ordered eligible occurrence list (at most one per pill, so
+     * at most 6 entries), ACTIVE first then CARRY_OVER, both slot-minute ascending. Deliberately
+     * uncapped - the renderer filters out freshly tapped occurrences and only then applies the
+     * max-3 display cap and derives the "+N" overflow, so a tap can promote a hidden occurrence
+     * instead of stranding a stale overflow count.
+     */
+    val customPillOccurrences: List<CustomPillOccurrence> = emptyList(),
 )

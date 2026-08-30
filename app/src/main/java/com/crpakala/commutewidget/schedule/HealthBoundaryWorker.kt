@@ -13,7 +13,10 @@ import com.crpakala.commutewidget.data.HealthDayState
 import com.crpakala.commutewidget.data.HealthNudgeKind
 import com.crpakala.commutewidget.data.SettingsRepository
 import com.crpakala.commutewidget.engine.computeHealthState
+import com.crpakala.commutewidget.engine.withHealthComputation
+import com.crpakala.commutewidget.engine.health.CustomPillDefinition
 import com.crpakala.commutewidget.engine.health.HealthParams
+import com.crpakala.commutewidget.engine.health.customPillTransitionCandidates
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import java.time.Duration
@@ -25,8 +28,9 @@ import kotlin.coroutines.cancellation.CancellationException
 /**
  * Sprint 2: recomputes health nudge state on its own cadence, independent of the commute
  * refresh pipeline - NO Routes/Static Maps call, so this never touches the Google Maps API
- * budget. Rewrites only the three health fields of whatever [com.crpakala.commutewidget.data
- * .CommuteSnapshot] is already stored (route/map/leave-by fields are untouched), then
+ * budget. Rewrites only the health-owned fields of whatever [com.crpakala.commutewidget.data
+ * .CommuteSnapshot] is already stored (route/map/leave-by fields are untouched; see
+ * [com.crpakala.commutewidget.engine.withHealthComputation] via [HealthFieldsRefresher]), then
  * self-reschedules to the next boundary at which some enabled feature's visible state could
  * change. Unique work name "health_boundary"; APPEND_OR_REPLACE from inside (this worker IS the
  * current holder), REPLACE only from [HealthBoundaryScheduler.schedule] (an external caller) -
@@ -59,22 +63,7 @@ class HealthBoundaryWorker(
     }
 
     private suspend fun recomputeAndPersistHealthFields(context: Context) {
-        val repo = SettingsRepository.get(context)
-        val settings = repo.settingsSnapshot()
-        val zone = ZoneId.systemDefault()
-        val nowEpochMillis = System.currentTimeMillis()
-        val computation = computeHealthState(context, settings, nowEpochMillis, zone)
-        val previous = repo.snapshot()
-        if (previous != null) {
-            repo.saveSnapshot(
-                previous.copy(
-                    healthNudges = computation.healthNudges,
-                    sleepEstimateMinutes = computation.sleepEstimateMinutes,
-                    shortSleepDay = computation.shortSleepDay,
-                ),
-            )
-        }
-        CommuteWidget().updateAll(context)
+        HealthFieldsRefresher.recomputeAndPersist(context)
     }
 
     private suspend fun rescheduleNextBoundary(context: Context) {
@@ -87,6 +76,34 @@ class HealthBoundaryWorker(
             ?.targetMinuteOfDay
         val next = nextHealthBoundary(ZonedDateTime.now(), settings, dayState, walkTargetMinuteOfDay)
         HealthBoundaryScheduler.scheduleAt(context, next, ExistingWorkPolicy.APPEND_OR_REPLACE)
+    }
+}
+
+/**
+ * Recomputes health fields into the stored snapshot and re-renders the widget - no Routes/Static
+ * Maps/Geocoding call, no route or map change. Shared by [HealthBoundaryWorker] (every boundary
+ * wake) and the Reminders settings screen (so a pill mutation is visible immediately instead of
+ * waiting for the next boundary). Field mapping goes through
+ * [com.crpakala.commutewidget.engine.withHealthComputation] - the single definition of which
+ * snapshot fields are health-owned - rather than a hand-rolled copy (a hand-rolled copy here is
+ * exactly how the sprint 5 review's blocker 1 happened). Never throws: a platform failure ends
+ * with the previous render intact.
+ */
+object HealthFieldsRefresher {
+    suspend fun recomputeAndPersist(context: Context) {
+        try {
+            val repo = SettingsRepository.get(context)
+            val settings = repo.settingsSnapshot()
+            val computation = computeHealthState(context, settings, System.currentTimeMillis(), ZoneId.systemDefault())
+            val previous = repo.snapshot()
+            if (previous != null) {
+                repo.saveSnapshot(previous.withHealthComputation(computation))
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+        }
+        runCatching { CommuteWidget().updateAll(context) }
     }
 }
 
@@ -131,7 +148,10 @@ object HealthBoundaryScheduler {
  * - the protein window start and the 18:00 protein-outranks-morning transition,
  * - [walkTargetMinuteOfDay] (the last computed walk suggestion's start, if any),
  * - the shield's default no-early-event end minute, when the restless-night shield is enabled,
- * - the caffeine lead-time window start and cutoff.
+ * - the caffeine lead-time window start and cutoff,
+ * - each of today's enabled custom pill reminders' eligible slot starts and active-window ends
+ *   (see [com.crpakala.commutewidget.engine.health.customPillTransitionCandidates] - midnight
+ *   itself is excluded there, since the day-rollover fallback below already covers it).
  * The earliest candidate strictly after [now] wins; if none remains today, the result is local
  * midnight + 1 minute (the day-rollover fallback), so this function never returns null.
  */
@@ -143,7 +163,7 @@ internal fun nextHealthBoundary(
     params: HealthParams = HealthParams(),
 ): ZonedDateTime {
     val nowMinuteOfDay = now.hour * 60 + now.minute
-    val candidates = healthBoundaryMinutesOfDay(settings, dayState, walkTargetMinuteOfDay, params)
+    val candidates = healthBoundaryMinutesOfDay(settings, dayState, walkTargetMinuteOfDay, params, now.dayOfWeek.value)
     val nextToday = candidates.firstOrNull { it > nowMinuteOfDay }
     return if (nextToday != null) {
         atMinuteOfDay(now, nextToday)
@@ -157,6 +177,7 @@ internal fun healthBoundaryMinutesOfDay(
     dayState: HealthDayState?,
     walkTargetMinuteOfDay: Int?,
     params: HealthParams,
+    dayOfWeekIso: Int,
 ): List<Int> = buildList {
     if (settings.waterRemindersEnabled) {
         dayState?.waterSlotPlanMinutes?.forEach { slot ->
@@ -181,6 +202,18 @@ internal fun healthBoundaryMinutesOfDay(
     if (settings.caffeineCutoffLineEnabled) {
         add((settings.caffeineCutoffMinuteOfDay - params.caffeineLeadMinutes).coerceAtLeast(0))
         add(settings.caffeineCutoffMinuteOfDay)
+    }
+    if (settings.customPills.isNotEmpty()) {
+        addAll(
+            customPillTransitionCandidates(
+                pills = settings.customPills.map {
+                    CustomPillDefinition(id = it.id, label = it.name, slotsMinutesOfDay = it.slotsMinutesOfDay, days = it.days)
+                },
+                takenSlots = dayState?.customPillTakenSlots ?: emptySet(),
+                dayOfWeek = dayOfWeekIso,
+                activeWindowMinutes = settings.customPillActiveWindowMinutes,
+            ),
+        )
     }
 }.distinct().sorted()
 

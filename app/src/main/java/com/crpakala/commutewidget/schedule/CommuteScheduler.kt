@@ -57,9 +57,12 @@ object CommuteScheduler {
         }
         if (anyHealthFeatureEnabled(settings)) {
             HealthMorningScheduler.schedule(appContext)
-            HealthBoundaryScheduler.schedule(appContext, settings)
         } else {
             HealthMorningScheduler.cancel(appContext)
+        }
+        if (healthBoundaryNeeded(settings)) {
+            HealthBoundaryScheduler.schedule(appContext, settings)
+        } else {
             HealthBoundaryScheduler.cancel(appContext)
         }
     }
@@ -129,6 +132,19 @@ object CommuteScheduler {
             settings.postGymWaterPulseEnabled ||
             settings.morningLightLineEnabled ||
             settings.caffeineCutoffLineEnabled
+
+    /**
+     * Whether the "health_boundary" chain must be armed. Broader than [anyHealthFeatureEnabled]:
+     * custom pill reminders live outside the health toggles (their own Reminders category) but
+     * depend on the boundary chain for slot-start/window-end wakes and the midnight rollover, so
+     * a pills-only configuration - every health toggle off, one or more reminders defined - still
+     * arms it (sprint 5 review blocker 2: gating this on the health toggles alone silently
+     * cancelled the chain from the Reminders screen's own ensureScheduled call). The 06:30
+     * "health_morning" maintenance stays gated on [anyHealthFeatureEnabled]; pills need no
+     * morning sleep backfill or water planning.
+     */
+    internal fun healthBoundaryNeeded(settings: AppSettings): Boolean =
+        anyHealthFeatureEnabled(settings) || settings.customPills.isNotEmpty()
 
     internal fun scheduleWindowBoundaryAt(
         context: Context,

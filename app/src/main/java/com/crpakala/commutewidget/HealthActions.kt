@@ -8,6 +8,7 @@ import androidx.glance.action.actionParametersOf
 import androidx.glance.appwidget.action.ActionCallback
 import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.appwidget.updateAll
+import com.crpakala.commutewidget.data.CustomPillOccurrence
 import com.crpakala.commutewidget.data.SettingsRepository
 import com.crpakala.commutewidget.engine.health.NudgeCandidate
 import com.crpakala.commutewidget.engine.health.NudgeKind
@@ -20,6 +21,8 @@ import kotlinx.coroutines.withContext
 internal val healthSupplementKindKey = ActionParameters.Key<String>("health_supplement_kind")
 internal val healthFocusGapStartMinuteKey = ActionParameters.Key<Int>("health_focus_gap_start_minute")
 internal val healthInfoKindKey = ActionParameters.Key<String>("health_info_kind")
+internal val customPillIdKey = ActionParameters.Key<String>("custom_pill_id")
+internal val customPillSlotMinuteKey = ActionParameters.Key<Int>("custom_pill_slot_minute")
 
 internal const val INFO_KIND_SLEEP = "SLEEP"
 internal const val INFO_KIND_MORNING_LIGHT = "MORNING_LIGHT"
@@ -46,6 +49,14 @@ internal fun healthNudgeClickAction(candidate: NudgeCandidate): Action? = when (
     )
     NudgeKind.CAFFEINE_CUTOFF -> null
 }
+
+/** Custom pill reminders always have a tap target - no line-only surface, no non-clickable kind. */
+internal fun customPillTapAction(occurrence: CustomPillOccurrence): Action = actionRunCallback<CustomPillTakenAction>(
+    actionParametersOf(
+        customPillIdKey to occurrence.pillId,
+        customPillSlotMinuteKey to occurrence.slotMinuteOfDay,
+    ),
+)
 
 class SupplementTakenAction : ActionCallback {
     override suspend fun onAction(
@@ -132,6 +143,29 @@ class FocusGapDismissAction : ActionCallback {
                     state = current,
                     todayIsoDate = LocalDate.now().toString(),
                     gapStartMinute = gapStartMinute,
+                )
+            }
+            CommuteWidget().updateAll(context)
+        }
+    }
+}
+
+class CustomPillTakenAction : ActionCallback {
+    override suspend fun onAction(
+        context: Context,
+        glanceId: GlanceId,
+        parameters: ActionParameters,
+    ) {
+        val pillId = parameters[customPillIdKey] ?: return
+        val slotMinuteOfDay = parameters[customPillSlotMinuteKey] ?: return
+        withContext(NonCancellable) {
+            val repo = SettingsRepository.get(context)
+            repo.updateHealthDayState { current ->
+                applyCustomPillTaken(
+                    state = current,
+                    todayIsoDate = LocalDate.now().toString(),
+                    pillId = pillId,
+                    slotMinuteOfDay = slotMinuteOfDay,
                 )
             }
             CommuteWidget().updateAll(context)

@@ -1,6 +1,7 @@
 package com.crpakala.commutewidget.schedule
 
 import com.crpakala.commutewidget.data.AppSettings
+import com.crpakala.commutewidget.data.CustomPill
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import org.junit.Assert.assertEquals
@@ -184,5 +185,30 @@ class CommuteSchedulerTest {
         )
 
         assertFalse(CommuteScheduler.anyHealthFeatureEnabled(result))
+    }
+
+    /**
+     * Sprint 5 review blocker 2: custom pill reminders live outside the health toggles, so a
+     * pills-only configuration must still arm the "health_boundary" chain (slot wakes, midnight
+     * rollover) - while deliberately NOT counting as a health feature for the 06:30
+     * "health_morning" maintenance chain.
+     */
+    @Test
+    fun customPillsAlone_armTheBoundaryChainButNotTheMorningChain() {
+        val pillsOnly = allHealthFeaturesDisabled.copy(
+            customPills = listOf(
+                CustomPill(id = "p1", name = "Vitamin D", slotsMinutesOfDay = listOf(540), days = setOf(1, 2, 3, 4, 5)),
+            ),
+        )
+
+        assertTrue(CommuteScheduler.healthBoundaryNeeded(pillsOnly))
+        assertFalse(CommuteScheduler.anyHealthFeatureEnabled(pillsOnly))
+    }
+
+    @Test
+    fun healthBoundaryNeeded_falseOnlyWhenBothHealthTogglesAndPillsAreAbsent() {
+        assertFalse(CommuteScheduler.healthBoundaryNeeded(allHealthFeaturesDisabled))
+        assertTrue(CommuteScheduler.healthBoundaryNeeded(allHealthFeaturesDisabled.copy(waterRemindersEnabled = true)))
+        assertTrue(CommuteScheduler.healthBoundaryNeeded(AppSettings()))
     }
 }

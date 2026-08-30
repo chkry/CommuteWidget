@@ -1,89 +1,41 @@
 package com.crpakala.commutewidget.ui
 
-import android.Manifest
-import android.content.ActivityNotFoundException
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.net.Uri
-import android.provider.Settings
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.health.connect.client.PermissionController
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TimePicker
-import androidx.compose.material3.TimePickerState
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
-import androidx.core.net.toUri
-import androidx.glance.appwidget.updateAll
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.crpakala.commutewidget.CommuteWidget
-import com.crpakala.commutewidget.api.ApiResult
-import com.crpakala.commutewidget.api.GeocodeHit
-import com.crpakala.commutewidget.api.GeocodingClient
 import com.crpakala.commutewidget.data.AppSettings
-import com.crpakala.commutewidget.data.Direction
-import com.crpakala.commutewidget.data.Favourite
-import com.crpakala.commutewidget.data.MapPillCorner
-import com.crpakala.commutewidget.data.Place
 import com.crpakala.commutewidget.data.SettingsRepository
-import com.crpakala.commutewidget.data.TravelMode
-import com.crpakala.commutewidget.calendar.CalendarReader
-import com.crpakala.commutewidget.calendar.DeviceCalendar
-import com.crpakala.commutewidget.health.CommuteAudioDetector
-import com.crpakala.commutewidget.health.HealthConnectFacade
-import com.crpakala.commutewidget.health.ScreenEventsReader
-import com.crpakala.commutewidget.schedule.CommuteScheduler
-import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Locale
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
 
+/**
+ * Sprint 4: the settings screen host. Android-Settings-style reorganization of the former
+ * ~1500-line monolith into a pure category menu (8 rows, each with a live one-line summary) that
+ * opens per-category screens defined in their own files under `ui/`. Navigation is hand-rolled -
+ * a single [rememberSaveable] [AppScreen] value, no navigation library - with system back and the
+ * top bar's back arrow both returning to the menu (Health > Experimental nudges is the one nested
+ * exception: its back returns to Health first).
+ */
 @Composable
 fun CommuteWidgetApp() {
     val context = LocalContext.current
@@ -97,6 +49,36 @@ fun CommuteWidgetApp() {
     }
 }
 
+private enum class AppScreen {
+    HOME,
+    COMMUTE_SETUP,
+    PLACES_MAPS,
+    ALERTS_TIMING,
+    CALENDAR,
+    REMINDERS,
+    HEALTH,
+    EXPERIMENTAL_NUDGES,
+    WIDGET_APPEARANCE,
+    ACCESS_APP_INFO,
+}
+
+private fun titleFor(screen: AppScreen): String = when (screen) {
+    AppScreen.HOME -> "Commute Widget"
+    AppScreen.COMMUTE_SETUP -> "Commute setup"
+    AppScreen.PLACES_MAPS -> "Places & Maps"
+    AppScreen.ALERTS_TIMING -> "Alerts & timing"
+    AppScreen.CALENDAR -> "Calendar"
+    AppScreen.REMINDERS -> "Reminders"
+    AppScreen.HEALTH -> "Health"
+    AppScreen.EXPERIMENTAL_NUDGES -> "Experimental nudges"
+    AppScreen.WIDGET_APPEARANCE -> "Widget appearance"
+    AppScreen.ACCESS_APP_INFO -> "Access & app info"
+}
+
+private fun parentOf(screen: AppScreen): AppScreen =
+    if (screen == AppScreen.EXPERIMENTAL_NUDGES) AppScreen.HEALTH else AppScreen.HOME
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SettingsScreen() {
     val context = LocalContext.current
@@ -105,1405 +87,115 @@ private fun SettingsScreen() {
     val settings by repository.settings.collectAsState(initial = AppSettings())
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+    var screen by rememberSaveable { mutableStateOf(AppScreen.HOME) }
+
+    BackHandler(enabled = screen != AppScreen.HOME) {
+        screen = parentOf(screen)
+    }
 
     Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(titleFor(screen)) },
+                navigationIcon = {
+                    if (screen != AppScreen.HOME) {
+                        IconButton(onClick = { screen = parentOf(screen) }) {
+                            Text("\u2190", style = MaterialTheme.typography.headlineSmall)
+                        }
+                    }
+                },
+            )
+        },
         snackbarHost = { SnackbarHost(snackbarHostState) },
         modifier = Modifier.fillMaxSize(),
     ) { padding ->
-        LazyColumn(
-            contentPadding = PaddingValues(
-                start = 16.dp,
-                top = padding.calculateTopPadding() + 16.dp,
-                end = 16.dp,
-                bottom = padding.calculateBottomPadding() + 24.dp,
-            ),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            item {
-                Text("Commute Widget", style = MaterialTheme.typography.headlineMedium)
+        when (screen) {
+            AppScreen.HOME -> HomeMenu(settings = settings, padding = padding) { destination ->
+                screen = destination
             }
-            item {
-                ApiKeySection(
-                    savedKey = settings.apiKey,
-                    onSave = { apiKey ->
-                        scope.launch {
-                            repository.setApiKey(apiKey)
-                            refreshWidget(applicationContext)
-                            snackbarHostState.showSnackbar("API key saved")
-                        }
-                    },
-                )
-            }
-            item {
-                LocationCard(
-                    label = "Home location",
-                    savedAddress = settings.home?.address,
-                    apiKey = settings.apiKey,
-                    onPlaceSelected = { place ->
-                        scope.launch {
-                            repository.setHome(place)
-                            refreshWidget(applicationContext)
-                            snackbarHostState.showSnackbar("Home location saved")
-                        }
-                    },
-                )
-            }
-            item {
-                LocationCard(
-                    label = "Work location",
-                    savedAddress = settings.work?.address,
-                    apiKey = settings.apiKey,
-                    onPlaceSelected = { place ->
-                        scope.launch {
-                            repository.setWork(place)
-                            refreshWidget(applicationContext)
-                            snackbarHostState.showSnackbar("Work location saved")
-                        }
-                    },
-                )
-            }
-            item {
-                TravelModeSection(
-                    travelMode = settings.travelMode,
-                    onSelect = { travelMode ->
-                        scope.launch {
-                            repository.setTravelMode(travelMode)
-                            refreshWidget(applicationContext)
-                            snackbarHostState.showSnackbar("Travel mode saved")
-                        }
-                    },
-                )
-            }
-            item {
-                FavouritesSection(
-                    favourites = settings.favourites,
-                    travelMode = settings.travelMode,
-                    apiKey = settings.apiKey,
-                    onSaveFavourites = { favourites ->
-                        scope.launch {
-                            repository.setFavourites(favourites)
-                            refreshWidget(applicationContext)
-                        }
-                    },
-                )
-            }
-            item {
-                LeaveBySection(
-                    enabled = settings.leaveByEnabled,
-                    arriveWork = settings.arriveWorkByMinuteOfDay,
-                    arriveHome = settings.arriveHomeByMinuteOfDay,
-                    eventLeaveByBufferMinutes = settings.eventLeaveByBufferMinutes,
-                    eventRealtimeThresholdMinutes = settings.eventRealtimeThresholdMinutes,
-                    onEnabledChanged = { enabled ->
-                        scope.launch {
-                            repository.setLeaveByEnabled(enabled)
-                            refreshWidget(applicationContext)
-                        }
-                    },
-                    onTimeChanged = { work, minute ->
-                        scope.launch {
-                            if (work) repository.setArriveWorkByMinuteOfDay(minute)
-                            else repository.setArriveHomeByMinuteOfDay(minute)
-                            refreshWidget(applicationContext)
-                        }
-                    },
-                    onEventLeaveByBufferChanged = { minutes ->
-                        scope.launch {
-                            repository.setEventLeaveByBufferMinutes(minutes)
-                            refreshWidget(applicationContext)
-                            snackbarHostState.showSnackbar("Arrive early buffer saved")
-                        }
-                    },
-                    onEventRealtimeThresholdChanged = { minutes ->
-                        scope.launch {
-                            repository.setEventRealtimeThresholdMinutes(minutes)
-                            refreshWidget(applicationContext)
-                            snackbarHostState.showSnackbar("Live traffic threshold saved")
-                        }
-                    },
-                )
-            }
-            item {
-                BestDepartureSection(
-                    enabled = settings.bestDepartureEnabled,
-                    pillCorner = settings.mapPillCorner,
-                    onEnabledChanged = { enabled ->
-                        scope.launch {
-                            repository.setBestDepartureEnabled(enabled)
-                            refreshWidget(applicationContext)
-                        }
-                    },
-                    onPillCornerChanged = { corner ->
-                        scope.launch {
-                            repository.setMapPillCorner(corner)
-                            refreshWidget(applicationContext)
-                        }
-                    },
-                )
-            }
-            item {
-                CalendarSection(
-                    enabled = settings.calendarEnabled,
-                    selectedIds = settings.selectedCalendarIds,
-                    calendarTickEnabled = settings.calendarTickEnabled,
-                    eventTakeoverMinutes = settings.eventTakeoverMinutes,
-                    onEnabledChanged = { enabled ->
-                        scope.launch {
-                            repository.setCalendarEnabled(enabled)
-                            CommuteScheduler.ensureScheduled(applicationContext)
-                            refreshWidget(applicationContext)
-                        }
-                    },
-                    onSelectedIdsChanged = { ids ->
-                        scope.launch {
-                            repository.setSelectedCalendarIds(ids)
-                            CommuteScheduler.ensureScheduled(applicationContext)
-                            refreshWidget(applicationContext)
-                        }
-                    },
-                    onCalendarTickEnabledChanged = { enabled ->
-                        scope.launch {
-                            repository.setCalendarTickEnabled(enabled)
-                            CommuteScheduler.ensureScheduled(applicationContext)
-                            refreshWidget(applicationContext)
-                        }
-                    },
-                    onEventTakeoverMinutesChanged = { minutes ->
-                        scope.launch {
-                            repository.setEventTakeoverMinutes(minutes)
-                            refreshWidget(applicationContext)
-                        }
-                    },
-                )
-            }
-            item {
-                HealthSection(
-                    settings = settings,
-                    onSettingsChange = { update ->
-                        scope.launch {
-                            update(repository)
-                            CommuteScheduler.ensureScheduled(applicationContext)
-                            refreshWidget(applicationContext)
-                        }
-                    },
-                )
-            }
-            item {
-                AppearanceSection(
-                    opacityPercent = settings.widgetBackgroundOpacityPercent,
-                    textScalePercent = settings.widgetTextScalePercent,
-                    onOpacityChanged = { percent ->
-                        scope.launch {
-                            repository.setWidgetBackgroundOpacityPercent(percent)
-                            refreshWidget(applicationContext)
-                        }
-                    },
-                    onTextScaleChanged = { percent ->
-                        scope.launch {
-                            repository.setWidgetTextScalePercent(percent)
-                            refreshWidget(applicationContext)
-                        }
-                    },
-                )
-            }
-            item {
-                CommuteWindowsSection(
-                    settings = settings,
-                    onSettingsChange = { update ->
-                        scope.launch {
-                            update(repository)
-                            CommuteScheduler.ensureScheduled(applicationContext)
-                            refreshWidget(applicationContext)
-                        }
-                    },
-                )
-            }
-            item {
-                LocationPermissionSection()
-            }
-            item {
-                Text(
-                    "The widget refreshes on tap, at window boundaries, and every 20 minutes while showing a routed event.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
+            AppScreen.COMMUTE_SETUP -> CommuteSetupScreen(
+                settings, repository, scope, snackbarHostState, applicationContext, padding,
+            )
+            AppScreen.PLACES_MAPS -> PlacesMapsScreen(
+                settings, repository, scope, snackbarHostState, applicationContext, padding,
+            )
+            AppScreen.ALERTS_TIMING -> AlertsTimingScreen(
+                settings, repository, scope, snackbarHostState, applicationContext, padding,
+                onNavigateToAccessInfo = { screen = AppScreen.ACCESS_APP_INFO },
+            )
+            AppScreen.CALENDAR -> CalendarScreen(
+                settings, repository, scope, applicationContext, padding,
+                onNavigateToAccessInfo = { screen = AppScreen.ACCESS_APP_INFO },
+            )
+            AppScreen.REMINDERS -> RemindersScreen(
+                settings, repository, scope, applicationContext, padding,
+            )
+            AppScreen.HEALTH -> HealthScreen(
+                settings, repository, scope, applicationContext, padding,
+                onOpenExperimentalNudges = { screen = AppScreen.EXPERIMENTAL_NUDGES },
+                onNavigateToAccessInfo = { screen = AppScreen.ACCESS_APP_INFO },
+            )
+            AppScreen.EXPERIMENTAL_NUDGES -> ExperimentalNudgesScreen(
+                settings, repository, scope, applicationContext, padding,
+            )
+            AppScreen.WIDGET_APPEARANCE -> WidgetAppearanceScreen(
+                settings, repository, scope, applicationContext, padding,
+            )
+            AppScreen.ACCESS_APP_INFO -> AccessAppInfoScreen(padding)
         }
     }
 }
 
 @Composable
-private fun ApiKeySection(savedKey: String, onSave: (String) -> Unit) {
-    var apiKey by remember(savedKey) { mutableStateOf(savedKey) }
-    var visible by remember { mutableStateOf(false) }
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("API key", style = MaterialTheme.typography.titleMedium)
-        OutlinedTextField(
-            value = apiKey,
-            onValueChange = { apiKey = it },
-            label = { Text("Google Maps API key") },
-            visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
-            trailingIcon = {
-                TextButton(onClick = { visible = !visible }) {
-                    Text(if (visible) "Hide" else "Show")
-                }
-            },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Text(
-            "Google Maps Platform key with Routes, Static Maps and Geocoding enabled",
-            style = MaterialTheme.typography.bodySmall,
-        )
-        Button(onClick = { onSave(apiKey.trim()) }) {
-            Text("Save key")
-        }
-    }
-}
-
-@Composable
-private fun LocationCard(
-    label: String,
-    savedAddress: String?,
-    apiKey: String,
-    onPlaceSelected: (Place) -> Unit,
-) {
-    var query by remember { mutableStateOf("") }
-    var results by remember { mutableStateOf<List<GeocodeHit>>(emptyList()) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var searched by remember { mutableStateOf(false) }
-    var searchJob by remember { mutableStateOf<Job?>(null) }
-    var savedConfirmation by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
-
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text(label, style = MaterialTheme.typography.titleMedium)
-            Text(savedAddress ?: "Not set", style = MaterialTheme.typography.bodyMedium)
-            OutlinedTextField(
-                value = query,
-                onValueChange = { query = it },
-                label = { Text("Address") },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            if (apiKey.isBlank()) {
-                Text(
-                    "Enter API key first",
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            Button(
-                enabled = apiKey.isNotBlank() && query.isNotBlank(),
-                onClick = {
-                    searchJob?.cancel()
-                    searched = true
-                    error = null
-                    results = emptyList()
-                    searchJob = scope.launch {
-                        when (val response = GeocodingClient(apiKey).geocode(query.trim())) {
-                            is ApiResult.Success -> results = response.value.take(5)
-                            is ApiResult.Failure -> error = response.message
-                        }
-                    }
-                },
-            ) {
-                Text("Search")
-            }
-            error?.let {
-                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            }
-            if (searched && error == null && results.isEmpty() && searchJob?.isCompleted != false) {
-                Text("No matches found", style = MaterialTheme.typography.bodySmall)
-            }
-            results.forEach { hit ->
-                Text(
-                    hit.formattedAddress,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            onPlaceSelected(
-                                Place(hit.formattedAddress, hit.location.lat, hit.location.lng),
-                            )
-                            results = emptyList()
-                            searched = false
-                            savedConfirmation = "Saved: ${hit.formattedAddress}"
-                        }
-                        .padding(vertical = 8.dp),
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-            savedConfirmation?.let {
-                Text(it, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
-            }
-        }
-    }
-    DisposableEffect(Unit) {
-        onDispose { searchJob?.cancel() }
-    }
-}
-
-@Composable
-private fun TravelModeSection(travelMode: TravelMode, onSelect: (TravelMode) -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Travel mode", style = MaterialTheme.typography.titleMedium)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(
-                selected = travelMode == TravelMode.DRIVE,
-                onClick = { onSelect(TravelMode.DRIVE) },
-                label = { Text("Car") },
-            )
-            FilterChip(
-                selected = travelMode == TravelMode.TWO_WHEELER,
-                onClick = { onSelect(TravelMode.TWO_WHEELER) },
-                label = { Text("Two-wheeler") },
-            )
-        }
-    }
-}
-
-@Composable
-private fun BestDepartureSection(
-    enabled: Boolean,
-    pillCorner: MapPillCorner,
-    onEnabledChanged: (Boolean) -> Unit,
-    onPillCornerChanged: (MapPillCorner) -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text("Best departure", style = MaterialTheme.typography.titleMedium)
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Suggest the best time to leave")
-                Text(
-                    "Follows your commute windows automatically: mornings show the best time to leave for work, evenings the best time to head home, from Google's predicted traffic",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            Switch(checked = enabled, onCheckedChange = onEnabledChanged)
-        }
-        Text("Map pill position", style = MaterialTheme.typography.bodyMedium)
-        Text(
-            "Where the leave-by and best-time pills sit on the widget's map",
-            style = MaterialTheme.typography.bodySmall,
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(
-                selected = pillCorner == MapPillCorner.TOP_START,
-                onClick = { onPillCornerChanged(MapPillCorner.TOP_START) },
-                label = { Text("Top left") },
-            )
-            FilterChip(
-                selected = pillCorner == MapPillCorner.TOP_END,
-                onClick = { onPillCornerChanged(MapPillCorner.TOP_END) },
-                label = { Text("Top right") },
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(
-                selected = pillCorner == MapPillCorner.BOTTOM_START,
-                onClick = { onPillCornerChanged(MapPillCorner.BOTTOM_START) },
-                label = { Text("Bottom left") },
-            )
-            FilterChip(
-                selected = pillCorner == MapPillCorner.BOTTOM_END,
-                onClick = { onPillCornerChanged(MapPillCorner.BOTTOM_END) },
-                label = { Text("Bottom right") },
-            )
-        }
-    }
-}
-
-@Composable
-private fun AppearanceSection(
-    opacityPercent: Int,
-    textScalePercent: Int,
-    onOpacityChanged: (Int) -> Unit,
-    onTextScaleChanged: (Int) -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text("Appearance", style = MaterialTheme.typography.titleMedium)
-        Text("Background opacity", style = MaterialTheme.typography.bodyMedium)
-        Text(
-            "Lower values give the translucent One UI look",
-            style = MaterialTheme.typography.bodySmall,
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("Solid" to 100, "85%" to 85, "70%" to 70, "50%" to 50).forEach { (label, value) ->
-                FilterChip(
-                    selected = opacityPercent == value,
-                    onClick = { onOpacityChanged(value) },
-                    label = { Text(label) },
-                )
-            }
-        }
-        Text("Text size", style = MaterialTheme.typography.bodyMedium)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("Small" to 85, "Default" to 100, "Large" to 115).forEach { (label, value) ->
-                FilterChip(
-                    selected = textScalePercent == value,
-                    onClick = { onTextScaleChanged(value) },
-                    label = { Text(label) },
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun TimeRow(label: String, minuteOfDay: Int, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(vertical = 12.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
+private fun HomeMenu(settings: AppSettings, padding: PaddingValues, onNavigate: (AppScreen) -> Unit) {
+    val accessStatus = rememberAccessPermissionsStatus()
+    LazyColumn(
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            top = padding.calculateTopPadding(),
+            end = 16.dp,
+            bottom = padding.calculateBottomPadding() + 24.dp,
+        ),
     ) {
-        Text(label)
-        Text(formatTime(minuteOfDay), color = MaterialTheme.colorScheme.primary)
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun TimePickerDialog(
-    state: TimePickerState,
-    onDismiss: () -> Unit,
-    onConfirm: () -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = { TextButton(onClick = onConfirm) { Text("OK") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-        text = { TimePicker(state = state) },
-    )
-}
-
-@Composable
-private fun FavouritesSection(
-    favourites: List<Favourite>,
-    travelMode: TravelMode,
-    apiKey: String,
-    onSaveFavourites: (List<Favourite>) -> Unit,
-) {
-    var adding by remember { mutableStateOf(false) }
-    val context = LocalContext.current
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Saved places", style = MaterialTheme.typography.titleMedium)
-        Text(
-            "Saved places for quick navigation from here.",
-            style = MaterialTheme.typography.bodySmall,
-        )
-        favourites.forEach { favourite ->
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(favourite.label)
-                    Text(favourite.place.address, style = MaterialTheme.typography.bodySmall)
-                }
-                TextButton(onClick = {
-                    launchNavigation(context, favourite.place, travelMode)
-                }) { Text("Navigate") }
-                TextButton(onClick = {
-                    onSaveFavourites(favourites.filterNot { it.label == favourite.label })
-                }) { Text("Remove") }
+        item {
+            CategoryRow("\uD83D\uDE97", "Commute setup", commuteSetupSummary(settings)) {
+                onNavigate(AppScreen.COMMUTE_SETUP)
             }
         }
-        if (favourites.size < 4) {
-            TextButton(onClick = { adding = !adding }) {
-                Text(if (adding) "Cancel adding place" else "Add saved place")
+        item {
+            CategoryRow("\uD83D\uDCCD", "Places & Maps", placesMapsSummary(settings)) {
+                onNavigate(AppScreen.PLACES_MAPS)
             }
         }
-        if (adding) {
-            AddFavouriteForm(
-                apiKey = apiKey,
-                existingLabels = favourites.map { it.label }.toSet(),
-                onAdd = {
-                    onSaveFavourites(favourites + it)
-                    adding = false
-                },
-            )
+        item {
+            CategoryRow("\uD83D\uDD14", "Alerts & timing", alertsTimingSummary(settings)) {
+                onNavigate(AppScreen.ALERTS_TIMING)
+            }
         }
-    }
-}
-
-@Composable
-private fun AddFavouriteForm(
-    apiKey: String,
-    existingLabels: Set<String>,
-    onAdd: (Favourite) -> Unit,
-) {
-    var label by remember { mutableStateOf("") }
-    var address by remember { mutableStateOf("") }
-    var results by remember { mutableStateOf<List<GeocodeHit>>(emptyList()) }
-    var error by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
-    val normalized = label.trim()
-    val labelError = when {
-        normalized.isBlank() -> "Label is required"
-        normalized.length > 12 -> "Label must be 12 characters or fewer"
-        existingLabels.any { it.equals(normalized, ignoreCase = true) } -> "Label already exists"
-        else -> null
-    }
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(
-                value = label,
-                onValueChange = { label = it },
-                label = { Text("Short label") },
-                isError = label.isNotBlank() && labelError != null,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
-                value = address,
-                onValueChange = { address = it },
-                label = { Text("Address") },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            if (apiKey.isBlank()) Text("Enter API key first", color = MaterialTheme.colorScheme.error)
-            Button(
-                enabled = apiKey.isNotBlank() && address.isNotBlank() && labelError == null,
-                onClick = {
-                    error = null
-                    results = emptyList()
-                    scope.launch {
-                        when (val response = GeocodingClient(apiKey).geocode(address.trim())) {
-                            is ApiResult.Success -> results = response.value.take(5)
-                            is ApiResult.Failure -> error = response.message
-                        }
-                    }
-                },
-            ) { Text("Search") }
-            labelError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            results.forEach { hit ->
-                Text(
-                    hit.formattedAddress,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            onAdd(Favourite(normalized, Place(hit.formattedAddress, hit.location.lat, hit.location.lng)))
-                        }
-                        .padding(vertical = 8.dp),
-                    color = MaterialTheme.colorScheme.primary,
-                )
+        item {
+            CategoryRow("\uD83D\uDCC5", "Calendar", calendarSummary(settings)) {
+                onNavigate(AppScreen.CALENDAR)
+            }
+        }
+        item {
+            CategoryRow("\u2705", "Reminders", remindersSummary(settings)) {
+                onNavigate(AppScreen.REMINDERS)
+            }
+        }
+        item {
+            CategoryRow("\u2764", "Health", healthSummary(settings)) {
+                onNavigate(AppScreen.HEALTH)
+            }
+        }
+        item {
+            CategoryRow("\u2699", "Widget appearance", widgetAppearanceSummary(settings)) {
+                onNavigate(AppScreen.WIDGET_APPEARANCE)
+            }
+        }
+        item {
+            CategoryRow("\u2139", "Access & app info", accessAppInfoSummary(accessStatus)) {
+                onNavigate(AppScreen.ACCESS_APP_INFO)
             }
         }
     }
-}
-
-@Composable
-private fun DurationDialog(
-    initialMinutes: Int,
-    title: String,
-    minMinutes: Int,
-    maxMinutes: Int,
-    onDismiss: () -> Unit,
-    onSave: (Int) -> Unit,
-) {
-    var value by remember { mutableStateOf(initialMinutes.toString()) }
-    val minutes = value.toIntOrNull()
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
-            OutlinedTextField(
-                value = value,
-                onValueChange = { value = it },
-                label = { Text("Minutes ($minMinutes-$maxMinutes)") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                isError = minutes == null || minutes !in minMinutes..maxMinutes,
-            )
-        },
-        confirmButton = {
-            TextButton(
-                enabled = minutes in minMinutes..maxMinutes,
-                onClick = { onSave(requireNotNull(minutes)) },
-            ) { Text("Save") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun LeaveBySection(
-    enabled: Boolean,
-    arriveWork: Int,
-    arriveHome: Int,
-    eventLeaveByBufferMinutes: Int,
-    eventRealtimeThresholdMinutes: Int,
-    onEnabledChanged: (Boolean) -> Unit,
-    onTimeChanged: (Boolean, Int) -> Unit,
-    onEventLeaveByBufferChanged: (Int) -> Unit,
-    onEventRealtimeThresholdChanged: (Int) -> Unit,
-) {
-    val context = LocalContext.current
-    var notificationsGranted by remember {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
-                PackageManager.PERMISSION_GRANTED,
-        )
-    }
-    val notificationLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { notificationsGranted = it }
-    var editingWork by remember { mutableStateOf<Boolean?>(null) }
-    var editingDuration by remember { mutableStateOf<LeaveByDuration?>(null) }
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text("Leave-by advisor", style = MaterialTheme.typography.titleMedium)
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("Enable leave-by advisor")
-            Switch(checked = enabled, onCheckedChange = {
-                onEnabledChanged(it)
-                if (it && !notificationsGranted) notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            })
-        }
-        if (enabled && !notificationsGranted) {
-            Text("Notifications off - leave-by will only show on the widget", style = MaterialTheme.typography.bodySmall)
-        }
-        if (enabled) {
-            TimeRow("Arrive at work by", arriveWork) { editingWork = true }
-            TimeRow("Arrive home by", arriveHome) { editingWork = false }
-            DurationRow("Arrive early by", eventLeaveByBufferMinutes) {
-                editingDuration = LeaveByDuration.ARRIVE_EARLY_BUFFER
-            }
-            Text(
-                "Buffer before a calendar event's start time",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            DurationRow("Use live traffic within", eventRealtimeThresholdMinutes) {
-                editingDuration = LeaveByDuration.LIVE_TRAFFIC_THRESHOLD
-            }
-            Text(
-                "Events further out use predicted traffic",
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-        Text(
-            "Applies inside your To Work and To Home windows, and to calendar events with a location - one notification per event.",
-            style = MaterialTheme.typography.bodySmall,
-        )
-    }
-    editingWork?.let { work ->
-        val minute = if (work) arriveWork else arriveHome
-        key(work, minute) {
-            val picker = rememberTimePickerState(minute / 60, minute % 60, is24Hour = false)
-            TimePickerDialog(picker, { editingWork = null }) {
-                onTimeChanged(work, picker.hour * 60 + picker.minute)
-                editingWork = null
-            }
-        }
-    }
-    editingDuration?.let { duration ->
-        val initialMinutes = when (duration) {
-            LeaveByDuration.ARRIVE_EARLY_BUFFER -> eventLeaveByBufferMinutes
-            LeaveByDuration.LIVE_TRAFFIC_THRESHOLD -> eventRealtimeThresholdMinutes
-        }
-        val title = when (duration) {
-            LeaveByDuration.ARRIVE_EARLY_BUFFER -> "Arrive early by"
-            LeaveByDuration.LIVE_TRAFFIC_THRESHOLD -> "Use live traffic within"
-        }
-        val minMinutes = when (duration) {
-            LeaveByDuration.ARRIVE_EARLY_BUFFER -> 0
-            LeaveByDuration.LIVE_TRAFFIC_THRESHOLD -> 15
-        }
-        val maxMinutes = when (duration) {
-            LeaveByDuration.ARRIVE_EARLY_BUFFER -> 60
-            LeaveByDuration.LIVE_TRAFFIC_THRESHOLD -> 180
-        }
-        DurationDialog(
-            initialMinutes = initialMinutes,
-            title = title,
-            minMinutes = minMinutes,
-            maxMinutes = maxMinutes,
-            onDismiss = { editingDuration = null },
-            onSave = { minutes ->
-                when (duration) {
-                    LeaveByDuration.ARRIVE_EARLY_BUFFER -> onEventLeaveByBufferChanged(minutes)
-                    LeaveByDuration.LIVE_TRAFFIC_THRESHOLD -> onEventRealtimeThresholdChanged(minutes)
-                }
-                editingDuration = null
-            },
-        )
-    }
-}
-
-private enum class LeaveByDuration { ARRIVE_EARLY_BUFFER, LIVE_TRAFFIC_THRESHOLD }
-
-@Composable
-private fun DurationRow(label: String, minutes: Int, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(vertical = 12.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Text(label)
-        Text("$minutes min", color = MaterialTheme.colorScheme.primary)
-    }
-}
-
-@Composable
-private fun CalendarSection(
-    enabled: Boolean,
-    selectedIds: Set<Long>,
-    calendarTickEnabled: Boolean,
-    eventTakeoverMinutes: Int,
-    onEnabledChanged: (Boolean) -> Unit,
-    onSelectedIdsChanged: (Set<Long>) -> Unit,
-    onCalendarTickEnabledChanged: (Boolean) -> Unit,
-    onEventTakeoverMinutesChanged: (Int) -> Unit,
-) {
-    val context = LocalContext.current
-    var editingTakeover by remember { mutableStateOf(false) }
-    var permissionGranted by remember {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CALENDAR) ==
-                PackageManager.PERMISSION_GRANTED,
-        )
-    }
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { permissionGranted = it }
-    val calendars = remember(permissionGranted) {
-        if (permissionGranted) CalendarReader(context).listCalendars() else emptyList()
-    }
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text("Calendar destinations", style = MaterialTheme.typography.titleMedium)
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("Enable calendar destinations")
-            Switch(checked = enabled, onCheckedChange = {
-                onEnabledChanged(it)
-                if (it && !permissionGranted) permissionLauncher.launch(Manifest.permission.READ_CALENDAR)
-            })
-        }
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Keep event ETA fresh")
-                Text(
-                    "Refreshes the next event's travel time every 20 minutes outside commute windows. Uses extra background data.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            Switch(checked = calendarTickEnabled, onCheckedChange = onCalendarTickEnabledChanged)
-        }
-        if (enabled) {
-            DurationRow("Event takes over within", eventTakeoverMinutes) { editingTakeover = true }
-            Text(
-                "A located event starting within this window replaces the commute view, even inside commute windows",
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-        if (enabled && !permissionGranted) {
-            Text("Calendar permission needed", color = MaterialTheme.colorScheme.error)
-            TextButton(onClick = { permissionLauncher.launch(Manifest.permission.READ_CALENDAR) }) {
-                Text("Allow calendar")
-            }
-        }
-        if (enabled && permissionGranted) {
-            calendars.forEach { calendar ->
-                CalendarChoice(calendar, selectedIds.contains(calendar.id)) { checked ->
-                    onSelectedIdsChanged(if (checked) selectedIds + calendar.id else selectedIds - calendar.id)
-                }
-            }
-            if (selectedIds.isEmpty()) Text("Select at least one calendar", style = MaterialTheme.typography.bodySmall)
-        }
-        Text(
-            "Outside your commute windows, the widget shows the next event from these calendars and routes to it when it has a location. A located event starting soon also takes over during commute windows.",
-            style = MaterialTheme.typography.bodySmall,
-        )
-    }
-    if (editingTakeover) {
-        DurationDialog(
-            initialMinutes = eventTakeoverMinutes,
-            title = "Event takes over within",
-            minMinutes = 15,
-            maxMinutes = 480,
-            onDismiss = { editingTakeover = false },
-            onSave = { minutes ->
-                onEventTakeoverMinutesChanged(minutes)
-                editingTakeover = false
-            },
-        )
-    }
-}
-
-@Composable
-private fun CalendarChoice(calendar: DeviceCalendar, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
-    Row(modifier = Modifier.fillMaxWidth().clickable { onCheckedChange(!checked) }) {
-        Checkbox(checked = checked, onCheckedChange = onCheckedChange)
-        Column(modifier = Modifier.padding(top = 12.dp)) {
-            Text(calendar.displayName)
-            Text(calendar.accountName, style = MaterialTheme.typography.bodySmall)
-        }
-    }
-}
-
-private enum class HealthTime {
-    MORNING_SUPPLEMENTS_START,
-    MORNING_SUPPLEMENTS_END,
-    PROTEIN_START,
-    PROTEIN_END,
-    WALK_START,
-    WALK_END,
-    CAFFEINE_CUTOFF,
-}
-
-private enum class HealthNumber { WATER_REMINDERS, STEP_GOAL }
-
-@Composable
-private fun HealthSection(
-    settings: AppSettings,
-    onSettingsChange: (suspend (SettingsRepository) -> Unit) -> Unit,
-) {
-    val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-    var permissionVersion by remember { mutableIntStateOf(0) }
-    val healthAvailable = remember(permissionVersion) { HealthConnectFacade.isAvailable(context) }
-    var grantedHealthPermissions by remember { mutableStateOf<Set<String>>(emptySet()) }
-    val usageAccessGranted = remember(permissionVersion) { ScreenEventsReader.hasUsageAccess(context) }
-    val notificationAccessGranted = remember(permissionVersion) {
-        CommuteAudioDetector.hasNotificationAccess(context)
-    }
-    val healthPermissionLauncher = rememberLauncherForActivityResult(
-        PermissionController.createRequestPermissionResultContract(),
-    ) { permissionVersion++ }
-    var selectedTime by remember { mutableStateOf<HealthTime?>(null) }
-    var selectedNumber by remember { mutableStateOf<HealthNumber?>(null) }
-    var editingPackages by remember { mutableStateOf(false) }
-
-    LaunchedEffect(healthAvailable, permissionVersion) {
-        grantedHealthPermissions = if (healthAvailable) {
-            HealthConnectFacade.grantedPermissions(context)
-        } else {
-            emptySet()
-        }
-    }
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) permissionVersion++
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text("Health", style = MaterialTheme.typography.titleMedium)
-        Text(
-            "Private on-device reminders and Health Connect logging.",
-            style = MaterialTheme.typography.bodySmall,
-        )
-        HealthPermissionRow(
-            label = "Health Connect",
-            status = when {
-                !healthAvailable -> "Health Connect unavailable"
-                hasAllHealthPermissions(grantedHealthPermissions, HealthConnectFacade.REQUIRED_PERMISSIONS) -> "Granted"
-                else -> "Not granted"
-            },
-            enabled = healthAvailable,
-            onGrant = { healthPermissionLauncher.launch(HealthConnectFacade.REQUIRED_PERMISSIONS) },
-        )
-        HealthPermissionRow(
-            label = "Usage access",
-            status = if (usageAccessGranted) "Granted" else "Not granted",
-            enabled = true,
-            onGrant = { context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) },
-        )
-        HealthPermissionRow(
-            label = "Notification access",
-            status = if (notificationAccessGranted) "Granted" else "Not granted",
-            enabled = true,
-            onGrant = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) },
-        )
-
-        HealthToggleRow(
-            "Morning supplements",
-            "Remind during your morning window",
-            settings.morningSupplementsEnabled,
-        ) { enabled ->
-            onSettingsChange { repository ->
-                repository.setMorningSupplementsEnabled(enabled)
-            }
-        }
-        if (settings.morningSupplementsEnabled) {
-            TimeRow("Start", settings.morningSupplementsStartMinuteOfDay) {
-                selectedTime = HealthTime.MORNING_SUPPLEMENTS_START
-            }
-            TimeRow("End", settings.morningSupplementsEndMinuteOfDay) {
-                selectedTime = HealthTime.MORNING_SUPPLEMENTS_END
-            }
-        }
-        HealthToggleRow("Evening protein", "Remind during your evening window", settings.eveningProteinEnabled) { enabled ->
-            onSettingsChange { repository -> repository.setEveningProteinEnabled(enabled) }
-        }
-        if (settings.eveningProteinEnabled) {
-            TimeRow("Start", settings.proteinStartMinuteOfDay) { selectedTime = HealthTime.PROTEIN_START }
-            TimeRow("End", settings.proteinEndMinuteOfDay) { selectedTime = HealthTime.PROTEIN_END }
-        }
-        HealthToggleRow("Water reminders", "Small hydration prompts across the day", settings.waterRemindersEnabled) { enabled ->
-            onSettingsChange { repository -> repository.setWaterRemindersEnabled(enabled) }
-        }
-        if (settings.waterRemindersEnabled) {
-            NumberRow("Reminders per day", settings.waterRemindersPerDay) {
-                selectedNumber = HealthNumber.WATER_REMINDERS
-            }
-            Text("250 ml per tap - logged to Health Connect", style = MaterialTheme.typography.bodySmall)
-        }
-        HealthToggleRow("Evening walk", "Suggest a walk from your activity and schedule", settings.eveningWalkEnabled) { enabled ->
-            onSettingsChange { repository -> repository.setEveningWalkEnabled(enabled) }
-        }
-        if (settings.eveningWalkEnabled) {
-            TimeRow("Search start", settings.walkSearchStartMinuteOfDay) { selectedTime = HealthTime.WALK_START }
-            TimeRow("Search end", settings.walkSearchEndMinuteOfDay) { selectedTime = HealthTime.WALK_END }
-            NumberRow("Step goal", settings.stepGoal) { selectedNumber = HealthNumber.STEP_GOAL }
-            Text("Uses your step goal and calendar", style = MaterialTheme.typography.bodySmall)
-        }
-        HealthToggleRow("Sleep estimate in morning brief", "Estimate sleep from screen activity", settings.sleepBriefEnabled) { enabled ->
-            onSettingsChange { repository -> repository.setSleepBriefEnabled(enabled) }
-        }
-        HealthToggleRow(
-            "Suppress during audiobooks",
-            "Hide health nudges while selected apps are playing",
-            settings.audiobookSuppressionEnabled,
-        ) { enabled ->
-            onSettingsChange { repository -> repository.setAudiobookSuppressionEnabled(enabled) }
-        }
-        if (settings.audiobookSuppressionEnabled) {
-            TextButton(onClick = { editingPackages = true }) { Text("Edit audiobook apps") }
-            Text(
-                settings.commuteAudioPackages.sorted().joinToString().ifBlank { "No audiobook apps selected" },
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-
-        Text("Experimental nudges", style = MaterialTheme.typography.titleSmall)
-        HealthToggleRow("Soften after short sleep", "Rewrite the brief after a short night", settings.sleepDebtSoftenEnabled) { enabled ->
-            onSettingsChange { repository -> repository.setSleepDebtSoftenEnabled(enabled) }
-        }
-        HealthToggleRow("Prioritize protein on gym days", "Protein first on gym days", settings.gymProteinPriorityEnabled) { enabled ->
-            onSettingsChange { repository -> repository.setGymProteinPriorityEnabled(enabled) }
-        }
-        HealthToggleRow("Rough-night shield", "Mute morning nudges after a rough night", settings.restlessNightShieldEnabled) { enabled ->
-            onSettingsChange { repository -> repository.setRestlessNightShieldEnabled(enabled) }
-        }
-        HealthToggleRow("Post-drive walk", "Suggest the walk after the drive home", settings.walkPostAudibleLatchEnabled) { enabled ->
-            onSettingsChange { repository -> repository.setWalkPostAudibleLatchEnabled(enabled) }
-        }
-        HealthToggleRow("Prefer daylight walks", "Prefer pre-sunset walk slots", settings.walkDaylightPreferenceEnabled) { enabled ->
-            onSettingsChange { repository -> repository.setWalkDaylightPreferenceEnabled(enabled) }
-        }
-        HealthToggleRow("Focus gap chip", "Focus chip in free calendar gaps", settings.focusGapChipEnabled) { enabled ->
-            onSettingsChange { repository -> repository.setFocusGapChipEnabled(enabled) }
-        }
-        HealthToggleRow("Post-gym water", "Extra water slot after workouts", settings.postGymWaterPulseEnabled) { enabled ->
-            onSettingsChange { repository -> repository.setPostGymWaterPulseEnabled(enabled) }
-        }
-        HealthToggleRow("Morning light", "Morning light reminder line", settings.morningLightLineEnabled) { enabled ->
-            onSettingsChange { repository -> repository.setMorningLightLineEnabled(enabled) }
-        }
-        HealthToggleRow("Caffeine cutoff", "Coffee cutoff line", settings.caffeineCutoffLineEnabled) { enabled ->
-            onSettingsChange { repository -> repository.setCaffeineCutoffLineEnabled(enabled) }
-        }
-        if (settings.caffeineCutoffLineEnabled) {
-            TimeRow("Cutoff time", settings.caffeineCutoffMinuteOfDay) { selectedTime = HealthTime.CAFFEINE_CUTOFF }
-        }
-    }
-    HealthTimeDialog(selectedTime, settings, onSettingsChange) { selectedTime = null }
-    HealthNumberDialog(selectedNumber, settings, onSettingsChange) { selectedNumber = null }
-    if (editingPackages) {
-        AudioPackagesDialog(
-            initialPackages = settings.commuteAudioPackages,
-            onDismiss = { editingPackages = false },
-            onSave = {
-                onSettingsChange { repository -> repository.setCommuteAudioPackages(it) }
-                editingPackages = false
-            },
-        )
-    }
-}
-
-@Composable
-private fun HealthPermissionRow(label: String, status: String, enabled: Boolean, onGrant: () -> Unit) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(label)
-            Text(status, style = MaterialTheme.typography.bodySmall)
-        }
-        Button(enabled = enabled && status != "Granted", onClick = onGrant) { Text("Grant") }
-    }
-}
-
-@Composable
-private fun HealthToggleRow(label: String, description: String, enabled: Boolean, onChanged: (Boolean) -> Unit) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(label)
-            Text(description, style = MaterialTheme.typography.bodySmall)
-        }
-        Switch(checked = enabled, onCheckedChange = onChanged)
-    }
-}
-
-@Composable
-private fun NumberRow(label: String, value: Int, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 12.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Text(label)
-        Text(value.toString(), color = MaterialTheme.colorScheme.primary)
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun HealthTimeDialog(
-    selection: HealthTime?,
-    settings: AppSettings,
-    onSettingsChange: (suspend (SettingsRepository) -> Unit) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    selection ?: return
-    val minute = when (selection) {
-        HealthTime.MORNING_SUPPLEMENTS_START -> settings.morningSupplementsStartMinuteOfDay
-        HealthTime.MORNING_SUPPLEMENTS_END -> settings.morningSupplementsEndMinuteOfDay
-        HealthTime.PROTEIN_START -> settings.proteinStartMinuteOfDay
-        HealthTime.PROTEIN_END -> settings.proteinEndMinuteOfDay
-        HealthTime.WALK_START -> settings.walkSearchStartMinuteOfDay
-        HealthTime.WALK_END -> settings.walkSearchEndMinuteOfDay
-        HealthTime.CAFFEINE_CUTOFF -> settings.caffeineCutoffMinuteOfDay
-    }
-    key(selection, minute) {
-        val picker = rememberTimePickerState(minute / 60, minute % 60, is24Hour = false)
-        TimePickerDialog(picker, onDismiss) {
-            val selectedMinute = picker.hour * 60 + picker.minute
-            onSettingsChange { repository ->
-                when (selection) {
-                    HealthTime.MORNING_SUPPLEMENTS_START ->
-                        repository.setMorningSupplementsStartMinuteOfDay(selectedMinute)
-                    HealthTime.MORNING_SUPPLEMENTS_END ->
-                        repository.setMorningSupplementsEndMinuteOfDay(selectedMinute)
-                    HealthTime.PROTEIN_START -> repository.setProteinStartMinuteOfDay(selectedMinute)
-                    HealthTime.PROTEIN_END -> repository.setProteinEndMinuteOfDay(selectedMinute)
-                    HealthTime.WALK_START -> repository.setWalkSearchStartMinuteOfDay(selectedMinute)
-                    HealthTime.WALK_END -> repository.setWalkSearchEndMinuteOfDay(selectedMinute)
-                    HealthTime.CAFFEINE_CUTOFF ->
-                        repository.setCaffeineCutoffMinuteOfDay(selectedMinute)
-                }
-            }
-            onDismiss()
-        }
-    }
-}
-
-@Composable
-private fun HealthNumberDialog(
-    selection: HealthNumber?,
-    settings: AppSettings,
-    onSettingsChange: (suspend (SettingsRepository) -> Unit) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    selection ?: return
-    val initial = when (selection) {
-        HealthNumber.WATER_REMINDERS -> settings.waterRemindersPerDay
-        HealthNumber.STEP_GOAL -> settings.stepGoal
-    }
-    val title = when (selection) {
-        HealthNumber.WATER_REMINDERS -> "Reminders per day"
-        HealthNumber.STEP_GOAL -> "Step goal"
-    }
-    val min = when (selection) {
-        HealthNumber.WATER_REMINDERS -> 3
-        HealthNumber.STEP_GOAL -> 2_000
-    }
-    val max = when (selection) {
-        HealthNumber.WATER_REMINDERS -> 8
-        HealthNumber.STEP_GOAL -> 20_000
-    }
-    NumberDialog(initial, title, min, max, onDismiss) { value ->
-        onSettingsChange { repository ->
-            when (selection) {
-                HealthNumber.WATER_REMINDERS -> repository.setWaterRemindersPerDay(value)
-                HealthNumber.STEP_GOAL -> repository.setStepGoal(value)
-            }
-        }
-        onDismiss()
-    }
-}
-
-@Composable
-private fun NumberDialog(
-    initialValue: Int,
-    title: String,
-    min: Int,
-    max: Int,
-    onDismiss: () -> Unit,
-    onSave: (Int) -> Unit,
-) {
-    var value by remember { mutableStateOf(initialValue.toString()) }
-    val parsed = value.toIntOrNull()
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
-            OutlinedTextField(
-                value = value,
-                onValueChange = { value = it },
-                label = { Text("$min-$max") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                isError = parsed == null || parsed !in min..max,
-            )
-        },
-        confirmButton = {
-            TextButton(
-                enabled = parsed in min..max,
-                onClick = { onSave(requireNotNull(parsed)) },
-            ) { Text("Save") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
-}
-
-@Composable
-private fun AudioPackagesDialog(
-    initialPackages: Set<String>,
-    onDismiss: () -> Unit,
-    onSave: (Set<String>) -> Unit,
-) {
-    var packages by remember(initialPackages) { mutableStateOf(initialPackages) }
-    var packageName by remember { mutableStateOf("") }
-    val normalized = packageName.trim().lowercase(Locale.ROOT)
-    val validPackage = isValidPackageName(normalized) && normalized !in packages
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Audiobook apps") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                packages.sorted().forEach { existing ->
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(existing, modifier = Modifier.weight(1f))
-                        TextButton(onClick = { packages = packages - existing }) { Text("Remove") }
-                    }
-                }
-                OutlinedTextField(
-                    value = packageName,
-                    onValueChange = { packageName = it },
-                    label = { Text("Package name") },
-                    isError = packageName.isNotBlank() && !validPackage,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                TextButton(
-                    enabled = validPackage,
-                    onClick = {
-                        packages = packages + normalized
-                        packageName = ""
-                    },
-                ) { Text("Add") }
-            }
-        },
-        confirmButton = { TextButton(onClick = { onSave(packages) }) { Text("Save") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
-}
-
-internal fun hasAllHealthPermissions(granted: Set<String>, required: Set<String>): Boolean =
-    granted.containsAll(required)
-
-internal fun isValidPackageName(value: String): Boolean =
-    value.isNotBlank() && value == value.lowercase(Locale.ROOT) && '.' in value
-
-private enum class CommuteWindowTime { MORNING_START, MORNING_END, EVENING_START, EVENING_END }
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun CommuteWindowsSection(
-    settings: AppSettings,
-    onSettingsChange: (suspend (SettingsRepository) -> Unit) -> Unit,
-) {
-    var selectedTime by remember { mutableStateOf<CommuteWindowTime?>(null) }
-    var validationError by remember { mutableStateOf<String?>(null) }
-
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text("Commute windows", style = MaterialTheme.typography.titleMedium)
-        Text(
-            "Inside a window the widget shows that commute. Outside your windows it shows your next calendar event.",
-            style = MaterialTheme.typography.bodySmall,
-        )
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Commute days")
-                Text(
-                    "Days the widget shows your To Work and To Home windows",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                listOf("M", "T", "W", "T", "F", "S", "S").forEachIndexed { index, label ->
-                    val day = index + 1
-                    FilterChip(
-                        selected = day in settings.commuteDays,
-                        onClick = {
-                            val next = if (day in settings.commuteDays) {
-                                settings.commuteDays - day
-                            } else {
-                                settings.commuteDays + day
-                            }
-                            onSettingsChange { it.setCommuteDays(next) }
-                        },
-                        label = { Text(label) },
-                    )
-                }
-            }
-        }
-        TimeRow("To Work window start", settings.morningSlotStartMinuteOfDay) { selectedTime = CommuteWindowTime.MORNING_START }
-        TimeRow("To Work window end", settings.morningSlotEndMinuteOfDay) { selectedTime = CommuteWindowTime.MORNING_END }
-        TimeRow("To Home window start", settings.eveningSlotStartMinuteOfDay) { selectedTime = CommuteWindowTime.EVENING_START }
-        TimeRow("To Home window end", settings.eveningSlotEndMinuteOfDay) { selectedTime = CommuteWindowTime.EVENING_END }
-        validationError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-    }
-    selectedTime?.let { selection ->
-        val current = when (selection) {
-            CommuteWindowTime.MORNING_START -> settings.morningSlotStartMinuteOfDay
-            CommuteWindowTime.MORNING_END -> settings.morningSlotEndMinuteOfDay
-            CommuteWindowTime.EVENING_START -> settings.eveningSlotStartMinuteOfDay
-            CommuteWindowTime.EVENING_END -> settings.eveningSlotEndMinuteOfDay
-        }
-        key(selection, current) {
-            val picker = rememberTimePickerState(current / 60, current % 60, is24Hour = false)
-            TimePickerDialog(picker, { selectedTime = null }) {
-                val minute = picker.hour * 60 + picker.minute
-                val valid = when (selection) {
-                    CommuteWindowTime.MORNING_START -> minute < settings.morningSlotEndMinuteOfDay
-                    CommuteWindowTime.MORNING_END -> settings.morningSlotStartMinuteOfDay < minute
-                    CommuteWindowTime.EVENING_START -> minute < settings.eveningSlotEndMinuteOfDay
-                    CommuteWindowTime.EVENING_END -> settings.eveningSlotStartMinuteOfDay < minute
-                }
-                if (!valid) {
-                    validationError = if (selection == CommuteWindowTime.MORNING_START || selection == CommuteWindowTime.MORNING_END) {
-                        "To Work window start must be before end"
-                    } else {
-                        "To Home window start must be before end"
-                    }
-                } else {
-                    validationError = null
-                    onSettingsChange {
-                        when (selection) {
-                            CommuteWindowTime.MORNING_START -> it.setMorningSlotStartMinuteOfDay(minute)
-                            CommuteWindowTime.MORNING_END -> it.setMorningSlotEndMinuteOfDay(minute)
-                            CommuteWindowTime.EVENING_START -> it.setEveningSlotStartMinuteOfDay(minute)
-                            CommuteWindowTime.EVENING_END -> it.setEveningSlotEndMinuteOfDay(minute)
-                        }
-                    }
-                }
-                selectedTime = null
-            }
-        }
-    }
-}
-
-@Composable
-private fun LocationPermissionSection() {
-    val context = LocalContext.current
-    var permissionVersion by remember { mutableIntStateOf(0) }
-    val lifecycleOwner = LocalLifecycleOwner.current
-    val fineGranted = remember(permissionVersion) {
-        ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
-            PackageManager.PERMISSION_GRANTED
-    }
-    val backgroundGranted = remember(permissionVersion) {
-        ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_BACKGROUND_LOCATION) ==
-            PackageManager.PERMISSION_GRANTED
-    }
-    val locationLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions(),
-    ) {
-        permissionVersion++
-    }
-
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) permissionVersion++
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Location permission", style = MaterialTheme.typography.titleMedium)
-        Text("Fine location: ${if (fineGranted) "Granted" else "Not granted"}")
-        Text("Background location: ${if (backgroundGranted) "Granted" else "Not granted"}")
-        if (!fineGranted) {
-            Button(
-                onClick = {
-                    locationLauncher.launch(
-                        arrayOf(
-                            Manifest.permission.ACCESS_FINE_LOCATION,
-                            Manifest.permission.ACCESS_COARSE_LOCATION,
-                        ),
-                    )
-                },
-            ) {
-                Text("Allow location")
-            }
-        } else if (!backgroundGranted) {
-            Text(
-                "Choose Permissions, Location, then Allow all the time",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            Button(
-                onClick = {
-                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                        data = Uri.fromParts("package", context.packageName, null)
-                    }
-                    context.startActivity(intent)
-                },
-            ) {
-                Text("Allow all the time in settings")
-            }
-        }
-    }
-}
-
-private fun launchNavigation(context: android.content.Context, place: Place, travelMode: TravelMode) {
-    val mode = when (travelMode) {
-        TravelMode.DRIVE -> "d"
-        TravelMode.TWO_WHEELER -> "l"
-    }
-    val coordinate = "${place.lat},${place.lng}"
-    val mapsIntent = Intent(
-        Intent.ACTION_VIEW,
-        "google.navigation:q=$coordinate&mode=$mode".toUri(),
-    ).apply {
-        setPackage("com.google.android.apps.maps")
-        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-    }
-    try {
-        context.startActivity(mapsIntent)
-    } catch (_: ActivityNotFoundException) {
-        val geoIntent = Intent(Intent.ACTION_VIEW, "geo:$coordinate".toUri()).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        try {
-            context.startActivity(geoIntent)
-        } catch (_: ActivityNotFoundException) {
-            // No compatible maps application is installed.
-        }
-    }
-}
-
-private suspend fun refreshWidget(applicationContext: android.content.Context) {
-    runCatching { CommuteWidget().updateAll(applicationContext) }
-}
-
-private fun formatTime(minuteOfDay: Int): String {
-    val calendar = Calendar.getInstance().apply {
-        set(Calendar.HOUR_OF_DAY, minuteOfDay / 60)
-        set(Calendar.MINUTE, minuteOfDay % 60)
-    }
-    return SimpleDateFormat("h:mm a", Locale.getDefault()).format(calendar.time)
 }

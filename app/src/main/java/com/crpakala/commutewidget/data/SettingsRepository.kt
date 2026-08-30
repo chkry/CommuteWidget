@@ -80,6 +80,8 @@ private object PreferenceKeys {
     val COMMUTE_AUDIO_PACKAGES_JSON = stringPreferencesKey("commute_audio_packages_json")
     val HEALTH_DAY_STATE_JSON = stringPreferencesKey("health_day_state_json")
     val HEALTH_HISTORY_JSON = stringPreferencesKey("health_history_json")
+    val CUSTOM_PILLS_JSON = stringPreferencesKey("custom_pills_json")
+    val CUSTOM_PILL_ACTIVE_WINDOW_MINUTES = intPreferencesKey("custom_pill_active_window_minutes")
 }
 
 private fun Preferences.toAppSettings(): AppSettings {
@@ -137,6 +139,9 @@ private fun Preferences.toAppSettings(): AppSettings {
             this[PreferenceKeys.COMMUTE_AUDIO_PACKAGES_JSON],
             setOf("com.audible.application"),
         ),
+        customPills = decodeCustomPills(this[PreferenceKeys.CUSTOM_PILLS_JSON]),
+        customPillActiveWindowMinutes =
+            this[PreferenceKeys.CUSTOM_PILL_ACTIVE_WINDOW_MINUTES] ?: 60,
     )
 }
 
@@ -487,6 +492,21 @@ class SettingsRepository private constructor(
     suspend fun setCommuteAudioPackages(packages: Set<String>) {
         dataStore.edit { preferences ->
             preferences[PreferenceKeys.COMMUTE_AUDIO_PACKAGES_JSON] = encodeStringSet(packages)
+        }
+    }
+
+    suspend fun setCustomPills(pills: List<CustomPill>) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.CUSTOM_PILLS_JSON] = encodeCustomPills(pills)
+        }
+    }
+
+    suspend fun setCustomPillActiveWindowMinutes(minutes: Int) {
+        dataStore.edit { preferences ->
+            // Clamp at the write boundary so a caller bug can never persist a zero-minute or
+            // multi-day active window; the Reminders dialog offers exactly this range.
+            preferences[PreferenceKeys.CUSTOM_PILL_ACTIVE_WINDOW_MINUTES] =
+                minutes.coerceIn(CustomPill.ACTIVE_WINDOW_MIN_MINUTES, CustomPill.ACTIVE_WINDOW_MAX_MINUTES)
         }
     }
 

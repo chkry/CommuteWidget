@@ -1,6 +1,7 @@
 package com.crpakala.commutewidget.engine
 
 import com.crpakala.commutewidget.data.CommuteSnapshot
+import com.crpakala.commutewidget.data.CustomPillOccurrence
 import com.crpakala.commutewidget.data.Direction
 import com.crpakala.commutewidget.data.HealthNudge
 import com.crpakala.commutewidget.data.HealthNudgeKind
@@ -82,6 +83,9 @@ class FailureSnapshotTest {
         ),
         sleepEstimateMinutes = 390,
         shortSleepDay = true,
+        customPillOccurrences = listOf(
+            CustomPillOccurrence(pillId = "p1", label = "Vitamin D", slotMinuteOfDay = 480, active = true),
+        ),
     )
 
     @Test
@@ -97,6 +101,7 @@ class FailureSnapshotTest {
         assertEquals(emptyList<HealthNudge>(), result.healthNudges)
         assertNull(result.sleepEstimateMinutes)
         assertFalse(result.shortSleepDay)
+        assertEquals(emptyList<CustomPillOccurrence>(), result.customPillOccurrences)
     }
 
     @Test
@@ -115,13 +120,15 @@ class FailureSnapshotTest {
         assertEquals(staleCommuteWithHealth.healthNudges, result.healthNudges)
         assertEquals(390, result.sleepEstimateMinutes)
         assertTrue(result.shortSleepDay)
+        assertEquals(staleCommuteWithHealth.customPillOccurrences, result.customPillOccurrences)
     }
 
     @Test
     fun targetChanges_stillCarriesHealthFieldsForwardEvenThoughRouteFieldsAreCleared() {
         // Health nudges are orthogonal to the route/mode/target a failure snapshot describes -
         // a mode/destination change must clear stale route/map/leave-by/next-window data (the
-        // existing guard this test file otherwise covers) but must NOT blank the health nudges.
+        // existing guard this test file otherwise covers) but must NOT blank the health nudges,
+        // nor the custom pill reminder fields added afterward.
         val result = failureSnapshot(
             previous = staleCommuteWithHealth,
             direction = Direction.TO_WORK,
@@ -134,6 +141,7 @@ class FailureSnapshotTest {
         assertEquals(staleCommuteWithHealth.healthNudges, result.healthNudges)
         assertEquals(390, result.sleepEstimateMinutes)
         assertTrue(result.shortSleepDay)
+        assertEquals(staleCommuteWithHealth.customPillOccurrences, result.customPillOccurrences)
         // Confirm this is still exercising the target-change branch (route data cleared as before).
         assertNull(result.mapImagePath)
     }

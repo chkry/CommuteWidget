@@ -1,6 +1,7 @@
 package com.crpakala.commutewidget.schedule
 
 import com.crpakala.commutewidget.data.AppSettings
+import com.crpakala.commutewidget.data.CustomPill
 import com.crpakala.commutewidget.data.HealthDayState
 import java.time.ZoneId
 import java.time.ZonedDateTime
@@ -120,5 +121,68 @@ class HealthBoundaryWorkerTest {
         val result = nextHealthBoundary(at(6, 0), settings, dayState)
 
         assertEquals(at(7, 0), result) // supplement window start (420) beats caffeine lead start (750)
+    }
+
+    // Custom pill reminders. 2026-08-31 is a Monday (ISO day-of-week 1).
+
+    @Test
+    fun customPillEnabledToday_wakesAtNearestUpcomingSlotStartOrWindowEnd() {
+        val settings = allDisabled.copy(
+            customPills = listOf(
+                CustomPill(id = "p1", name = "Vitamin D", slotsMinutesOfDay = listOf(600, 900), days = setOf(1)),
+            ),
+            customPillActiveWindowMinutes = 60,
+        )
+
+        // Candidates today: 600, 660, 900, 960. Now is 08:20 (500 minutes).
+        val result = nextHealthBoundary(at(8, 20), settings, dayState = null)
+
+        assertEquals(at(10, 0), result) // 600 minutes = 10:00, the slot's start
+    }
+
+    @Test
+    fun customPillNotEnabledToday_contributesNoBoundary() {
+        // Tuesday is not in the pill's days - Sept 1, 2026 is a Tuesday (ISO day-of-week 2).
+        val settings = allDisabled.copy(
+            customPills = listOf(
+                CustomPill(id = "p1", name = "Vitamin D", slotsMinutesOfDay = listOf(600), days = setOf(1)),
+            ),
+        )
+
+        val result = nextHealthBoundary(ZonedDateTime.of(2026, 9, 1, 6, 0, 0, 0, zone), settings, dayState = null)
+
+        assertEquals(ZonedDateTime.of(2026, 9, 2, 0, 1, 0, 0, zone), result)
+    }
+
+    @Test
+    fun customPillDismissedSlot_isExcludedFromBoundaryCandidates() {
+        val settings = allDisabled.copy(
+            customPills = listOf(
+                CustomPill(id = "p1", name = "Vitamin D", slotsMinutesOfDay = listOf(600, 900), days = setOf(1)),
+            ),
+            customPillActiveWindowMinutes = 60,
+        )
+        val dayState = HealthDayState(date = "2026-08-31", customPillTakenSlots = setOf("p1:600"))
+
+        // 600's start/end (600, 660) are excluded - only 900's start/end (900, 960) remain.
+        val result = nextHealthBoundary(at(8, 20), settings, dayState)
+
+        assertEquals(at(15, 0), result) // 900 minutes = 15:00
+    }
+
+    @Test
+    fun customPillAndAnotherFeature_picksTheEarliestAcrossBoth() {
+        val settings = allDisabled.copy(
+            morningSupplementsEnabled = true,
+            customPills = listOf(
+                CustomPill(id = "p1", name = "Vitamin D", slotsMinutesOfDay = listOf(360), days = setOf(1)),
+            ),
+        )
+        val dayState = HealthDayState(date = "2026-08-31")
+
+        // Custom pill slot start (360 = 06:00) beats the supplement window start (420 = 07:00).
+        val result = nextHealthBoundary(at(5, 0), settings, dayState)
+
+        assertEquals(at(6, 0), result)
     }
 }

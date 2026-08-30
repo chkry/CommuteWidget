@@ -57,6 +57,7 @@ import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import com.crpakala.commutewidget.data.CommuteSnapshot
+import com.crpakala.commutewidget.data.CustomPillOccurrence
 import com.crpakala.commutewidget.data.Direction
 import com.crpakala.commutewidget.data.MapPillCorner
 import com.crpakala.commutewidget.data.SettingsRepository
@@ -166,6 +167,15 @@ class CommuteWidget : GlanceAppWidget() {
             } else {
                 VisibleHealthChrome(pills = emptyList(), line = null)
             }
+            val customPillRow = if (snapshot != null) {
+                resolveCustomPillRowContent(
+                    occurrences = snapshot.customPillOccurrences,
+                    dayState = data.healthDayState,
+                    todayIsoDate = now.toLocalDate().toString(),
+                )
+            } else {
+                CustomPillRowContent(occurrences = emptyList(), overflowLabel = null)
+            }
 
             val backgroundAlpha = settings.widgetBackgroundOpacityPercent.coerceIn(30, 100) / 100f
             val background = dayNightColorProvider(
@@ -190,6 +200,7 @@ class CommuteWidget : GlanceAppWidget() {
                         sleepBriefEnabled = settings.sleepBriefEnabled,
                         healthPills = healthChrome.pills,
                         healthLineLabel = healthChrome.line?.let(::healthLineCaption),
+                        customPillRow = customPillRow,
                         healthColors = HealthChromeColors(
                             mapTextDemoted = dayNightColorProvider(
                                 day = lightScheme.onSurfaceVariant.copy(alpha = HEALTH_DEMOTION_ALPHA),
@@ -275,6 +286,7 @@ private data class WidgetExtras(
     val healthPills: List<NudgeCandidate> = emptyList(),
     val healthLineLabel: String? = null,
     val healthColors: HealthChromeColors? = null,
+    val customPillRow: CustomPillRowContent = CustomPillRowContent(emptyList(), null),
 )
 
 /** Owner-configurable text scaling applied to every user-visible size on the widget. */
@@ -491,16 +503,30 @@ private fun WideLayout(
                     }
                 }
             }
-            if (extras.healthPills.isNotEmpty()) {
+            val hasCustomPillRow = !extras.customPillRow.isEmpty
+            if (extras.healthPills.isNotEmpty() || hasCustomPillRow) {
                 Box(
                     modifier = GlanceModifier.fillMaxSize(),
                     contentAlignment = pillCornerAlignment(oppositeCorner(extras.pillCorner)),
                 ) {
-                    HealthPillStack(
-                        pills = extras.healthPills,
-                        extras = extras,
-                        expandMorningLabel = false,
-                    )
+                    // Owner ruling 2026-08-31 (sprint 3): custom pills stack vertically below the
+                    // built-in health pill row (4dp gap) rather than sharing one Row - the WIDE
+                    // map is too narrow to risk a combined row overflowing past the edge.
+                    Column {
+                        if (extras.healthPills.isNotEmpty()) {
+                            HealthPillStack(
+                                pills = extras.healthPills,
+                                extras = extras,
+                                expandMorningLabel = false,
+                            )
+                        }
+                        if (hasCustomPillRow) {
+                            if (extras.healthPills.isNotEmpty()) {
+                                Spacer(modifier = GlanceModifier.height(4.dp))
+                            }
+                            CustomPillMapRow(content = extras.customPillRow, extras = extras)
+                        }
+                    }
                 }
             }
         }
@@ -563,16 +589,27 @@ private fun LargeLayout(
                     .clickable(actionRunCallback<NavigateAction>()),
             )
         }
-        if (extras.healthPills.isNotEmpty()) {
+        val hasCustomPillRow = !extras.customPillRow.isEmpty
+        if (extras.healthPills.isNotEmpty() || hasCustomPillRow) {
             Box(
                 modifier = GlanceModifier.fillMaxSize(),
                 contentAlignment = pillCornerAlignment(oppositeCorner(extras.pillCorner)),
             ) {
-                HealthPillStack(
-                    pills = extras.healthPills,
-                    extras = extras,
-                    expandMorningLabel = true,
-                )
+                Column {
+                    if (extras.healthPills.isNotEmpty()) {
+                        HealthPillStack(
+                            pills = extras.healthPills,
+                            extras = extras,
+                            expandMorningLabel = true,
+                        )
+                    }
+                    if (hasCustomPillRow) {
+                        if (extras.healthPills.isNotEmpty()) {
+                            Spacer(modifier = GlanceModifier.height(4.dp))
+                        }
+                        CustomPillMapRow(content = extras.customPillRow, extras = extras)
+                    }
+                }
             }
         }
     }
@@ -585,12 +622,14 @@ private fun CalendarEmptyCard(
     extras: WidgetExtras,
 ) {
     val size = LocalSize.current
-    val showHealth = size.width >= WIDE_BREAKPOINT.width
+    val showHealth = showsHealthChrome(size.width.value.toInt())
+    val showCustomPillRow = showsCustomPillRow(size.width.value.toInt())
     val expandMorningLabel =
         size.width >= LARGE_BREAKPOINT.width && size.height >= LARGE_BREAKPOINT.height
     val chips = if (showHealth) extras.healthPills else emptyList()
     val lineLabel = extras.healthLineLabel.takeIf { showHealth }
-    val hasHealthFooter = chips.isNotEmpty() || lineLabel != null
+    val customPillContent = if (showCustomPillRow) extras.customPillRow else CustomPillRowContent(emptyList(), null)
+    val hasHealthFooter = chips.isNotEmpty() || lineLabel != null || !customPillContent.isEmpty
     Box(
         modifier = modifier.clickable(actionRunCallback<RefreshAction>()).padding(12.dp),
         contentAlignment = if (hasHealthFooter) Alignment.TopStart else Alignment.CenterStart,
@@ -620,6 +659,12 @@ private fun CalendarEmptyCard(
                         extras = extras,
                         expandMorningLabel = expandMorningLabel,
                     )
+                }
+                if (!customPillContent.isEmpty) {
+                    if (chips.isNotEmpty()) {
+                        Spacer(modifier = GlanceModifier.height(4.dp))
+                    }
+                    CustomPillChipRow(content = customPillContent, extras = extras)
                 }
             } else {
                 CalendarEmptyCardBody(snapshot, extras)
@@ -1136,6 +1181,122 @@ private fun HealthActionChrome(
                 maxLines = 1,
             )
         }
+    }
+}
+
+/** Map-overlay row for custom pill reminders; stacked with [HealthPillStack], never merged into it (separate feature, separate cap). */
+@Composable
+private fun CustomPillMapRow(content: CustomPillRowContent, extras: WidgetExtras) {
+    if (content.isEmpty) return
+    Row(
+        modifier = GlanceModifier.padding(6.dp),
+        verticalAlignment = Alignment.Vertical.CenterVertically,
+    ) {
+        content.occurrences.forEachIndexed { index, occurrence ->
+            if (index > 0) {
+                Spacer(modifier = GlanceModifier.width(4.dp))
+            }
+            CustomPillChrome(occurrence = occurrence, extras = extras, mapStyle = true)
+        }
+        if (content.overflowLabel != null) {
+            if (content.occurrences.isNotEmpty()) {
+                Spacer(modifier = GlanceModifier.width(4.dp))
+            }
+            CustomPillOverflowChrome(label = content.overflowLabel, extras = extras, mapStyle = true)
+        }
+    }
+}
+
+/** Card-footer row for custom pill reminders, sized like [HealthChipRow]. */
+@Composable
+private fun CustomPillChipRow(content: CustomPillRowContent, extras: WidgetExtras) {
+    if (content.isEmpty) return
+    Row(verticalAlignment = Alignment.Vertical.CenterVertically) {
+        content.occurrences.forEachIndexed { index, occurrence ->
+            if (index > 0) {
+                Spacer(modifier = GlanceModifier.width(6.dp))
+            }
+            CustomPillChrome(occurrence = occurrence, extras = extras, mapStyle = false)
+        }
+        if (content.overflowLabel != null) {
+            if (content.occurrences.isNotEmpty()) {
+                Spacer(modifier = GlanceModifier.width(6.dp))
+            }
+            CustomPillOverflowChrome(label = content.overflowLabel, extras = extras, mapStyle = false)
+        }
+    }
+}
+
+/**
+ * One custom pill's chrome - text-only (no glyph), same opaque/no-fill split as
+ * [HealthActionChrome] between map and card surfaces. Demotion (carry-over) is decided purely
+ * from [CustomPillOccurrence.active] via [customPillDemotionAlpha], which has no pending/stale
+ * input at all, so this element structurally cannot inherit the ETA's pending alpha or stale
+ * grey treatment (repo invariant).
+ */
+@Composable
+private fun CustomPillChrome(
+    occurrence: CustomPillOccurrence,
+    extras: WidgetExtras,
+    mapStyle: Boolean,
+) {
+    val colors = extras.healthColors ?: return
+    val demoted = customPillDemotionAlpha(occurrence.active) < 1f
+    val textColor = when {
+        mapStyle && demoted -> colors.mapTextDemoted
+        mapStyle -> GlanceTheme.colors.onSurfaceVariant
+        demoted -> colors.cardTextDemoted
+        else -> GlanceTheme.colors.onSurface
+    }
+    val chrome = GlanceModifier
+        .let { base -> if (mapStyle) base.background(GlanceTheme.colors.surfaceVariant) else base }
+        .cornerRadius(10.dp)
+        .let { base ->
+            if (mapStyle) {
+                base.padding(horizontal = 8.dp, vertical = 3.dp)
+            } else {
+                base.height(48.dp).padding(horizontal = 8.dp)
+            }
+        }
+        .clickable(customPillTapAction(occurrence))
+    Box(modifier = chrome, contentAlignment = Alignment.Center) {
+        Text(
+            text = customPillDisplayLabel(occurrence.label),
+            style = TextStyle(
+                color = textColor,
+                fontSize = scaledSp(12, extras.textScale),
+                fontWeight = FontWeight.Medium,
+            ),
+            maxLines = 1,
+        )
+    }
+}
+
+/** Inert "+N" overflow indicator - always demoted, never clickable. */
+@Composable
+private fun CustomPillOverflowChrome(label: String, extras: WidgetExtras, mapStyle: Boolean) {
+    val colors = extras.healthColors ?: return
+    val textColor = if (mapStyle) colors.mapTextDemoted else colors.cardTextDemoted
+    val chrome = GlanceModifier
+        .let { base -> if (mapStyle) base.background(GlanceTheme.colors.surfaceVariant) else base }
+        .cornerRadius(10.dp)
+        .let { base ->
+            if (mapStyle) {
+                base.padding(horizontal = 8.dp, vertical = 3.dp)
+            } else {
+                base.height(48.dp).padding(horizontal = 8.dp)
+            }
+        }
+    Box(modifier = chrome, contentAlignment = Alignment.Center) {
+        Text(
+            text = label,
+            style = TextStyle(
+                color = textColor,
+                fontSize = scaledSp(12, extras.textScale),
+                fontWeight = FontWeight.Medium,
+            ),
+            maxLines = 1,
+        )
     }
 }
 

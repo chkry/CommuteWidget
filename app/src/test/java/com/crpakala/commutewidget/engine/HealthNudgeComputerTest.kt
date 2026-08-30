@@ -1,6 +1,11 @@
 package com.crpakala.commutewidget.engine
 
+import com.crpakala.commutewidget.data.CommuteSnapshot
+import com.crpakala.commutewidget.data.CustomPillOccurrence
+import com.crpakala.commutewidget.data.Direction
 import com.crpakala.commutewidget.data.HealthDayRecord
+import com.crpakala.commutewidget.data.HealthNudge
+import com.crpakala.commutewidget.data.HealthNudgeKind
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import org.junit.Assert.assertEquals
@@ -11,14 +16,59 @@ import org.junit.Test
 
 /**
  * Pure-function coverage for [computeHealthState]'s Android-touching glue: gym-day detection,
- * the commute-audio latch, and the day-record merge used by both the lazy sleep backfill and
- * [com.crpakala.commutewidget.schedule.HealthMorningWorker]'s daily run.
+ * the commute-audio latch, the day-record merge used by both the lazy sleep backfill and
+ * [com.crpakala.commutewidget.schedule.HealthMorningWorker]'s daily run, and the
+ * [withHealthComputation] snapshot rewrite shared by every non-route health persist path.
  */
 class HealthNudgeComputerTest {
     private val zone = ZoneId.of("Asia/Kolkata")
 
     private fun epochAt(hour: Int, minute: Int): Long =
         ZonedDateTime.of(2026, 8, 31, hour, minute, 0, 0, zone).toInstant().toEpochMilli()
+
+    // withHealthComputation - the single health-fields rewrite (sprint 5 review blocker 1: the
+    // boundary worker's hand-rolled copy silently dropped customPillOccurrences)
+
+    @Test
+    fun withHealthComputation_appliesEveryHealthFieldAndPreservesRouteFields() {
+        val previous = CommuteSnapshot(
+            direction = Direction.TO_WORK,
+            durationSeconds = 1200L,
+            durationNoTrafficSeconds = 1000L,
+            distanceMeters = 8000L,
+            mapImagePath = "/cache/commute-map.png",
+            fetchedAtEpochMillis = 1_700_000_000_000L,
+            lastFetchFailed = false,
+            lastErrorMessage = null,
+            leaveByMinuteOfDay = 540,
+            healthNudges = listOf(
+                HealthNudge(kind = HealthNudgeKind.WATER, label = "Water", startMinuteOfDay = 0, endMinuteOfDay = 1),
+            ),
+            sleepEstimateMinutes = 100,
+            shortSleepDay = false,
+            customPillOccurrences = emptyList(),
+        )
+        val computation = HealthComputation(
+            healthNudges = emptyList(),
+            sleepEstimateMinutes = 390,
+            shortSleepDay = true,
+            customPillOccurrences = listOf(
+                CustomPillOccurrence(pillId = "p1", label = "Vitamin D", slotMinuteOfDay = 480, active = true),
+            ),
+        )
+
+        val result = previous.withHealthComputation(computation)
+
+        assertEquals(computation.healthNudges, result.healthNudges)
+        assertEquals(computation.sleepEstimateMinutes, result.sleepEstimateMinutes)
+        assertEquals(computation.shortSleepDay, result.shortSleepDay)
+        assertEquals(computation.customPillOccurrences, result.customPillOccurrences)
+        // Route/map/leave-by fields must be untouched by a health-only rewrite.
+        assertEquals(previous.mapImagePath, result.mapImagePath)
+        assertEquals(previous.durationSeconds, result.durationSeconds)
+        assertEquals(previous.leaveByMinuteOfDay, result.leaveByMinuteOfDay)
+        assertEquals(previous.fetchedAtEpochMillis, result.fetchedAtEpochMillis)
+    }
 
     // gymDayDetected
 

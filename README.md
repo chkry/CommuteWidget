@@ -8,8 +8,8 @@ The audit and design rulings driving these changes are documented in `UX-AUDIT.m
 
 ## Features
 
-- Glanceable widget layout showing exactly three elements in commute and routed-event modes: the destination, one large traffic-colored ETA, and the leave-by time (rendered in red when past).
-- Clean congestion-colored static route polyline map display without overlay pills or chrome.
+- Glanceable widget layout with destination, one large traffic-colored ETA, and leave-by time (rendered in red when past) in commute and routed-event modes.
+- Congestion-colored static route polyline maps with compact leave-by, best-departure, health, and custom-reminder pill overlays when applicable.
 - Multiple widget sizes (2x2 compact card, 4x2 split card, and 4x4 expanded map layout) with automatic size snapping.
 - Theme-aware surfaces following system light and dark modes with Material dynamic colors.
 - Non-text status signals: semi-transparent ETA during in-flight refreshes and cooldown taps, grey ETA for data older than 10 minutes, and error warning glyphs without loading text.
@@ -29,6 +29,7 @@ The audit and design rulings driving these changes are documented in `UX-AUDIT.m
 - Graceful offline and failure state caching with relative error tracking and automatic 60-second recovery.
 - In-app configuration for addresses, saved places, commute days, commute windows, leave-by targets, early arrival buffers, live traffic thresholds, geocoding selection, transit modes, and calendar selection.
 - On-device health layer (v6): supplement pills, water reminders with Health Connect logging, evening walk advisor, sleep prefix on the morning brief, and audiobook-aware suppression, each independently toggleable with zero new Google API calls (see `HEALTH-FEATURES.md`).
+- Custom pill reminders (v7): up to six user-defined, weekday-aware reminders with up to four daily slots each, per-slot tap dismissal, and no notifications or network calls.
 
 ## Google Cloud API Key Setup
 
@@ -101,27 +102,29 @@ CommuteWidget requests runtime permissions based on configured features:
   The app prompts for this permission when turning on calendar integration in settings.
 - **System Alarm**: Reading the next scheduled device alarm from the system alarm clock operates on-device and requires no permissions.
 - **Health Connect, Usage access, Notification access**: Required for the health layer features you enable.
-  Grant all three from the **Health** section in app settings.
+  Grant these, plus location, calendar, and notification permissions, from **Access & app info** in app settings.
   See the Health section below for Samsung Health sync prerequisites.
 
 ## In-App Setup
 
 Launch the CommuteWidget app on your device to configure initial settings before adding the widget.
 
-1. Paste your Google Cloud API key into the API key field.
-2. Enter your home address, tap search to geocode, and pick the matching result.
-3. Enter your work address, tap search to geocode, and pick the matching result.
-4. Select your preferred travel mode (Car or Two-Wheeler).
-5. Configure **Commute days** by selecting the days of the week that activate commute windows.
+The settings home menu has eight Android-Settings-style categories with current-state summaries: **Commute setup**, **Places & Maps**, **Alerts & timing**, **Calendar**, **Reminders**, **Health**, **Widget appearance**, and **Access & app info**.
+
+1. In **Places & Maps**, paste your Google Cloud API key, add saved places, and configure map-related options.
+2. In **Commute setup**, enter and geocode your home and work addresses, choose Car or Two-Wheeler, and set the commute windows.
+3. Configure **Commute days** using the Mo Tu We Th Fr Sa Su day chips that activate commute windows.
    Unselected days run in calendar mode all day.
-6. Configure **Commute windows** by setting time intervals for the To Work window (default 7:00 AM - 10:00 AM) and To Home window (default 5:00 PM - 8:00 PM).
-7. Configure **Saved places** by adding up to 4 locations with custom labels and geocoded addresses.
+4. In **Places & Maps**, configure up to 4 saved locations with custom labels and geocoded addresses.
    Each saved place entry provides a Navigate button that opens Google Maps directly.
-8. Configure the Leave-By Advisor by enabling the toggle and setting target arrival times for work (default 9:30 AM) and home (default 7:30 PM).
+5. In **Alerts & timing**, configure the Leave-By Advisor by enabling the toggle and setting target arrival times for work (default 9:30 AM) and home (default 7:30 PM).
    Set the "Arrive early by" buffer (0-60 minutes, default 10 minutes) and "Use live traffic within" threshold (15-180 minutes, default 60 minutes).
    The advisor applies to active commute windows as well as calendar events with a location.
-9. Enable calendar integration if desired, choose which device calendars to scan for event locations, and optionally toggle "Keep event ETA fresh" (enabled by default).
-10. Grant runtime permissions as needed for location, notifications, and calendar access.
+6. In **Calendar**, enable calendar integration, choose device calendars to scan for event locations, and optionally toggle "Keep event ETA fresh" (enabled by default).
+7. In **Reminders**, add and manage custom pill reminders and set their shared active-window duration.
+8. In **Health**, configure the six core toggles and the nested **Experimental nudges** screen.
+9. In **Widget appearance**, set opacity, text scale, and the map-pill corner.
+10. In **Access & app info**, grant location, calendar, notifications, Health Connect, Usage access, and notification-listener access.
 
 ## Adding and Resizing the Widget on One UI
 
@@ -134,9 +137,9 @@ Launch the CommuteWidget app on your device to configure initial settings before
    - **4x2**: Split layout showing destination, large traffic-colored ETA, leave-by indicator, and clean congestion map.
    - **4x4**: Full-size view showing destination, large traffic-colored ETA, leave-by indicator, and expanded congestion map.
    Intermediate dimensions automatically snap to the nearest standard layout.
-   Every size in commute and routed-event modes displays exactly three elements: destination, large traffic-colored ETA, and leave-by time (red when past).
-   The widget does not display favourite chips, distance lines, traffic bars, "updated X ago" captions, or map-overlay pills.
-   The map image is clean and unobstructed.
+   The primary commute and routed-event information is destination, large traffic-colored ETA, and leave-by time (red when past).
+   Map overlays can add compact leave-by, best-departure, health, and custom-reminder pills when applicable.
+   The widget does not display favourite chips, distance lines, traffic bars, or "updated X ago" captions.
    All widget surfaces adapt to system light and dark themes using Material dynamic colors.
 
 ## Daily Behavior
@@ -206,6 +209,15 @@ The widget selects its active display mode according to configured schedules and
 - Saved places replace on-widget favourite chips and timed overrides.
 - Tapping the Navigate button beside any saved place in settings opens Google Maps turn-by-turn navigation directly to that destination.
 
+### Custom pill reminders
+
+- Open **Reminders** from the settings home menu and tap **Add reminder**.
+- Give the reminder a name of up to 12 characters, select its weekdays, and add one to four daily times.
+- Add up to six reminders total and set one shared active window from 15-240 minutes (60 minutes by default).
+- A reminder is active at its scheduled time, then remains as a dimmed carry-over until you tap it, midnight, or that reminder's next non-dismissed slot.
+- Tapping a custom pill marks only that pill and time slot done for today.
+  It does not send a notification or make a network request.
+
 ## Health
 
 The v6 health layer adds private on-device wellness nudges to the widget.
@@ -213,7 +225,7 @@ Full parameter and evidence detail lives in `HEALTH-FEATURES.md`.
 
 ### Setup
 
-1. Open CommuteWidget settings and scroll to **Health**.
+1. Open CommuteWidget settings and select **Access & app info**.
 2. Grant **Health Connect** (steps, exercise read; hydration write; background read).
 3. Grant **Usage access** if you want sleep estimation in the morning brief.
 4. Grant **Notification access** if you want audiobook playback to suppress health nudges during drives.
@@ -246,8 +258,8 @@ The 2x2 size shows no health UI.
 
 | Issue | Cause | Solution |
 | --- | --- | --- |
-| No sleep prefix on morning brief | Usage access not granted, or estimated sleep under 3 hours | Grant Usage access in Health settings; a very short estimate is intentionally hidden |
-| Water pill does not dismiss after tap | Health Connect write failed or WRITE_HYDRATION not granted | Re-grant Health Connect permissions and tap again; the pill stays until a confirmed write |
+| No sleep prefix on morning brief | Usage access not granted, or estimated sleep under 3 hours | Grant Usage access in **Access & app info**; a very short estimate is intentionally hidden |
+| Water pill does not dismiss after tap | Health Connect write failed or WRITE_HYDRATION not granted | Re-grant Health Connect permissions from **Access & app info** and tap again; the pill stays until a confirmed write |
 | No health nudges during a drive | Audiobook suppression is active by design | Expected while a configured audiobook app is playing; disable **Suppress during audiobooks** if you want nudges during playback |
 | Walk or step nudges never appear | Health Connect steps not syncing | Complete Samsung Health to Health Connect sync (permissions, Consents, account sync) |
 | Health pills missing on 2x2 widget | By design | Resize to 4x2 or 4x4 for health pills and card chips |

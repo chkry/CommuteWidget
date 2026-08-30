@@ -50,6 +50,8 @@ data class HealthDayState(
     val sleepPillDismissed: Boolean = false,
     /** Owner request 2026-08-31: the morning-light nudge was tap-dismissed for today (hides its event-map pill and its card/commute lines). */
     val morningLightDismissed: Boolean = false,
+    /** Custom-pill occurrences taken today, encoded as "<pillId>:<slotMinuteOfDay>". */
+    val customPillTakenSlots: Set<String> = emptySet(),
 )
 
 @Serializable

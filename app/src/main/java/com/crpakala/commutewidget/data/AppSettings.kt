@@ -64,4 +64,8 @@ data class AppSettings(
     val walkSearchEndMinuteOfDay: Int = 1290,
     val caffeineCutoffMinuteOfDay: Int = 840,
     val commuteAudioPackages: Set<String> = setOf("com.audible.application"),
+    /** User-defined reminder pills, each with their own daily slots and selected weekdays. */
+    val customPills: List<CustomPill> = emptyList(),
+    /** Minutes a custom reminder pill remains active around each scheduled slot. */
+    val customPillActiveWindowMinutes: Int = 60,
 )

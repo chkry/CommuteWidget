@@ -303,6 +303,40 @@ class StoredValueCodecTest {
     }
 
     @Test
+    fun customPillsJson_roundTripWithMultipleSlotsAndDaySets() {
+        val pills = listOf(
+            CustomPill(
+                id = "0d2b5812-04b8-4646-b9c4-b47e2c926b6d",
+                name = "Vitamin D",
+                slotsMinutesOfDay = listOf(480, 1_200),
+                days = setOf(1, 3, 5),
+            ),
+            CustomPill(
+                id = "3a79f428-911b-47c3-9797-a4c3ab784565",
+                name = "Water",
+                slotsMinutesOfDay = listOf(600, 780, 960, 1_140),
+                days = setOf(2, 4, 6, 7),
+            ),
+        )
+
+        assertEquals(pills, decodeCustomPills(encodeCustomPills(pills)))
+    }
+
+    @Test
+    fun customPillsJson_emptyListRoundTrips() {
+        assertEquals(emptyList<CustomPill>(), decodeCustomPills(encodeCustomPills(emptyList())))
+    }
+
+    @Test
+    fun customPillsJson_corruptOrWrongTypeReturnsEmptyList() {
+        assertEquals(emptyList<CustomPill>(), decodeCustomPills("{not json}"))
+        assertEquals(emptyList<CustomPill>(), decodeCustomPills("""{"id":"not-a-list"}"""))
+        assertEquals(emptyList<CustomPill>(), decodeCustomPills("""[{"id":1}]"""))
+        assertEquals(emptyList<CustomPill>(), decodeCustomPills(null))
+        assertEquals(emptyList<CustomPill>(), decodeCustomPills(""))
+    }
+
+    @Test
     fun longSetJson_roundTrip() {
         val values = setOf(42L, 7L, 99L)
         val encoded = encodeLongSet(values)
@@ -335,6 +369,13 @@ class StoredValueCodecTest {
         val settings = AppSettings()
         assertEquals(10, settings.eventLeaveByBufferMinutes)
         assertEquals(60, settings.eventRealtimeThresholdMinutes)
+    }
+
+    @Test
+    fun appSettings_customPillFieldsDefaultOnEmptyStore() {
+        val settings = AppSettings()
+        assertEquals(emptyList<CustomPill>(), settings.customPills)
+        assertEquals(60, settings.customPillActiveWindowMinutes)
     }
 
     /**
@@ -411,6 +452,90 @@ class StoredValueCodecTest {
         assertFalse(decoded.shortSleepDay)
     }
 
+    /**
+     * Custom pill reminders add `customPillOccurrences` to [CommuteSnapshot]. A pre-custom-pill
+     * stored snapshot JSON (predating the field) must still decode, with the field defaulting to
+     * empty rather than failing to parse.
+     */
+    @Test
+    fun commuteSnapshotJson_preCustomPillFormatDecodesWithCustomPillFieldDefaults() {
+        val preCustomPillJson = """
+            {
+              "direction": "TO_WORK",
+              "durationSeconds": 1200,
+              "durationNoTrafficSeconds": 1000,
+              "distanceMeters": 8000,
+              "mapImagePath": "/cache/commute-map.png",
+              "fetchedAtEpochMillis": 1700000000000,
+              "lastFetchFailed": false,
+              "lastErrorMessage": null,
+              "destinationLabel": "Work",
+              "destinationLat": 12.9716,
+              "destinationLng": 77.5946,
+              "leaveByMinuteOfDay": 540,
+              "mode": "COMMUTE",
+              "eventStartEpochMillis": null,
+              "nextWindowLabel": null,
+              "nextWindowStartMinuteOfDay": null,
+              "routedOverEarlier": false,
+              "healthNudges": [],
+              "sleepEstimateMinutes": 390,
+              "shortSleepDay": false
+            }
+        """.trimIndent()
+
+        val decoded = decodeCommuteSnapshot(preCustomPillJson)
+        requireNotNull(decoded)
+        assertEquals(390, decoded.sleepEstimateMinutes)
+        assertEquals(emptyList<CustomPillOccurrence>(), decoded.customPillOccurrences)
+    }
+
+    /**
+     * The short-lived `customPillOverflowCount` field (removed before release when the overflow
+     * became render-derived) must be IGNORED, not fatal, if a stored snapshot ever carried it.
+     */
+    @Test
+    fun commuteSnapshotJson_staleOverflowCountFieldIsIgnored() {
+        val withOverflowJson = """
+            {
+              "direction": "TO_WORK",
+              "durationSeconds": 1200,
+              "durationNoTrafficSeconds": 1000,
+              "distanceMeters": 8000,
+              "mapImagePath": null,
+              "fetchedAtEpochMillis": 1700000000000,
+              "lastFetchFailed": false,
+              "lastErrorMessage": null,
+              "customPillOccurrences": [],
+              "customPillOverflowCount": 2
+            }
+        """.trimIndent()
+
+        val decoded = decodeCommuteSnapshot(withOverflowJson)
+        requireNotNull(decoded)
+        assertEquals(emptyList<CustomPillOccurrence>(), decoded.customPillOccurrences)
+    }
+
+    @Test
+    fun commuteSnapshotJson_customPillOccurrencesRoundTrip() {
+        val snapshot = CommuteSnapshot(
+            direction = Direction.TO_WORK,
+            durationSeconds = 1200L,
+            durationNoTrafficSeconds = 1000L,
+            distanceMeters = 8000L,
+            mapImagePath = null,
+            fetchedAtEpochMillis = 1_700_000_000_000L,
+            lastFetchFailed = false,
+            lastErrorMessage = null,
+            customPillOccurrences = listOf(
+                CustomPillOccurrence(pillId = "0d2b5812-04b8-4646-b9c4-b47e2c926b6d", label = "Vitamin D", slotMinuteOfDay = 480, active = true),
+                CustomPillOccurrence(pillId = "3a79f428-911b-47c3-9797-a4c3ab784565", label = "Water", slotMinuteOfDay = 600, active = false),
+            ),
+        )
+
+        assertEquals(snapshot, decodeCommuteSnapshot(encodeCommuteSnapshot(snapshot)))
+    }
+
     @Test
     fun commuteSnapshotJson_healthNudgesRoundTrip() {
         val snapshot = CommuteSnapshot(
@@ -451,6 +576,10 @@ class StoredValueCodecTest {
             dismissedFocusGapStartMinutes = listOf(840),
             gymDetected = true,
             waterPulseShownMinute = 1200,
+            customPillTakenSlots = setOf(
+                "0d2b5812-04b8-4646-b9c4-b47e2c926b6d:480",
+                "0d2b5812-04b8-4646-b9c4-b47e2c926b6d:1200",
+            ),
         )
 
         assertEquals(state, decodeHealthDayState(encodeHealthDayState(state)))
@@ -568,6 +697,7 @@ class StoredValueCodecTest {
         assertEquals("2026-08-31", decoded.date)
         assertFalse(decoded.sleepPillDismissed)
         assertFalse(decoded.morningLightDismissed)
+        assertEquals(emptySet<String>(), decoded.customPillTakenSlots)
     }
 
     /**

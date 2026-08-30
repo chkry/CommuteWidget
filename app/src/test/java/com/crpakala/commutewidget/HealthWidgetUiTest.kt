@@ -1,6 +1,7 @@
 package com.crpakala.commutewidget
 
 import com.crpakala.commutewidget.data.CommuteSnapshot
+import com.crpakala.commutewidget.data.CustomPillOccurrence
 import com.crpakala.commutewidget.data.Direction
 import com.crpakala.commutewidget.data.HealthDayState
 import com.crpakala.commutewidget.data.HealthNudge
@@ -621,6 +622,148 @@ class HealthWidgetUiTest {
         val result = applySupplementTaken(original, today, "UNKNOWN", 400)
         assertEquals(original, result)
     }
+
+    // --- Custom pill reminders (sprint 3) ---
+
+    @Test
+    fun showsCustomPillRow_hidesSmallAndKeepsWide() {
+        assertFalse(showsCustomPillRow(110))
+        assertTrue(showsCustomPillRow(220))
+    }
+
+    @Test
+    fun customPillTakenKey_encodesPillIdAndSlot() {
+        assertEquals("p1:600", customPillTakenKey("p1", 600))
+        assertEquals("vitamin-d:0", customPillTakenKey("vitamin-d", 0))
+    }
+
+    @Test
+    fun filterCustomPillOccurrencesAgainstDayState_keepsAllWhenDayStateIsNull() {
+        val occurrences = listOf(customPill("p1", 600), customPill("p2", 700))
+        assertEquals(
+            occurrences,
+            filterCustomPillOccurrencesAgainstDayState(occurrences, null, today),
+        )
+    }
+
+    @Test
+    fun filterCustomPillOccurrencesAgainstDayState_removesTakenOccurrenceOnly() {
+        val occurrences = listOf(customPill("p1", 600), customPill("p2", 700))
+        val state = emptyState().copy(customPillTakenSlots = setOf("p1:600"))
+        assertEquals(
+            listOf(customPill("p2", 700)),
+            filterCustomPillOccurrencesAgainstDayState(occurrences, state, today),
+        )
+    }
+
+    @Test
+    fun filterCustomPillOccurrencesAgainstDayState_ignoresStaleDayStateFromAnotherDate() {
+        val occurrences = listOf(customPill("p1", 600))
+        val yesterday = HealthDayState(date = "2026-08-30", customPillTakenSlots = setOf("p1:600"))
+        assertEquals(occurrences, filterCustomPillOccurrencesAgainstDayState(occurrences, yesterday, today))
+    }
+
+    @Test
+    fun customPillOverflowLabel_positiveCountOnly() {
+        assertEquals("+1", customPillOverflowLabel(1))
+        assertEquals("+5", customPillOverflowLabel(5))
+        assertEquals(null, customPillOverflowLabel(0))
+        assertEquals(null, customPillOverflowLabel(-1))
+    }
+
+    @Test
+    fun resolveCustomPillRowContent_capsAfterFilteringAndDerivesOverflow() {
+        val occurrences = (1..5).map { customPill("p$it", it * 100, active = true) }
+        val content = resolveCustomPillRowContent(occurrences, emptyState(), today)
+        assertEquals(listOf("p1", "p2", "p3"), content.occurrences.map { it.pillId })
+        assertEquals("+2", content.overflowLabel)
+    }
+
+    @Test
+    fun resolveCustomPillRowContent_tapPromotesHiddenOccurrenceAndShrinksOverflow() {
+        // 5 eligible, p1 tapped since the snapshot was computed: p4 is promoted into the visible
+        // row and the overflow shrinks from +2 to +1 - a stale "+2" alongside only 2 visible
+        // pills (the sprint 5 review's finding 3) must be impossible.
+        val occurrences = (1..5).map { customPill("p$it", it * 100, active = true) }
+        val state = emptyState().copy(customPillTakenSlots = setOf("p1:100"))
+        val content = resolveCustomPillRowContent(occurrences, state, today)
+        assertEquals(listOf("p2", "p3", "p4"), content.occurrences.map { it.pillId })
+        assertEquals("+1", content.overflowLabel)
+    }
+
+    @Test
+    fun resolveCustomPillRowContent_neverLeavesALoneOverflowIndicator() {
+        // Tapping every visible occurrence: the two hidden ones are promoted and the overflow
+        // label disappears entirely - an inert "+N" can never stand alone.
+        val occurrences = (1..5).map { customPill("p$it", it * 100, active = true) }
+        val state = emptyState().copy(customPillTakenSlots = setOf("p1:100", "p2:200", "p3:300"))
+        val content = resolveCustomPillRowContent(occurrences, state, today)
+        assertEquals(listOf("p4", "p5"), content.occurrences.map { it.pillId })
+        assertEquals(null, content.overflowLabel)
+        assertFalse(content.isEmpty)
+    }
+
+    @Test
+    fun resolveCustomPillRowContent_emptyWhenNothingVisible() {
+        val content = resolveCustomPillRowContent(emptyList(), emptyState(), today)
+        assertTrue(content.occurrences.isEmpty())
+        assertEquals(null, content.overflowLabel)
+        assertTrue(content.isEmpty)
+    }
+
+    @Test
+    fun customPillDemotionAlpha_activeIsFullOpacityCarryOverIsDemoted() {
+        assertEquals(1f, customPillDemotionAlpha(active = true))
+        assertEquals(HEALTH_DEMOTION_ALPHA, customPillDemotionAlpha(active = false))
+    }
+
+    @Test
+    fun customPillDisplayLabel_leavesShortLabelsUnchanged() {
+        assertEquals("Vitamin D", customPillDisplayLabel("Vitamin D"))
+        assertEquals("Water break", customPillDisplayLabel("Water break"))
+    }
+
+    @Test
+    fun customPillDisplayLabel_truncatesDefensivelyBeyondTwelveChars() {
+        assertEquals("This is way ", customPillDisplayLabel("This is way too long"))
+        assertEquals(12, customPillDisplayLabel("This is way too long").length)
+    }
+
+    @Test
+    fun applyCustomPillTaken_isIdempotent() {
+        val first = applyCustomPillTaken(null, today, "p1", 600)
+        val second = applyCustomPillTaken(first, today, "p1", 600)
+        assertEquals(setOf("p1:600"), first.customPillTakenSlots)
+        assertEquals(first, second)
+    }
+
+    @Test
+    fun applyCustomPillTaken_accumulatesDistinctOccurrences() {
+        val first = applyCustomPillTaken(null, today, "p1", 600)
+        val second = applyCustomPillTaken(first, today, "p2", 700)
+        val third = applyCustomPillTaken(second, today, "p1", 900)
+        assertEquals(setOf("p1:600", "p2:700", "p1:900"), third.customPillTakenSlots)
+    }
+
+    @Test
+    fun applyCustomPillTaken_rolledOverToNewDayStartsClean() {
+        val yesterdayState = applyCustomPillTaken(null, today, "p1", 600)
+        val nextDay = applyCustomPillTaken(yesterdayState, "2099-01-01", "p2", 700)
+        assertEquals("2099-01-01", nextDay.date)
+        assertEquals(setOf("p2:700"), nextDay.customPillTakenSlots)
+    }
+
+    private fun customPill(
+        pillId: String,
+        slotMinuteOfDay: Int,
+        label: String = pillId,
+        active: Boolean = true,
+    ): CustomPillOccurrence = CustomPillOccurrence(
+        pillId = pillId,
+        label = label,
+        slotMinuteOfDay = slotMinuteOfDay,
+        active = active,
+    )
 
     private fun emptyState(): HealthDayState = HealthDayState(date = today)
 

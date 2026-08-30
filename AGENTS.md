@@ -13,7 +13,7 @@ Single user, single device; there is no backward-compatibility audience beyond t
 ## Build, verify, ship
 
 - Toolchain env: `source ./env.sh` from the repo root before any Gradle command (sets JAVA_HOME, ANDROID_HOME, PATH).
-- Verify: `./gradlew assembleDebug test lint` must be green before any commit; current suite is 517 JUnit4 unit tests, lint has 0 errors (pinned-version advisories are accepted).
+- Verify: `./gradlew assembleDebug test lint` must be green before any commit; current suite is 619 JUnit4 unit tests, lint has 0 errors (pinned-version advisories are accepted).
 - Tests are plain JVM JUnit4; there is no Robolectric and no instrumentation - test pure functions, extract logic to make it pure.
 - Install: `adb install -r app/build/outputs/apk/debug/app-debug.apk` (owner's phone is often connected; installing after shipping is established practice).
 - Git: repo-local identity `chkry <chkryreddy@gmail.com>`; remote `origin` uses the `github-personal` SSH alias (personal key), never the machine's default work identity.
@@ -26,13 +26,14 @@ Single user, single device; there is no backward-compatibility audience beyond t
 - `engine/CommuteRefresher.kt`: the refresh pipeline; `engine/WidgetMode.kt`: window-model resolution; `engine/BestDepartureAdvisor.kt`: predicted-traffic sampling.
 - `api/`: Google clients (RoutesClient with optional future departureTime, StaticMapUrl with traffic-colored segments, GeocodingClient, MapImageFetcher, Polylines).
 - `calendar/CalendarReader.kt`: content-provider reads with pure, tested selection functions.
-- `data/`: Preferences DataStore repository (singleton), AppSettings, CommuteSnapshot (the cache the widget renders from), HealthModels/HealthDayState/HealthHistory, codecs with safe fallbacks.
+- `data/`: Preferences DataStore repository (singleton), AppSettings, CustomPill, CommuteSnapshot (the cache the widget renders from, including the resolved, deliberately uncapped `customPillOccurrences` list), HealthModels/HealthDayState/HealthHistory, codecs with safe fallbacks.
 - `health/`: platform wrappers (HealthConnectFacade, ScreenEventsReader, CommuteAudioDetector, HealthNotificationListener).
-- `engine/health/`: pure health logic (SleepLogic, WaterLogic, WalkAndSunsetLogic, NudgeLogic, HealthParams).
+- `engine/health/`: pure health logic (SleepLogic, WaterLogic, WalkAndSunsetLogic, NudgeLogic, HealthParams, CustomPillLogic).
 - `engine/HealthNudgeComputer.kt`: orchestrates health reads and nudge computation into snapshot health fields.
 - `HealthWidgetUi.kt` + `HealthActions.kt`: health pill/chip rendering and idempotent tap actions.
 - `schedule/`: WorkManager workers (WindowBoundaryWorker, CalendarTickWorker, CalendarChangeWorker, CommuteLeaveByWorker, EventLeaveByWorker, HealthMorningWorker, HealthBoundaryWorker, HealthWalkNotifyWorker) and CommuteScheduler.ensureScheduled.
-- `ui/SettingsScreen.kt` + MainActivity: single-screen Compose settings (Health section with permission grants and toggles).
+- `ui/SettingsScreen.kt` + MainActivity: hand-rolled, single-activity Settings-style home menu with eight categories and saveable screen-state navigation.
+- `ui/SettingsComponents.kt`, `SettingsSummaries.kt`, `DayLabels.kt`, `RemindersHelpers.kt`, and category screens: reusable settings UI, pure summaries/day labels/reminder helpers, and focused Compose screens for commute setup, places/maps, alerts/timing, calendar, reminders, health/experimental nudges, widget appearance, and access/app info.
 
 ## Behavioral model (as approved by the owner)
 
@@ -47,6 +48,8 @@ Single user, single device; there is no backward-compatibility audience beyond t
 - Widget appearance: owner-configurable background opacity (One UI translucency), text scale, and map-pill corner; ETA is traffic-colored (green/amber/red) with a traffic dot; pending renders as 45 percent alpha of the accent; stale (over 10 minutes) renders grey.
 - Health layer (v6): six core features (sleep estimation via UsageStats with 14-day rolling history as nudge input only, evening walk advisor, water reminders with Health Connect hydration writes, supplement routines, audiobook commute detection via MediaSession, Health Connect 1.1.0 for steps/exercise) plus nine experimental toggles default OFF under **Experimental nudges** (sleep-debt brief soften, gym-day protein priority, restless-night focus shield, post-Audible walk latch, daylight walk preference, focus gap chip, post-gym water pulse, morning-light line, caffeine-cutoff line).
 - Health suppression hierarchy: audiobook playback suppresses ALL health nudges; restless-night shield suppresses water and walk until first event ends or 10:00; water never renders on commute maps; max two health pills on map, max two card chips; 2x2 renders zero health UI; health elements never inherit pending alpha or stale grey.
+- Custom pill reminders (v7): up to six user-defined, widget-only reminders with up to four selected weekday slots each; their shared active window defaults to 60 minutes and is configurable from 15-240 minutes; an active occurrence carries over at 60 percent alpha until dismissed, midnight, or the next non-dismissed slot for that pill; taps dismiss only that `pillId:slotMinute` occurrence locally with no notification or network work.
+- Settings use an Android-Settings-style eight-category home menu with live summaries: Commute setup, Places & Maps, Alerts & timing, Calendar, Reminders, Health, Widget appearance, and Access & app info; all permission grants are centralized in Access & app info while feature screens retain status links and automatic prompts.
 
 ## Decision log (dated, with the why)
 
@@ -60,6 +63,7 @@ Single user, single device; there is no backward-compatibility audience beyond t
 - 2026-08-26 pills: leave-by and best-departure render as opaque pills on the map (the 4x2 info panel cannot fit them), side by side, in an owner-configurable corner; ETA hour format is compact ("1h 15m").
 - 2026-08-26 phantom alarm: the alarm line filters `getNextAlarmClock` by the show intent's creator package against a clock-app allowlist, because Samsung Modes and Routines registers schedule triggers as system alarm clocks.
 - 2026-08-31 health layer v6: Health Connect only over Samsung SDK (boring/stable, goals set in-app); UsageStats sleep estimation (no wearable); MediaSession audiobook commute detection; 14-day rolling history allowed back as nudge input only with no stats UI; 8 extras built default-off, triage + wind-down nudge to backlog; walk notification is the only new notification; ~10-14 on-device wakeups/day approved; zero new Google API calls.
+- 2026-08-31 v7 custom pills and settings IA: generic widget-only reminders use per-slot dismissal, caps of 6 pills x 4 slots, a global active window, and silent local transitions with about 2 approved local wakeups per slot; research-informed, owner-approved Settings-style IA separates eight categories with live summaries, and uses emoji icons because no icon artifact is on the classpath and new dependencies are forbidden.
 
 ## Hard-won invariants (violating these reintroduces shipped bugs)
 
@@ -78,6 +82,10 @@ Single user, single device; there is no backward-compatibility audience beyond t
 - Health tap actions are idempotent local writes with `NonCancellable` + `updateAll` and never trigger network; water tap records only on confirmed Health Connect write (write failure keeps the pill).
 - Restless-night shield is applied at computation time; the widget render path always passes `shieldActive = false` to avoid double suppression.
 - `HealthDayState`/`HealthHistory` additions follow the same additive-with-decode-test rule as `CommuteSnapshot`.
+- Custom pill occurrences are fully resolved at computation time but stored UNCAPPED; the render layer re-filters against the live taken set for dismissal (never for suppression) and only then applies the max-3 cap and derives the `+N` overflow - capping before the dismissal filter strands stale or lone overflow indicators after taps.
+- The boundary chain gate is `healthBoundaryNeeded` (health toggles OR any custom pill), not `anyHealthFeatureEnabled` alone; a pills-only configuration must keep the chain armed, while `health_morning` stays health-toggle-gated.
+- Every non-route health rewrite of the snapshot goes through `withHealthComputation`; hand-copying health fields in a worker is how custom pill fields silently went missing once.
+- Custom pill day-state and snapshot additions follow the same additive-with-decode-test rule as `CommuteSnapshot`.
 
 ## Known edges (flagged, accepted, not bugs)
 

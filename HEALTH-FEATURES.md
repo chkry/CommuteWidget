@@ -1,6 +1,6 @@
 # CommuteWidget health layer reference
 
-This document is the owner's independent-features reference for the v6 health layer.
+This document is the owner's independent-features reference for the v6 health layer and v7 custom pill reminders.
 It supersedes the `.sprint0-*.md` scratch reports listed at the end.
 
 ## Overview
@@ -32,6 +32,7 @@ Anti-nag rules cap surface density (two health pills, two card chips), forbid wa
 | Caffeine cutoff line | Caffeine cutoff | OFF | Shows `Coffee by 2:00 pm` from 90 minutes before the configured cutoff. |
 
 Health Connect and Usage access are permissions, not toggles.
+Custom pill reminders are not a health toggle and are configured from **Reminders**.
 See the permissions section below.
 
 ## Sleep estimation
@@ -106,6 +107,34 @@ Tap logs 250 ml to Health Connect and dismisses; write failure keeps the pill fo
 | Protein cutoff | Persists to midnight | moderate (pre-sleep protein) |
 | Priority | Supplements outrank water and walk; demoted carry-over drops below active water | convention |
 
+## Custom pill reminders
+
+**Toggle:** None.
+Configure reminders from **Reminders**.
+
+**What it does:** Shows user-defined generic reminder pills on the widget at selected daily times and weekdays.
+Tap marks only that pill's current slot done for the day with no notification, network request, or Google Maps Platform call.
+
+| Parameter | Value | Evidence |
+| --- | --- | --- |
+| Maximum reminders | 6 (`CustomPill.MAX_PILLS`) | convention |
+| Maximum slots per reminder | 4 (`CustomPill.MAX_SLOTS_PER_PILL`) | convention |
+| Reminder name | Up to 12 characters | convention |
+| Enabled days | Any subset of Monday=1 through Sunday=7, matching Commute days encoding | convention |
+| Active window | 60 minutes default, configurable 15-240 minutes | convention |
+| Storage | `custom_pills_json` and `custom_pill_active_window_minutes` in DataStore | convention |
+| Dismissal key | `pillId:slotMinute` in `HealthDayState.customPillTakenSlots`, reset at midnight | convention |
+| Carry-over | After the active window, remains at 60 percent alpha until tapped, midnight, or the next non-dismissed slot for that reminder | convention |
+| Midnight crossing | Active windows truncate at midnight | convention |
+
+**UI rules:** Custom pills render as a horizontal row on WIDE and LARGE maps, stacked 4 dp from the built-in health pill stack, and as chips on cards.
+At most three occurrences are shown, followed by inert `+N` overflow when needed.
+The 2x2 size shows no custom pill UI.
+Custom pills never inherit pending or stale route styling.
+
+**Suppression:** Audiobook playback suppresses custom pills at computation time.
+The rough-night shield does not suppress custom pills.
+
 ## Audiobook commute detection
 
 **Toggle:** Suppress during audiobooks (default ON).
@@ -122,7 +151,7 @@ Package list is editable in settings.
 
 ## Health Connect integration
 
-**Not a toggle.** Permissions granted from the Health section in settings.
+**Not a toggle.** Permissions granted from **Access & app info** in settings.
 
 **What it does:** Reads steps and exercise sessions; writes hydration on water tap.
 Client version 1.1.0 (`androidx.health.connect:connect-client`).
@@ -140,7 +169,7 @@ See permissions setup below.
 
 ## Experimental nudges (default OFF)
 
-All live under **Experimental nudges** in settings.
+All live under **Health** > **Experimental nudges** in settings.
 
 ### Soften after short sleep
 
@@ -184,13 +213,14 @@ No caffeine intake logging.
 
 ## UI rules summary
 
-- **Map pills:** Max two health pills stacked 4 dp apart in the map corner diagonally opposite commute pills (leave-by, best departure).
+- **Map pills:** Max two built-in health pills are stacked 4 dp apart in the map corner diagonally opposite commute pills (leave-by, best departure).
+- **Custom pills:** A separate horizontal row, max three visible plus inert `+N` overflow, is stacked 4 dp from the built-in health pill stack on WIDE and LARGE maps.
 - **Glyphs:** Checkmark (supplements), droplet (water), walker (walk).
 - **Priority:** Supplements, then water, then walk; UX demotion overrides (carry-over at 60 percent alpha; evening protein outranks morning carry-over after 18:00).
 - **Water on commute map:** Never.
-- **Card chips:** Max two tappable 48 dp mini-chips plus one optional line (morning light, caffeine cutoff).
-- **2x2 size:** Zero health UI (no pills, no chips, no brief sleep prefix).
-- **Pending/stale:** Health elements never inherit pending alpha or stale grey; only route ETA does.
+- **Card chips:** Max two built-in tappable 48 dp mini-chips plus one optional line (morning light, caffeine cutoff), with custom reminder chips in their own row.
+- **2x2 size:** Zero health or custom reminder UI (no pills, no chips, no brief sleep prefix).
+- **Pending/stale:** Health and custom reminder elements never inherit pending alpha or stale grey; only route ETA does.
 - **LARGE size:** Morning supplement label expands to `Vitamins + creatine`.
 - **Confirmation:** Successful tap removes the pill or chip on the next settled render; no toast or animation.
 
@@ -201,22 +231,24 @@ Three health WorkManager chains; zero new Google API calls.
 | Worker | Unique name | Pattern | Role |
 | --- | --- | --- | --- |
 | `HealthMorningWorker` | `health_morning` | Daily 06:30 self-rescheduling chain | Sleep backfill, 14-day history upsert, water-slot plan for the day |
-| `HealthBoundaryWorker` | `health_boundary` | One-shot chain to next transition | Recomputes health fields only (no network); wakes at slot starts/ends, supplement window edges, 21:30 vitamins cutoff, 18:00 protein transition, walk target, shield end, caffeine lead/cutoff, midnight rollover |
+| `HealthBoundaryWorker` | `health_boundary` | One-shot chain to next transition | Recomputes health fields only (no network); wakes at water and custom-reminder slot starts and active-window ends, supplement window edges, 21:30 vitamins cutoff, 18:00 protein transition, walk target, shield end, caffeine lead/cutoff, midnight rollover |
 | `HealthWalkNotifyWorker` | `health_walk_notify` | One-shot at walk start | Mutex-guarded post-then-mark against `walkNotified` |
 
 **Reschedule policy:** Workers use `APPEND_OR_REPLACE` when rescheduling their own unique name from inside a running worker; `REPLACE` only from external callers (`ensureScheduled`).
 
-**Typical load:** About 10-14 on-device wakeups per day (approved); no Routes, Static Maps, or Geocoding calls from health workers.
+**Typical load:** About 10-14 on-device wakeups per day before custom reminders.
+Custom reminders add about two purely local wakes per eligible slot, up to 48 per day at the approved 6 reminders x 4 slots maximum.
+No Routes, Static Maps, or Geocoding calls come from health workers.
 
 Route refreshes also call `computeHealthState` synchronously; failures there carry forward previous health fields and never fail the route refresh.
 
 ## Permissions setup
 
-Grant all three from the **Health** section in app settings.
+Grant all permissions from **Access & app info** in app settings.
 
 ### Health Connect
 
-1. Open CommuteWidget settings, scroll to **Health**.
+1. Open CommuteWidget settings and select **Access & app info**.
 2. Tap **Grant** on the Health Connect row.
 3. Approve READ_STEPS, READ_EXERCISE, WRITE_HYDRATION, and READ_HEALTH_DATA_IN_BACKGROUND.
 

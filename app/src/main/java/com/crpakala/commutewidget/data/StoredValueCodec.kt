@@ -58,6 +58,18 @@ fun decodeFavourites(json: String?): List<Favourite> {
     }.getOrElse { emptyList() }
 }
 
+fun encodeCustomPills(pills: List<CustomPill>): String =
+    commuteJson.encodeToString(ListSerializer(CustomPill.serializer()), pills)
+
+fun decodeCustomPills(json: String?): List<CustomPill> {
+    if (json.isNullOrBlank()) {
+        return emptyList()
+    }
+    return runCatching {
+        commuteJson.decodeFromString(ListSerializer(CustomPill.serializer()), json)
+    }.getOrElse { emptyList() }
+}
+
 private val longListSerializer = ListSerializer(serializer<Long>())
 private val intListSerializer = ListSerializer(serializer<Int>())
 private val stringListSerializer = ListSerializer(serializer<String>())

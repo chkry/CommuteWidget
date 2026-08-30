@@ -461,6 +461,7 @@ object CommuteRefresher {
                 healthNudges = healthComputation.healthNudges,
                 sleepEstimateMinutes = healthComputation.sleepEstimateMinutes,
                 shortSleepDay = healthComputation.shortSleepDay,
+                customPillOccurrences = healthComputation.customPillOccurrences,
             ),
         )
 
@@ -563,6 +564,7 @@ object CommuteRefresher {
                     healthNudges = healthComputation.healthNudges,
                     sleepEstimateMinutes = healthComputation.sleepEstimateMinutes,
                     shortSleepDay = healthComputation.shortSleepDay,
+                    customPillOccurrences = healthComputation.customPillOccurrences,
                 ),
             )
             return
@@ -697,6 +699,7 @@ object CommuteRefresher {
                 healthNudges = healthComputation.healthNudges,
                 sleepEstimateMinutes = healthComputation.sleepEstimateMinutes,
                 shortSleepDay = healthComputation.shortSleepDay,
+                customPillOccurrences = healthComputation.customPillOccurrences,
             ),
         )
 
@@ -749,6 +752,7 @@ object CommuteRefresher {
         healthNudges = healthComputation.healthNudges,
         sleepEstimateMinutes = healthComputation.sleepEstimateMinutes,
         shortSleepDay = healthComputation.shortSleepDay,
+        customPillOccurrences = healthComputation.customPillOccurrences,
     )
 
     private fun commuteLeaveByPlanFor(
@@ -861,10 +865,10 @@ internal fun travelModeFor(travelMode: TravelMode): RouteTravelMode = when (trav
  * pass both come back as [HealthComputation]'s all-defaults value - which would incorrectly blank
  * out whatever health nudges were already on screen. This wrapper is the outer safety net its doc
  * calls for (DataStore/WorkManager calls it makes are not exhaustively covered by its own inner
- * catches): on any exception actually escaping it, [previous]'s three health fields are carried
- * forward unchanged instead, exactly like [failureSnapshot] does for a route/map failure - a
- * health-computation failure must never blank the widget's health nudges, and must never fail the
- * route refresh that called it.
+ * catches): on any exception actually escaping it, [previous]'s health fields (including the
+ * custom pill reminder fields added afterward) are carried forward unchanged instead, exactly
+ * like [failureSnapshot] does for a route/map failure - a health-computation failure must never
+ * blank the widget's health nudges, and must never fail the route refresh that called it.
  */
 private suspend fun computeHealthFieldsSafely(
     context: Context,
@@ -881,6 +885,7 @@ private suspend fun computeHealthFieldsSafely(
         healthNudges = previous?.healthNudges ?: emptyList(),
         sleepEstimateMinutes = previous?.sleepEstimateMinutes,
         shortSleepDay = previous?.shortSleepDay ?: false,
+        customPillOccurrences = previous?.customPillOccurrences ?: emptyList(),
     )
 }
 
@@ -1101,10 +1106,12 @@ internal fun failureSnapshot(
         nextWindowLabel = null,
         nextWindowStartMinuteOfDay = null,
         // Sprint 2: health nudges are orthogonal to the route/mode/target this snapshot describes
-        // - a target change (unlike route/map/leave-by/next-window) must not blank them out.
+        // - a target change (unlike route/map/leave-by/next-window) must not blank them out. The
+        // custom pill reminder fields added afterward follow the identical carry-through rule.
         healthNudges = previous?.healthNudges ?: emptyList(),
         sleepEstimateMinutes = previous?.sleepEstimateMinutes,
         shortSleepDay = previous?.shortSleepDay ?: false,
+        customPillOccurrences = previous?.customPillOccurrences ?: emptyList(),
     )
 }
 

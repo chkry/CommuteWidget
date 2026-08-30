@@ -1,5 +1,6 @@
 package com.crpakala.commutewidget
 
+import com.crpakala.commutewidget.data.CustomPillOccurrence
 import com.crpakala.commutewidget.data.HealthDayState
 import com.crpakala.commutewidget.data.HealthNudge
 import com.crpakala.commutewidget.data.HealthNudgeKind
@@ -274,4 +275,112 @@ internal fun applyMorningLightDismissed(
     todayIsoDate: String,
 ): HealthDayState {
     return healthDayStateForToday(state, todayIsoDate).copy(morningLightDismissed = true)
+}
+
+// --- Custom pill reminders (sprint 3: render-only; resolution/ordering/capping already done by
+// com.crpakala.commutewidget.engine.health.computeVisibleCustomPillOccurrences at computation
+// time) ---
+
+internal const val CUSTOM_PILL_LABEL_MAX_CHARS = 12
+
+/** The approved display cap: at most this many custom pills render side by side; the rest collapse into an inert "+N". */
+internal const val CUSTOM_PILL_MAX_VISIBLE = 3
+
+/**
+ * Custom pill row uses the identical SMALL-exclusion threshold as built-in health chrome
+ * ([showsHealthChrome]); kept as its own named decision point since the two UI elements are
+ * logically independent even though the number happens to match today.
+ */
+internal fun showsCustomPillRow(widthDp: Int): Boolean = showsHealthChrome(widthDp)
+
+/**
+ * Per-occurrence dismissal key. Must stay in sync with
+ * [com.crpakala.commutewidget.engine.health.CustomPillLogic]'s internal `"pillId:slot"` encoding
+ * that gates eligibility at computation time - this widget-layer copy exists only because that
+ * encoding is private to the engine package.
+ */
+internal fun customPillTakenKey(pillId: String, slotMinuteOfDay: Int): String = "$pillId:$slotMinuteOfDay"
+
+/**
+ * Dismissal filtering, NOT suppression: [occurrences] is the snapshot's already-resolved, ordered
+ * (and deliberately uncapped) list (see
+ * [com.crpakala.commutewidget.data.CommuteSnapshot.customPillOccurrences]); this re-excludes
+ * anything the day state now says was tapped since that snapshot was computed, so a tap makes its
+ * pill disappear on the very next render without waiting for the next health computation pass -
+ * the same mechanism [filterHealthNudgesAgainstDayState] uses for built-in nudges. A stale day
+ * state from a different date (not yet rolled over) is treated as empty, matching every other
+ * day-state filter in this file.
+ */
+internal fun filterCustomPillOccurrencesAgainstDayState(
+    occurrences: List<CustomPillOccurrence>,
+    dayState: HealthDayState?,
+    todayIsoDate: String,
+): List<CustomPillOccurrence> {
+    val taken = dayState?.takeIf { it.date == todayIsoDate }?.customPillTakenSlots
+    if (taken.isNullOrEmpty()) return occurrences
+    return occurrences.filterNot { customPillTakenKey(it.pillId, it.slotMinuteOfDay) in taken }
+}
+
+/** Inert "+N" overflow indicator text, or null when there is nothing hidden beyond the visible cap. */
+internal fun customPillOverflowLabel(overflowCount: Int): String? =
+    if (overflowCount > 0) "+$overflowCount" else null
+
+/** Everything one custom pill row composable needs, already dismissal-filtered and overflow-labeled. */
+internal data class CustomPillRowContent(
+    val occurrences: List<CustomPillOccurrence>,
+    val overflowLabel: String?,
+) {
+    val isEmpty: Boolean get() = occurrences.isEmpty() && overflowLabel == null
+}
+
+/**
+ * Filter first, cap second: the display cap and the "+N" overflow are derived from the
+ * dismissal-filtered list, never carried over from computation time. Ordering: tapping a visible
+ * pill promotes the next hidden occurrence into the row, the overflow count shrinks with it, and
+ * a lone stale "+N" (an overflow indicator with nothing real behind it) is impossible by
+ * construction - the sprint 5 review's finding 3.
+ */
+internal fun resolveCustomPillRowContent(
+    occurrences: List<CustomPillOccurrence>,
+    dayState: HealthDayState?,
+    todayIsoDate: String,
+    maxVisible: Int = CUSTOM_PILL_MAX_VISIBLE,
+): CustomPillRowContent {
+    val filtered = filterCustomPillOccurrencesAgainstDayState(occurrences, dayState, todayIsoDate)
+    val visible = filtered.take(maxVisible.coerceAtLeast(0))
+    return CustomPillRowContent(
+        occurrences = visible,
+        overflowLabel = customPillOverflowLabel(filtered.size - visible.size),
+    )
+}
+
+/**
+ * Same demotion level as supplement/walk carry-overs ([HEALTH_DEMOTION_ALPHA]); active
+ * occurrences render at full opacity. Deliberately takes only [active] - it has no way to see
+ * pending-refresh or stale-fetch state, so custom pill elements structurally cannot inherit the
+ * ETA's pending alpha or stale grey treatment (repo invariant).
+ */
+internal fun customPillDemotionAlpha(active: Boolean): Float = if (active) 1f else HEALTH_DEMOTION_ALPHA
+
+/**
+ * Defensive re-cap at render time. [com.crpakala.commutewidget.data.CustomPill] labels are
+ * already validated to at most [CUSTOM_PILL_LABEL_MAX_CHARS] characters on write (see the
+ * settings screen's label validation - out of this sprint's scope); this is a second line of
+ * defense against a stored value that predates that validation, matching the codebase's existing
+ * "codecs are lenient" defensive posture.
+ */
+internal fun customPillDisplayLabel(label: String): String =
+    if (label.length <= CUSTOM_PILL_LABEL_MAX_CHARS) label else label.take(CUSTOM_PILL_LABEL_MAX_CHARS)
+
+/** Idempotent local write: re-tapping an already-taken occurrence is a harmless no-op. */
+internal fun applyCustomPillTaken(
+    state: HealthDayState?,
+    todayIsoDate: String,
+    pillId: String,
+    slotMinuteOfDay: Int,
+): HealthDayState {
+    val today = healthDayStateForToday(state, todayIsoDate)
+    val key = customPillTakenKey(pillId, slotMinuteOfDay)
+    if (key in today.customPillTakenSlots) return today
+    return today.copy(customPillTakenSlots = today.customPillTakenSlots + key)
 }
