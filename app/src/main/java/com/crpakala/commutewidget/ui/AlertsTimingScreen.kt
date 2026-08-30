@@ -16,6 +16,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -27,8 +28,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.crpakala.commutewidget.clearTodayHealthNudgeDismissals
 import com.crpakala.commutewidget.data.AppSettings
 import com.crpakala.commutewidget.data.SettingsRepository
+import com.crpakala.commutewidget.schedule.CommuteScheduler
+import com.crpakala.commutewidget.schedule.HealthFieldsRefresher
+import java.time.LocalDate
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -111,6 +116,28 @@ fun AlertsTimingScreen(
                         refreshWidget(applicationContext)
                     }
                 },
+            )
+        }
+        item {
+            SectionHeader("Today")
+            TextButton(onClick = {
+                scope.launch {
+                    val todayIsoDate = LocalDate.now().toString()
+                    repository.updateHealthDayState { state ->
+                        clearTodayHealthNudgeDismissals(state, todayIsoDate)
+                    }
+                    // Cleared dismissals reintroduce boundary wake candidates (supplement window
+                    // edges), so reschedule before the immediate local recompute + re-render.
+                    CommuteScheduler.ensureScheduled(applicationContext)
+                    HealthFieldsRefresher.recomputeAndPersist(applicationContext)
+                    snackbarHostState.showSnackbar("Today's dismissed nudges are back")
+                }
+            }) { Text("Reset dismissed nudges") }
+            Text(
+                "Bring back the health and experimental nudges you dismissed today - supplements, walk, sleep, morning light, and focus chips. " +
+                    "Water taps stay logged, the walk notification still fires at most once a day, " +
+                    "and custom reminders have their own reset under Reminders. Today only.",
+                style = MaterialTheme.typography.bodySmall,
             )
         }
     }

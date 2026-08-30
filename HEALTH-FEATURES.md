@@ -224,6 +224,7 @@ No caffeine intake logging.
 - **Pending/stale:** Health and custom reminder elements never inherit pending alpha or stale grey; only route ETA does.
 - **LARGE size:** Morning supplement label expands to `Vitamins + creatine`.
 - **Confirmation:** Successful tap removes the pill or chip on the next settled render; no toast or animation.
+- **Dismissal reset:** "Reset dismissed nudges" under Alerts & timing > Today clears today's supplement, walk, sleep-pill, morning-light, and focus-gap dismissals only; water taps (Health Connect mirrors), `walkNotified`, detection state, and custom pill dismissals are preserved.
 
 ## Scheduling and wakeup model
 

@@ -277,6 +277,37 @@ internal fun applyMorningLightDismissed(
     return healthDayStateForToday(state, todayIsoDate).copy(morningLightDismissed = true)
 }
 
+/**
+ * The "Reset dismissed nudges" action (Alerts & timing): brings back every built-in health and
+ * experimental nudge dismissed today by clearing the tap-dismissal markers on TODAY's day state -
+ * morning supplements, evening protein, walk, the sleep-estimate pill, morning light, and focus
+ * gaps. Deliberately preserved: [HealthDayState.waterTapMinutes] and
+ * [HealthDayState.waterPulseShownMinute] (each water tap mirrors a confirmed 250 ml Health
+ * Connect hydration write, so resurfacing those slots would invite double logging),
+ * [HealthDayState.walkNotified] (the walk notification stays at most one per day even when the
+ * pill returns), detection state ([HealthDayState.gymDetected],
+ * [HealthDayState.audibleLastPlayingMinute]), the water slot plan, and
+ * [HealthDayState.customPillTakenSlots] (custom reminders have their own reset in the Reminders
+ * screen). A day state from another date is returned untouched - it holds nothing for today, and
+ * the midnight rollover already starts each day clean. Idempotent local write, no network.
+ */
+internal fun clearTodayHealthNudgeDismissals(
+    state: HealthDayState?,
+    todayIsoDate: String,
+): HealthDayState? =
+    if (state?.date == todayIsoDate) {
+        state.copy(
+            morningSupplementsTakenMinute = null,
+            proteinTakenMinute = null,
+            walkDismissed = false,
+            sleepPillDismissed = false,
+            morningLightDismissed = false,
+            dismissedFocusGapStartMinutes = emptyList(),
+        )
+    } else {
+        state
+    }
+
 // --- Custom pill reminders (sprint 3: render-only; resolution/ordering/capping already done by
 // com.crpakala.commutewidget.engine.health.computeVisibleCustomPillOccurrences at computation
 // time) ---

@@ -711,6 +711,57 @@ class HealthWidgetUiTest {
         assertTrue(content.isEmpty)
     }
 
+    // clearTodayHealthNudgeDismissals - the Alerts & timing "Reset dismissed nudges" action
+
+    @Test
+    fun clearTodayHealthNudgeDismissals_clearsEveryDismissalMarkerAndPreservesDataFields() {
+        val state = HealthDayState(
+            date = today,
+            morningSupplementsTakenMinute = 480,
+            proteinTakenMinute = 1100,
+            walkDismissed = true,
+            sleepPillDismissed = true,
+            morningLightDismissed = true,
+            dismissedFocusGapStartMinutes = listOf(600),
+            waterTapMinutes = listOf(485, 610),
+            waterSlotPlanMinutes = listOf(480, 600, 720),
+            waterPulseShownMinute = 900,
+            gymDetected = true,
+            audibleLastPlayingMinute = 1000,
+            walkNotified = true,
+            customPillTakenSlots = setOf("p1:480"),
+        )
+
+        val result = clearTodayHealthNudgeDismissals(state, today)
+
+        requireNotNull(result)
+        assertNull(result.morningSupplementsTakenMinute)
+        assertNull(result.proteinTakenMinute)
+        assertFalse(result.walkDismissed)
+        assertFalse(result.sleepPillDismissed)
+        assertFalse(result.morningLightDismissed)
+        assertTrue(result.dismissedFocusGapStartMinutes.isEmpty())
+        // Data-bearing and dedup fields must survive: water taps mirror Health Connect writes,
+        // walkNotified keeps the notification at one per day, custom pills reset elsewhere.
+        assertEquals(state.waterTapMinutes, result.waterTapMinutes)
+        assertEquals(state.waterSlotPlanMinutes, result.waterSlotPlanMinutes)
+        assertEquals(state.waterPulseShownMinute, result.waterPulseShownMinute)
+        assertTrue(result.gymDetected)
+        assertEquals(state.audibleLastPlayingMinute, result.audibleLastPlayingMinute)
+        assertTrue(result.walkNotified)
+        assertEquals(state.customPillTakenSlots, result.customPillTakenSlots)
+        assertEquals(state.date, result.date)
+    }
+
+    @Test
+    fun clearTodayHealthNudgeDismissals_otherDateNullAndCleanStatesAreNoOps() {
+        val yesterday = HealthDayState(date = "2026-08-30", walkDismissed = true)
+        assertEquals(yesterday, clearTodayHealthNudgeDismissals(yesterday, today))
+        assertNull(clearTodayHealthNudgeDismissals(null, today))
+        val clean = emptyState()
+        assertEquals(clean, clearTodayHealthNudgeDismissals(clean, today))
+    }
+
     @Test
     fun customPillDemotionAlpha_activeIsFullOpacityCarryOverIsDemoted() {
         assertEquals(1f, customPillDemotionAlpha(active = true))

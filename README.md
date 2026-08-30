@@ -118,6 +118,7 @@ The settings home menu has eight Android-Settings-style categories with current-
 4. In **Places & Maps**, configure up to 4 saved locations with custom labels and geocoded addresses.
    Each saved place entry provides a Navigate button that opens Google Maps directly.
 5. In **Alerts & timing**, configure the Leave-By Advisor by enabling the toggle and setting target arrival times for work (default 9:30 AM) and home (default 7:30 PM).
+   The **Today** section there also holds **Reset dismissed nudges**, which brings back the health and experimental nudges you dismissed today (supplements, walk, sleep, morning light, focus chips); water taps stay logged and the walk notification still fires at most once a day.
    Set the "Arrive early by" buffer (0-60 minutes, default 10 minutes) and "Use live traffic within" threshold (15-180 minutes, default 60 minutes).
    The advisor applies to active commute windows as well as calendar events with a location.
 6. In **Calendar**, enable calendar integration, choose device calendars to scan for event locations, and optionally toggle "Keep event ETA fresh" (enabled by default).
