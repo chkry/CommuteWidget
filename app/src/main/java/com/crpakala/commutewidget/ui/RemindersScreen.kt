@@ -28,6 +28,7 @@ import com.crpakala.commutewidget.data.CustomPill
 import com.crpakala.commutewidget.data.SettingsRepository
 import com.crpakala.commutewidget.schedule.CommuteScheduler
 import com.crpakala.commutewidget.schedule.HealthFieldsRefresher
+import java.time.LocalDate
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -102,6 +103,27 @@ fun RemindersScreen(
                 "How long a reminder pill stays active on the widget after its scheduled time",
                 style = MaterialTheme.typography.bodySmall,
             )
+        }
+        if (settings.customPills.isNotEmpty()) {
+            item {
+                SectionHeader("Today")
+                TextButton(onClick = {
+                    scope.launch {
+                        val todayIsoDate = LocalDate.now().toString()
+                        repository.updateHealthDayState { state ->
+                            clearTodayCustomPillDismissals(state, todayIsoDate)
+                        }
+                        // Cleared dismissals reintroduce boundary wake candidates, so reschedule
+                        // before the immediate local recompute + re-render.
+                        CommuteScheduler.ensureScheduled(applicationContext)
+                        HealthFieldsRefresher.recomputeAndPersist(applicationContext)
+                    }
+                }) { Text("Reset dismissed reminders") }
+                Text(
+                    "Bring back reminder pills you dismissed today. Applies to today only - every day starts fresh automatically.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
         }
     }
 

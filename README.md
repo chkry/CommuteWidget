@@ -217,6 +217,7 @@ The widget selects its active display mode according to configured schedules and
 - A reminder is active at its scheduled time, then remains as a dimmed carry-over until you tap it, midnight, or that reminder's next non-dismissed slot.
 - Tapping a custom pill marks only that pill and time slot done for today.
   It does not send a notification or make a network request.
+- Tapped one by mistake? **Reset dismissed reminders** under **Today** in the Reminders screen brings back everything you dismissed today; it affects today only, and every day starts fresh automatically.
 
 ## Health
 

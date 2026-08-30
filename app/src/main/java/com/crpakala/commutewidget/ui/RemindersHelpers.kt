@@ -1,6 +1,7 @@
 package com.crpakala.commutewidget.ui
 
 import com.crpakala.commutewidget.data.CustomPill
+import com.crpakala.commutewidget.data.HealthDayState
 
 /** Mirrors the saved-places label validation pattern (see `AddFavouriteForm` in `SettingsComponents.kt`). */
 internal const val REMINDER_NAME_MAX_LENGTH = 12
@@ -60,3 +61,19 @@ internal fun isReminderFormValid(
  */
 internal fun pruneCustomPillTakenSlots(takenSlots: Set<String>, removedPillId: String): Set<String> =
     takenSlots.filterNot { it.startsWith("$removedPillId:") }.toSet()
+
+/**
+ * The "Reset today's dismissed reminders" action: clears TODAY's custom pill dismissals only, so
+ * every tapped occurrence becomes eligible again (reappearing as ACTIVE or dimmed carry-over per
+ * its slot and the active window). Every other day-state field (water taps, supplement and walk
+ * state, the water plan) is preserved - this must never widen into a general day-state reset. A
+ * stored day state from another date is returned untouched: it holds no dismissals for today,
+ * and the midnight rollover already gives each new day a fresh empty set. Idempotent - an
+ * already-clear state is returned as-is.
+ */
+internal fun clearTodayCustomPillDismissals(state: HealthDayState?, todayIsoDate: String): HealthDayState? =
+    if (state?.date == todayIsoDate && state.customPillTakenSlots.isNotEmpty()) {
+        state.copy(customPillTakenSlots = emptySet())
+    } else {
+        state
+    }

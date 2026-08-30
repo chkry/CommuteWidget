@@ -1,6 +1,7 @@
 package com.crpakala.commutewidget.ui
 
 import com.crpakala.commutewidget.data.CustomPill
+import com.crpakala.commutewidget.data.HealthDayState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -98,5 +99,41 @@ class RemindersHelpersTest {
     fun pruneCustomPillTakenSlotsIsNoOpWhenNoMatch() {
         val taken = setOf("xyz:60")
         assertEquals(taken, pruneCustomPillTakenSlots(taken, "abc"))
+    }
+
+    // clearTodayCustomPillDismissals - the "Reset today's dismissed reminders" action
+
+    @Test
+    fun clearTodayDismissals_clearsOnlyTheTakenSlotsAndPreservesEveryOtherField() {
+        val state = HealthDayState(
+            date = "2026-08-31",
+            waterSlotPlanMinutes = listOf(480, 600),
+            waterTapMinutes = listOf(485),
+            walkDismissed = true,
+            customPillTakenSlots = setOf("p1:480", "p2:600"),
+        )
+
+        val result = clearTodayCustomPillDismissals(state, "2026-08-31")
+
+        requireNotNull(result)
+        assertEquals(emptySet<String>(), result.customPillTakenSlots)
+        assertEquals(state.waterSlotPlanMinutes, result.waterSlotPlanMinutes)
+        assertEquals(state.waterTapMinutes, result.waterTapMinutes)
+        assertTrue(result.walkDismissed)
+        assertEquals(state.date, result.date)
+    }
+
+    @Test
+    fun clearTodayDismissals_dayStateFromAnotherDateIsReturnedUntouched() {
+        val yesterday = HealthDayState(date = "2026-08-30", customPillTakenSlots = setOf("p1:480"))
+
+        assertEquals(yesterday, clearTodayCustomPillDismissals(yesterday, "2026-08-31"))
+    }
+
+    @Test
+    fun clearTodayDismissals_nullAndAlreadyClearStatesAreIdempotentNoOps() {
+        assertNull(clearTodayCustomPillDismissals(null, "2026-08-31"))
+        val clear = HealthDayState(date = "2026-08-31")
+        assertEquals(clear, clearTodayCustomPillDismissals(clear, "2026-08-31"))
     }
 }

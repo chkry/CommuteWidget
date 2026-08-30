@@ -124,6 +124,7 @@ Tap marks only that pill's current slot done for the day with no notification, n
 | Active window | 60 minutes default, configurable 15-240 minutes | convention |
 | Storage | `custom_pills_json` and `custom_pill_active_window_minutes` in DataStore | convention |
 | Dismissal key | `pillId:slotMinute` in `HealthDayState.customPillTakenSlots`, reset at midnight | convention |
+| Dismissal reset | "Reset dismissed reminders" in the Reminders screen clears only today's `customPillTakenSlots`; all other day state is preserved | convention |
 | Carry-over | After the active window, remains at 60 percent alpha until tapped, midnight, or the next non-dismissed slot for that reminder | convention |
 | Midnight crossing | Active windows truncate at midnight | convention |
 
