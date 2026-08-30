@@ -645,11 +645,22 @@ private fun CalendarEmptyCardBody(snapshot: CommuteSnapshot, extras: WidgetExtra
             ),
             maxLines = 1,
         )
+        // Title wraps to two lines and the start time gets its own line, so a long meeting
+        // title can never ellipsize the time away.
         Text(
-            text = "${snapshot.tomorrowEventTitle} at ${formatEventClockTime(snapshot.tomorrowEventStartEpochMillis!!)}",
+            text = snapshot.tomorrowEventTitle!!,
             style = TextStyle(
                 color = GlanceTheme.colors.onSurface,
                 fontSize = scaledSp(16, textScale),
+                fontWeight = FontWeight.Medium,
+            ),
+            maxLines = 2,
+        )
+        Text(
+            text = formatEventClockTime(snapshot.tomorrowEventStartEpochMillis!!),
+            style = TextStyle(
+                color = GlanceTheme.colors.onSurface,
+                fontSize = scaledSp(14, textScale),
                 fontWeight = FontWeight.Medium,
             ),
             maxLines = 1,

@@ -56,9 +56,21 @@ internal fun resolveDirectionForSnapshot(widgetMode: WidgetMode, nextWindowDirec
  * The next upcoming To Work / To Home window start, carrying enough information to populate a
  * quiet calendar-mode card ("Next: To Work at 7:00 am") when no calendar event remains today.
  */
-internal data class NextWindow(val direction: Direction, val startMinuteOfDay: Int) {
+internal data class NextWindow(
+    val direction: Direction,
+    val startMinuteOfDay: Int,
+    /** Calendar days until the window's day: 0 = later today, 1 = tomorrow, up to 7. */
+    val daysAhead: Int = 0,
+) {
     val label: String get() = if (direction == Direction.TO_WORK) "To Work" else "To Home"
 }
+
+/**
+ * Owner ruling (2026-08-31): the "Next up" card section may only advertise a window starting
+ * later today or tomorrow. A window further out (e.g. Friday evening -> Monday morning, or a
+ * non-commute day tomorrow) reads as an imminent commute on the card, which is misleading.
+ */
+internal fun NextWindow.withinCardHorizon(): Boolean = daysAhead <= 1
 
 /**
  * Pure computation of the next To Work / To Home window start across [commuteDays], searching
@@ -91,7 +103,7 @@ internal fun nextWindow(
     for (offset in 1..7) {
         val candidateDayIso = ((dayOfWeekIso - 1 + offset) % 7) + 1
         if (candidateDayIso in commuteDays) {
-            return windows.first()
+            return windows.first().copy(daysAhead = offset)
         }
     }
     return null

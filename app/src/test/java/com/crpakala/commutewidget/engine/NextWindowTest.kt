@@ -41,18 +41,41 @@ class NextWindowTest {
 
     @Test
     fun afterBothWindowsToday_movesToNextEnabledDay() {
-        assertEquals(NextWindow(Direction.TO_WORK, morningStart), next(1, eveningEnd + 1))
+        assertEquals(NextWindow(Direction.TO_WORK, morningStart, daysAhead = 1), next(1, eveningEnd + 1))
     }
 
     @Test
     fun fridayAfterBothWindows_wrapsToMonday() {
-        assertEquals(NextWindow(Direction.TO_WORK, morningStart), next(5, eveningEnd + 1))
+        assertEquals(NextWindow(Direction.TO_WORK, morningStart, daysAhead = 3), next(5, eveningEnd + 1))
     }
 
     @Test
     fun dayNotEnabled_looksAheadToNextEnabledDay() {
         val days = setOf(1, 2, 4, 5) // Wednesday (3) excluded
-        assertEquals(NextWindow(Direction.TO_WORK, morningStart), next(3, morningStart + 30, commuteDays = days))
+        assertEquals(NextWindow(Direction.TO_WORK, morningStart, daysAhead = 1), next(3, morningStart + 30, commuteDays = days))
+    }
+
+    @Test
+    fun windowLaterToday_isWithinCardHorizon() {
+        assertEquals(true, next(1, morningStart - 30)!!.withinCardHorizon())
+    }
+
+    @Test
+    fun windowTomorrow_isWithinCardHorizon() {
+        assertEquals(true, next(1, eveningEnd + 1)!!.withinCardHorizon())
+    }
+
+    @Test
+    fun fridayEveningToMondayWindow_isBeyondCardHorizon() {
+        assertEquals(false, next(5, eveningEnd + 1)!!.withinCardHorizon())
+    }
+
+    @Test
+    fun sundayNightWithMondayNotACommuteDay_isBeyondCardHorizon() {
+        val mondayExcluded = setOf(2, 3, 4, 5)
+        val result = next(7, 1200, commuteDays = mondayExcluded)!!
+        assertEquals(2, result.daysAhead)
+        assertEquals(false, result.withinCardHorizon())
     }
 
     @Test

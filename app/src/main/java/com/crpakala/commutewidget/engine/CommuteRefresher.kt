@@ -740,8 +740,10 @@ object CommuteRefresher {
         leaveByMinuteOfDay = null,
         mode = SnapshotMode.CALENDAR_EMPTY,
         eventStartEpochMillis = null,
-        nextWindowLabel = nextWindowResult?.label,
-        nextWindowStartMinuteOfDay = nextWindowResult?.startMinuteOfDay,
+        // Only advertise a window starting today or tomorrow; a farther window (non-commute day
+        // tomorrow, weekend gap) must not render as an imminent "Next up" commute.
+        nextWindowLabel = nextWindowResult?.takeIf { it.withinCardHorizon() }?.label,
+        nextWindowStartMinuteOfDay = nextWindowResult?.takeIf { it.withinCardHorizon() }?.startMinuteOfDay,
         tomorrowEventTitle = tomorrowEventTitle,
         tomorrowEventStartEpochMillis = tomorrowEventStartEpochMillis,
         healthNudges = healthComputation.healthNudges,
