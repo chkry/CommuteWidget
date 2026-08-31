@@ -30,6 +30,7 @@ import com.crpakala.commutewidget.data.TravelMode
 import com.crpakala.commutewidget.schedule.CalendarTickScheduler
 import com.crpakala.commutewidget.schedule.CommuteLeaveByScheduler
 import com.crpakala.commutewidget.schedule.EventLeaveByScheduler
+import com.crpakala.commutewidget.schedule.EventNearScheduler
 import com.crpakala.commutewidget.schedule.postCommuteLeaveByIfNotAlreadyNotified
 import com.crpakala.commutewidget.schedule.shouldScheduleCalendarTick
 import com.crpakala.commutewidget.schedule.shouldScheduleCommuteLeaveByAlarm
@@ -116,8 +117,12 @@ internal fun eventDepartureProbe(
 
 /**
  * Event takeover: a LOCATED event (route drawable) whose start is within [takeoverMinutes] of now
- * outranks the window commute. Already-started events also qualify (start - now is negative),
- * matching the calendar reader's own grace-window semantics.
+ * outranks the window commute. Deliberately reused, unchanged, as the single nearness gate for
+ * whether a located event in calendar mode is routed at all - see
+ * [CommuteRefresher.performCalendarRefresh]'s far-located gate, which farther out shows the same
+ * plain card an unlocated event gets instead of spending a geocode/Routes/Static-Maps call.
+ * Already-started events also qualify (start - now is negative), matching the calendar reader's
+ * own grace-window semantics.
  */
 internal fun eventTakeoverApplies(
     eventStartEpochMillis: Long,
@@ -127,6 +132,15 @@ internal fun eventTakeoverApplies(
 ): Boolean {
     return eventHasLocation && eventStartEpochMillis - nowEpochMillis <= takeoverMinutes * 60_000L
 }
+
+/**
+ * Absolute instant (epoch millis) at which the far-located-event near-flip one-shot (see
+ * [com.crpakala.commutewidget.schedule.EventNearScheduler]) should fire for an event starting at
+ * [eventStartEpochMillis]: exactly [takeoverMinutes] before it - the same instant
+ * [eventTakeoverApplies] starts returning true for this event.
+ */
+internal fun eventNearFlipEpochMillis(eventStartEpochMillis: Long, takeoverMinutes: Int): Long =
+    eventStartEpochMillis - takeoverMinutes * 60_000L
 
 /**
  * v4 event advisor: leaveBy = eventStart - buffer - route duration, in epoch millis. The same
@@ -473,18 +487,26 @@ object CommuteRefresher {
 
     /**
      * v3 calendar mode; v4 adds the event leave-by advisor for a located event with a start time;
-     * v5 adds the opt-in coarse staleness tick (see [CalendarTickScheduler]). Never records
-     * history (the history subsystem is removed entirely in v5).
+     * v5 adds the opt-in coarse staleness tick (see [CalendarTickScheduler]); a later change adds
+     * the far-located gate below. Never records history (the history subsystem is removed
+     * entirely in v5).
      *
-     * Every branch cancels [CalendarTickScheduler], [EventLeaveByScheduler], and
-     * [CommuteLeaveByScheduler]'s pending work up front - the previously scheduled event/tick/
-     * alarm may have moved, been cancelled, or resolved to a different mode, so a stale wake-up
-     * must not survive to fire. In particular, a FIX-16 commute leave-by alarm scheduled during an
-     * earlier commute window must not survive into calendar mode (mirrors [performCommuteRefresh]
-     * cancelling [CalendarTickScheduler] on every commute-mode outcome). Only the final
-     * located-event success path re-schedules the tick, and only when the corresponding condition
-     * holds; the commute leave-by alarm and event leave-by are never re-scheduled from this
-     * function.
+     * A located event is only ever routed (geocode + Routes + Static Maps) when
+     * [eventTakeoverApplies] says it is within [AppSettings.eventTakeoverMinutes] of now (an
+     * already-started event counts). Farther out it gets the exact same zero-API plain card an
+     * unlocated event gets (see [calendarPlainEventSnapshot]) and arms [EventNearScheduler] to
+     * wake exactly when it crosses into that window - at which point a normal AUTO refresh
+     * re-resolves calendar mode and routes it automatically.
+     *
+     * Every branch cancels [CalendarTickScheduler], [EventLeaveByScheduler],
+     * [CommuteLeaveByScheduler], and [EventNearScheduler]'s pending work up front - the previously
+     * scheduled event/tick/alarm/flip may have moved, been cancelled, or resolved to a different
+     * mode, so a stale wake-up must not survive to fire. In particular, a FIX-16 commute leave-by
+     * alarm scheduled during an earlier commute window must not survive into calendar mode
+     * (mirrors [performCommuteRefresh] cancelling [CalendarTickScheduler] on every commute-mode
+     * outcome). Only the far-located branch re-arms [EventNearScheduler], and only the final
+     * located-event success path re-schedules the tick, each only when its own condition holds;
+     * the commute leave-by alarm and event leave-by are never re-scheduled from this function.
      */
     private suspend fun performCalendarRefresh(
         context: Context,
@@ -499,6 +521,7 @@ object CommuteRefresher {
         CalendarTickScheduler.cancel(context)
         EventLeaveByScheduler.cancel(context)
         CommuteLeaveByScheduler.cancel(context)
+        EventNearScheduler.cancel(context)
 
         // Sprint 2: fetched once and reused for every branch below (no writes happen before any
         // of them, so one read is equivalent to reading again per-branch) - both for [resolveMapImagePath]'s
@@ -544,28 +567,24 @@ object CommuteRefresher {
         val location = event.location
         if (location.isNullOrBlank()) {
             repo.saveSnapshot(
-                CommuteSnapshot(
-                    direction = direction,
-                    durationSeconds = 0L,
-                    durationNoTrafficSeconds = 0L,
-                    distanceMeters = 0L,
-                    mapImagePath = null,
-                    fetchedAtEpochMillis = nowEpochMillis,
-                    lastFetchFailed = false,
-                    lastErrorMessage = null,
-                    destinationLabel = event.title,
-                    destinationLat = null,
-                    destinationLng = null,
-                    leaveByMinuteOfDay = null,
-                    mode = SnapshotMode.CALENDAR_EMPTY,
-                    eventStartEpochMillis = event.startEpochMillis,
-                    nextWindowLabel = null,
-                    nextWindowStartMinuteOfDay = null,
-                    healthNudges = healthComputation.healthNudges,
-                    sleepEstimateMinutes = healthComputation.sleepEstimateMinutes,
-                    shortSleepDay = healthComputation.shortSleepDay,
-                    customPillOccurrences = healthComputation.customPillOccurrences,
-                ),
+                calendarPlainEventSnapshot(direction, nowEpochMillis, event.title, event.startEpochMillis, healthComputation),
+            )
+            return
+        }
+
+        // Far-located gate: this event HAS a location, but does not yet qualify under
+        // eventTakeoverApplies (same threshold that decides commute-vs-calendar takeover, reused
+        // here as the single nearness concept - see that function's doc). Render the identical
+        // plain card the unlocated branch above just built, at zero Google API cost, and arm the
+        // near-flip one-shot to re-check exactly when this event becomes near. An already-started
+        // or already-near event falls through unchanged to the routed pipeline below.
+        if (!eventTakeoverApplies(event.startEpochMillis, true, nowEpochMillis, settings.eventTakeoverMinutes)) {
+            repo.saveSnapshot(
+                calendarPlainEventSnapshot(direction, nowEpochMillis, event.title, event.startEpochMillis, healthComputation),
+            )
+            EventNearScheduler.scheduleAt(
+                context,
+                eventNearFlipEpochMillis(event.startEpochMillis, settings.eventTakeoverMinutes),
             )
             return
         }
@@ -1050,6 +1069,45 @@ private fun currentDirectionHint(settings: AppSettings, now: ZonedDateTime): Dir
     )?.direction
     return resolveDirectionForSnapshot(mode, nextWindowDirection)
 }
+
+/**
+ * Shared plain-card builder for [SnapshotMode.CALENDAR_EMPTY] when there IS a next event to show
+ * but no route/map is being fetched for it - either it has no location at all, or it has one but
+ * starts farther out than [AppSettings.eventTakeoverMinutes] (see
+ * [CommuteRefresher.performCalendarRefresh]'s two call sites). [eventTitle] and
+ * [eventStartEpochMillis] are the only inputs that differ between those callers; every other
+ * field is the same "no stale route/map/leave-by/next-window data" shape, so the two outcomes
+ * stay identical apart from their inputs - the same discipline [failureSnapshot] applies for a
+ * mode/target change.
+ */
+internal fun calendarPlainEventSnapshot(
+    direction: Direction,
+    nowEpochMillis: Long,
+    eventTitle: String,
+    eventStartEpochMillis: Long,
+    healthComputation: HealthComputation,
+): CommuteSnapshot = CommuteSnapshot(
+    direction = direction,
+    durationSeconds = 0L,
+    durationNoTrafficSeconds = 0L,
+    distanceMeters = 0L,
+    mapImagePath = null,
+    fetchedAtEpochMillis = nowEpochMillis,
+    lastFetchFailed = false,
+    lastErrorMessage = null,
+    destinationLabel = eventTitle,
+    destinationLat = null,
+    destinationLng = null,
+    leaveByMinuteOfDay = null,
+    mode = SnapshotMode.CALENDAR_EMPTY,
+    eventStartEpochMillis = eventStartEpochMillis,
+    nextWindowLabel = null,
+    nextWindowStartMinuteOfDay = null,
+    healthNudges = healthComputation.healthNudges,
+    sleepEstimateMinutes = healthComputation.sleepEstimateMinutes,
+    shortSleepDay = healthComputation.shortSleepDay,
+    customPillOccurrences = healthComputation.customPillOccurrences,
+)
 
 /**
  * Pure computation of the failure snapshot to save, preserving the previous fetch's data as

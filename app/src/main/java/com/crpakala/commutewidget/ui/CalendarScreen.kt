@@ -153,7 +153,7 @@ internal fun CalendarSection(
         if (enabled) {
             DurationRow("Event takes over within", eventTakeoverMinutes) { editingTakeover = true }
             Text(
-                "A located event starting within this window replaces the commute view, even inside commute windows",
+                "A located event starting within this window shows its route and map, and replaces the commute view even inside commute windows. Farther out, it shows just its name and time.",
                 style = MaterialTheme.typography.bodySmall,
             )
         }
@@ -172,7 +172,7 @@ internal fun CalendarSection(
             if (selectedIds.isEmpty()) Text("Select at least one calendar", style = MaterialTheme.typography.bodySmall)
         }
         Text(
-            "Outside your commute windows, the widget shows the next event from these calendars and routes to it when it has a location. A located event starting soon also takes over during commute windows.",
+            "Outside your commute windows, the widget shows the next event from these calendars. A located event shows its route and map once it starts within the takeover window above, and just its name and time until then; an event with no location always shows just its name and time. A located event starting soon also takes over during commute windows.",
             style = MaterialTheme.typography.bodySmall,
         )
     }
