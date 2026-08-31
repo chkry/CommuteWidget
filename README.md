@@ -121,9 +121,9 @@ The settings home menu has eight Android-Settings-style categories with current-
    The **Today** section there also holds **Reset dismissed nudges**, which brings back the health and experimental nudges you dismissed today (supplements, walk, sleep, morning light, focus chips); water taps stay logged and the walk notification still fires at most once a day.
    Set the "Arrive early by" buffer (0-60 minutes, default 10 minutes) and "Use live traffic within" threshold (15-180 minutes, default 60 minutes).
    The advisor applies to active commute windows as well as calendar events with a location.
-6. In **Calendar**, enable calendar integration, choose device calendars to scan for event locations, and optionally toggle "Keep event ETA fresh" (enabled by default).
-7. In **Reminders**, add and manage custom pill reminders and set their shared active-window duration.
-8. In **Health**, configure the six core toggles and the nested **Experimental nudges** screen.
+6. In **Calendar**, enable calendar integration, choose device calendars to scan for event locations, configure "Event takes over within" (default 120 minutes, which also gates when located events route with maps), and optionally toggle "Keep event ETA fresh" (enabled by default).
+7. In **Reminders**, add and manage custom pill reminders (with two-row Mo-Th and Fr-Su weekday chips) and set their shared active-window duration.
+8. In **Health**, configure the six core toggles (including selecting installed audiobook apps from the picker dialog) and the nested **Experimental nudges** screen.
 9. In **Widget appearance**, set opacity, text scale, and the map-pill corner.
 10. In **Access & app info**, grant location, calendar, notifications, Health Connect, Usage access, and notification-listener access.
 
@@ -156,10 +156,11 @@ The widget selects its active display mode according to configured schedules and
    - Inside windows, widget refreshes are pure commute updates and do not check calendar events for routing.
 2. **Calendar Mode**: Default outside commute windows (midday, evenings, weekends, and unselected commute days).
    - Displays the next remaining non-all-day event scheduled for today from selected device calendars.
-   - If an event has a location, the widget renders a clean route map from current device location with destination, start time, large traffic-colored ETA, and calculated leave-by departure time.
+   - If a located event starts within the nearness threshold ("Event takes over within", default 120 minutes), the widget renders a clean route map from current device location with destination, start time, large traffic-colored ETA, and calculated leave-by departure time.
    - A routed calendar event displays a countdown caption until its start (for example, "in 1h 45m").
    - Tapping the map opens Google Maps turn-by-turn navigation to the event location.
-   - If no routed event exists, the widget displays a single full-width card without a map area.
+   - Located events starting further out than the threshold render as a full-width plain card showing title, start time, and countdown at zero Google API cost, flipping to routed mode automatically via a background worker when within the window.
+   - Tapping a far located event remains a plain refresh and consumes zero Google API calls.
    - An unlocated event displays a card showing its event title, start time, and a free-time countdown caption (for example, "Free for 2h 10m").
    - When no events remain today, the wind-down card displays "Next up - To Work at 7:00 am" (or the next upcoming window), tomorrow's first calendar event (for example, "Standup at 9:00 am"), and the next scheduled device alarm (for example, "Alarm 6:45 am").
    - When no schedule exists, the bare no-events card displays a quiet empty message along with the next scheduled device alarm line.
@@ -213,7 +214,7 @@ The widget selects its active display mode according to configured schedules and
 ### Custom pill reminders
 
 - Open **Reminders** from the settings home menu and tap **Add reminder**.
-- Give the reminder a name of up to 12 characters, select its weekdays, and add one to four daily times.
+- Give the reminder a name of up to 12 characters, select its weekdays using the two-row chips (Mo-Th and Fr-Su), and add one to four daily times.
 - Add up to six reminders total and set one shared active window from 15-240 minutes (60 minutes by default).
 - A reminder is active at its scheduled time, then remains as a dimmed carry-over until you tap it, midnight, or that reminder's next non-dismissed slot.
 - Tapping a custom pill marks only that pill and time slot done for today.
@@ -241,15 +242,15 @@ Core toggles default ON; experimental nudges default OFF under **Experimental nu
 
 - **Morning supplements** (`Vitamins + Cr`): one tap marks vitamins and creatine taken; window 07:00-10:00 with carry-over until midnight (hidden after 21:30 if still untaken).
 - **Evening protein** (`Protein`): one tap marks protein taken; window 18:00-21:00 with carry-over to midnight.
-- **Water reminders**: dynamic slots across the day (default five); tap logs 250 ml to Health Connect and dismisses the pill.
-- **Evening walk**: suggests a calendar-aware walk time when steps lag the goal (default 8000) or the afternoon is sedentary; one notification at walk start.
+- **Water reminders**: dynamic slots across a configurable window (default five slots, 07:30-19:30, with drop cutoff at window end + 30 minutes); tap logs 250 ml to Health Connect and dismisses the pill; changing window or reminder count replans today immediately while preserving recorded taps; suppressed while a timed calendar meeting is ongoing, and reappears promptly once it ends.
+- **Evening walk**: suggests a calendar-aware walk time when steps lag the goal (default 8000) or the afternoon is sedentary; pill is window-gated and appears only after search window start (default 18:00); one notification at walk start.
 - **Sleep prefix**: on To Work commute, prepends `Slept ~6h 40m` to the morning brief when UsageStats lock/unlock events yield a valid estimate for the 10:30 pm to 10:00 am night domain.
 - **To Bed and Woke Up pills**: when sleep estimation is enabled, `To bed` appears from 9:00 pm to 2:00 am and `Woke up` appears from 4:30 am to 10:00 am.
   Tapping either stores a private on-device timestamp, anchors the automatic estimate, and immediately refreshes health fields locally without network activity or notifications.
-- **Audiobook suppression**: while a configured audiobook app (default Audible) is playing, all health nudges hide.
+- **Audiobook suppression**: while a configured audiobook app (selected via installed-app picker in settings, default Audible) is playing, all health nudges hide.
 
 Health pills appear on 4x2 and 4x4 map layouts (max two, opposite corner from commute pills).
-Water never appears on commute maps.
+Water competes for those map pill slots by priority like any other pill; it is no longer banned from commute maps.
 Calendar-empty and wind-down cards can show up to four built-in health pills and four custom reminder pills in their separate rows, with `+N` for additional items.
 The 2x2 size shows no health UI.
 
@@ -286,7 +287,7 @@ The 2x2 size shows no health UI.
 | Commute leave-by not appearing | Feature is disabled or current time is outside active commute windows. | Enable the Leave-by advisor toggle in settings, check active window schedules, and ensure arrival targets are set. |
 | Event leave-by missing | Advisor toggle is disabled, calendar event lacks a location, or widget needs a refresh. | Enable the Leave-by advisor in settings, ensure the calendar event contains a routable address, and tap the widget to refresh. |
 | Leave-by notification did not fire | Notification permission is missing or the Leave-by advisor toggle is disabled. | Grant notification permission in system settings and ensure the Leave-by advisor toggle is enabled. |
-| Leave-by time seems off for far-away events | Far-away events use Google predicted traffic rather than live road conditions. | Predicted traffic is queried outside the live traffic threshold and automatically refines with real-time data on refreshes closer to event start. |
+| Leave-by time seems off for far-away events | Far-away events use Google predicted traffic rather than live road conditions, and located events further out than the nearness threshold show a plain card until entering the threshold window. | Predicted traffic is queried outside the live traffic threshold and automatically refines with real-time data on refreshes closer to event start; events beyond the nearness threshold route when within threshold. |
 | Weekend shows wrong origin | Background location permission is missing or restricted. | Grant "Allow all the time" location permission in system app settings. |
 | Tomorrow event line missing on wind-down card | Calendar feature is disabled or calendars are not selected in settings. | Verify calendar integration is enabled and relevant calendars are selected in app settings. |
 | Alarm line missing on wind-down or empty card | No alarm is currently set on the device. | Set an upcoming alarm in the system clock application. |
