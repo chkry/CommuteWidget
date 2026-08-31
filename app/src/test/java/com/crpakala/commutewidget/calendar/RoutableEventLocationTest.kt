@@ -7,8 +7,9 @@ import org.junit.Test
 /**
  * [isRoutableEventLocation] is the marker check backing [RawInstance.routableLocation] - see
  * [selectTodayEvent]'s doc for how a rejected location becomes "no location" throughout the
- * calendar-mode pipeline. Conservative by design: only literal known virtual-meeting markers
- * reject, so real addresses are never mistaken for junk.
+ * calendar-mode pipeline. Conservative by design: only literal known virtual-meeting markers and
+ * a trailing bare-integer parenthesized suffix (the Outlook room-resource capacity marker) reject,
+ * so real addresses are never mistaken for junk.
  */
 class RoutableEventLocationTest {
     @Test
@@ -56,5 +57,35 @@ class RoutableEventLocationTest {
     @Test
     fun bareCityName_isAccepted() {
         assertTrue(isRoutableEventLocation("Bengaluru"))
+    }
+
+    @Test
+    fun outlookRoomResourceWithCapacitySuffix_isRejected() {
+        // The regression this pins: an Outlook conference-room resource that never geocodes.
+        assertFalse(isRoutableEventLocation("PA HQ-1-FOREST (4)"))
+    }
+
+    @Test
+    fun conferenceRoomWithCapacitySuffix_isRejected() {
+        assertFalse(isRoutableEventLocation("Conference Room (12)"))
+    }
+
+    @Test
+    fun plotWithNonNumericParentheticalSuffix_isAccepted() {
+        // The final parenthesized group is "Phase 2", not a bare integer, so this must still
+        // route - precision matters here more than recall.
+        assertTrue(isRoutableEventLocation("Plot 12 (Phase 2)"))
+    }
+
+    @Test
+    fun plainStreetAddress_isAccepted() {
+        assertTrue(isRoutableEventLocation("42 Residency Road, Bengaluru"))
+    }
+
+    @Test
+    fun midStringParenthesesWithoutTrailingIntegerSuffix_isAccepted() {
+        // Parentheses appear mid-string, not as a trailing bare-integer suffix, so this must
+        // still route.
+        assertTrue(isRoutableEventLocation("Cafe (near park) Road"))
     }
 }

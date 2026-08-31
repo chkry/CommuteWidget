@@ -289,15 +289,30 @@ private val JUNK_LOCATION_MARKERS = listOf(
 )
 
 /**
+ * Outlook conference-room resource capacity suffix, e.g. `"PA HQ-1-FOREST (4)"` - the trailing
+ * `(4)` is the room's seat count appended by the calendar-room directory, not an address
+ * component, and the resource name itself is never geocodable (it fails with ZERO_RESULTS on
+ * every attempt, which is what let a broken same-target failure shell persist forever before this
+ * check existed - see [com.crpakala.commutewidget.engine.failureSnapshot]'s doc). Matches only
+ * when the FINAL parenthesized group is a bare integer, anchored to the end of the trimmed
+ * location text, so `"Plot 12 (Phase 2)"` (non-digit content inside the parens) and any address
+ * without a trailing parenthesized number are unaffected.
+ */
+private val ROOM_CAPACITY_SUFFIX_REGEX = Regex("""\(\d+\)$""")
+
+/**
  * True when [location] looks like a real, geocodable place rather than a virtual-meeting marker
- * (see [JUNK_LOCATION_MARKERS]). Conservative by design: only literal known markers reject, so a
- * real street address, mall name, or bare city name is never rejected. [location] is compared
- * trimmed and lowercased; callers are expected to pass an already non-blank string - blank/null
- * locations are "no location" before this check ever runs (see [RawInstance.routableLocation]).
+ * (see [JUNK_LOCATION_MARKERS]) or an Outlook room-resource capacity suffix (see
+ * [ROOM_CAPACITY_SUFFIX_REGEX]). Conservative by design: only literal known markers and the
+ * bare-integer trailing-parentheses suffix reject, so a real street address, mall name, or bare
+ * city name is never rejected. [location] is compared trimmed and lowercased; callers are expected
+ * to pass an already non-blank string - blank/null locations are "no location" before this check
+ * ever runs (see [RawInstance.routableLocation]).
  */
 internal fun isRoutableEventLocation(location: String): Boolean {
     val normalized = location.trim().lowercase()
-    return JUNK_LOCATION_MARKERS.none { normalized.contains(it) }
+    if (JUNK_LOCATION_MARKERS.any { normalized.contains(it) }) return false
+    return !ROOM_CAPACITY_SUFFIX_REGEX.containsMatchIn(normalized)
 }
 
 /**

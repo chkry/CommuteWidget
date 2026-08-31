@@ -1116,9 +1116,23 @@ internal fun calendarPlainEventSnapshot(
 )
 
 /**
+ * Whether [previous] ever actually routed - nonzero travel duration, or a saved map image, either
+ * one is sufficient (a route that briefly reads 0 seconds but still has its map is still real
+ * data). `false` for a snapshot that was always the broken shell (duration 0, no map): the state
+ * a never-geocodable event's [SnapshotMode.CALENDAR_EVENT] target reaches when every attempt
+ * fails, before this fix, since old same-target failures preserved it unconditionally.
+ */
+private fun previousHadUsableRoute(previous: CommuteSnapshot?): Boolean =
+    previous != null && (previous.durationSeconds > 0L || previous.mapImagePath != null)
+
+/**
  * Pure computation of the failure snapshot to save, preserving the previous fetch's data as
- * last-known-good only when it is safe to do so - i.e. only when [previous] describes the *same
- * target* as this failed attempt (same [SnapshotMode], same [CommuteSnapshot.destinationLabel]).
+ * last-known-GOOD only when it is safe to do so - i.e. only when [previous] describes the *same
+ * target* as this failed attempt (same [SnapshotMode], same [CommuteSnapshot.destinationLabel])
+ * AND [previous] is actually good: for [SnapshotMode.CALENDAR_EVENT] specifically, a previous
+ * snapshot that never had usable route data (see [previousHadUsableRoute]) is not "last known
+ * good" - it is the broken shell itself, and preserving it is how a never-geocodable event
+ * (an Outlook room resource, say) got stuck showing a 0-min ETA forever across every retry.
  *
  * This is the mode/target-transition guard: without it, a plain `copy()` leaves a snapshot's
  * route/map/leave-by/next-window fields untouched even when [modeOverride] changes the mode, so
@@ -1132,19 +1146,21 @@ internal fun calendarPlainEventSnapshot(
  * coordinates through every failure branch too.
  *
  * A NEW-target [SnapshotMode.CALENDAR_EVENT] failure (this event's first routed attempt, or any
- * target change landing here) is a special case: instead of the generic cleared-but-still-broken
- * shell below (0-min ETA, warning glyph, calendar-emoji map placeholder - alarming for what is
- * usually just a junk location the calendar reader's marker list missed, or a transient geocode/
- * device-location/Static-Maps hiccup on an address that has never successfully routed), it falls
- * back to the exact zero-API plain card an unlocated or far-located event gets - see
- * [calendarPlainEventSnapshot]: `mode = CALENDAR_EMPTY`, `lastFetchFailed = false`, title and
+ * target change landing here), and a SAME-target [SnapshotMode.CALENDAR_EVENT] failure whose
+ * [previous] never actually routed, are both handled the same special way: instead of the generic
+ * cleared-but-still-broken shell below (0-min ETA, warning glyph, calendar-emoji map placeholder -
+ * alarming for what is usually just a junk location the calendar reader's marker list missed, or
+ * a transient geocode/device-location/Static-Maps hiccup on an address that has never successfully
+ * routed), it falls back to the exact zero-API plain card an unlocated or far-located event gets -
+ * see [calendarPlainEventSnapshot]: `mode = CALENDAR_EMPTY`, `lastFetchFailed = false`, title and
  * start carried, no route/map data. Health fields still carry forward from [previous] exactly as
- * every other branch here does. A SAME-target event failure is unaffected (the branch above
- * returns first) and keeps preserving stale route/map data with the warning glyph - that protects
- * a real address that hiccups after a previously successful render. No retry is armed for this
- * fallback; recovery stays via the next tap, window boundary, or calendar change, same as every
- * other failure path in this file. This only ever triggers when [modeOverride] resolves to
- * [SnapshotMode.CALENDAR_EVENT] - commute failures are untouched.
+ * every other branch here does. A SAME-target event failure whose [previous] DID route
+ * successfully at some point is unaffected (the branch above returns first) and keeps preserving
+ * that stale route/map data with the warning glyph - that protects a real address that hiccups
+ * after a previously successful render. No retry is armed for this fallback; recovery stays via
+ * the next tap, window boundary, or calendar change, same as every other failure path in this
+ * file. This only ever triggers when [modeOverride] resolves to [SnapshotMode.CALENDAR_EVENT] -
+ * commute failures are untouched, in every case, byte-for-byte.
  */
 internal fun failureSnapshot(
     previous: CommuteSnapshot?,
@@ -1157,8 +1173,11 @@ internal fun failureSnapshot(
     val mode = modeOverride ?: previous?.mode ?: SnapshotMode.COMMUTE
     val labelMatches = destinationLabelOverride == null || previous?.destinationLabel == destinationLabelOverride
     val sameTarget = previous != null && previous.mode == mode && labelMatches
+    // Only CALENDAR_EVENT needs the usability check - COMMUTE and CALENDAR_EMPTY same-target
+    // preservation stays unconditional, exactly as before this check existed.
+    val sameTargetIsGood = mode != SnapshotMode.CALENDAR_EVENT || previousHadUsableRoute(previous)
 
-    if (previous != null && sameTarget) {
+    if (previous != null && sameTarget && sameTargetIsGood) {
         return previous.copy(
             lastFetchFailed = true,
             lastErrorMessage = message,
@@ -1167,10 +1186,11 @@ internal fun failureSnapshot(
         )
     }
 
-    // First-attempt (new-target) event routing failure: fall back to the plain card instead of
-    // the broken routed shell - see this function's doc for the full reasoning. Reached only for
-    // CALENDAR_EVENT because sameTarget already returned above for the one case that must keep
-    // the old broken-shell behavior (a same-target event failure).
+    // First-attempt (new-target) event routing failure, OR a same-target event failure whose
+    // previous snapshot was never actually good: fall back to the plain card instead of the
+    // broken routed shell - see this function's doc for the full reasoning. Reached only for
+    // CALENDAR_EVENT because sameTarget-and-good already returned above for the one case that
+    // must keep the old broken-shell behavior (a same-target event failure with a usable route).
     if (mode == SnapshotMode.CALENDAR_EVENT) {
         return CommuteSnapshot(
             direction = direction,

@@ -17,9 +17,11 @@ import org.junit.Test
  * these tests exist because that guard's absence was a real v3 bug: a `previous.copy()` silently
  * carried stale route/map/leave-by/next-window fields across a mode or destination change (see
  * the file-level doc on [failureSnapshot] for the full reasoning). It also pins the newer split
- * for a [SnapshotMode.CALENDAR_EVENT] failure specifically: a NEW-target (first-attempt) failure
- * now falls back to the plain card instead of a broken routed shell, while a SAME-target failure
- * is unaffected and keeps the original stale-preserving behavior.
+ * for a [SnapshotMode.CALENDAR_EVENT] failure specifically: a NEW-target (first-attempt) failure,
+ * and a SAME-target failure whose previous snapshot never actually routed (the broken shell: zero
+ * duration, no map), both fall back to the plain card; a SAME-target failure whose previous
+ * snapshot DID route successfully at some point (nonzero duration, or a saved map) is unaffected
+ * and keeps the original stale-preserving behavior.
  */
 class FailureSnapshotTest {
     private val staleCommute = CommuteSnapshot(
@@ -267,10 +269,11 @@ class FailureSnapshotTest {
 
     @Test
     fun calendarEventToSameEvent_preservesStaleRouteDataAsLastKnownGood() {
-        // Contrast with the two NEW-target tests above: Event A routed successfully before, so a
-        // same-target failure keeps today's byte-for-byte behavior - stale route/map preserved,
-        // lastFetchFailed=true, still CALENDAR_EVENT (the warning-glyph broken shell), never the
-        // plain-card fallback.
+        // Contrast with the two NEW-target tests above: Event A routed successfully before (this
+        // fixture's durationSeconds=600L is the "usable previous" case - nonzero duration is
+        // enough on its own to count as last-known-GOOD), so a same-target failure keeps today's
+        // byte-for-byte behavior - stale route/map preserved, lastFetchFailed=true, still
+        // CALENDAR_EVENT (the warning-glyph broken shell), never the plain-card fallback.
         val result = failureSnapshot(
             previous = staleCalendarEvent,
             direction = Direction.TO_WORK,
@@ -285,6 +288,67 @@ class FailureSnapshotTest {
         assertEquals("/cache/map_b.png", result.mapImagePath)
         assertEquals(13.0, result.destinationLat!!, 0.0001)
         assertEquals(600L, result.durationSeconds)
+    }
+
+    @Test
+    fun calendarEventToSameEvent_mapPresentButZeroDuration_stillCountsAsUsableAndPreserves() {
+        // Map presence alone is sufficient to count as "usable" even if duration reads 0 (e.g. an
+        // already-arrived event) - this must NOT be mistaken for the never-routed broken shell.
+        val previousWithMapOnly = staleCalendarEvent.copy(durationSeconds = 0L)
+
+        val result = failureSnapshot(
+            previous = previousWithMapOnly,
+            direction = Direction.TO_WORK,
+            message = "Route fetch failed",
+            modeOverride = SnapshotMode.CALENDAR_EVENT,
+            destinationLabelOverride = "Event A",
+            eventStartEpochMillisOverride = previousWithMapOnly.eventStartEpochMillis,
+        )
+
+        assertEquals(SnapshotMode.CALENDAR_EVENT, result.mode)
+        assertTrue(result.lastFetchFailed)
+        assertEquals("/cache/map_b.png", result.mapImagePath)
+        assertEquals(0L, result.durationSeconds)
+    }
+
+    @Test
+    fun calendarEventToSameEvent_previousNeverRouted_fallsBackToPlainCardInsteadOfRepreservingBrokenShell() {
+        // The on-device regression this pins: a broken shell (never actually routed - duration 0,
+        // no map, e.g. an Outlook room resource that always fails geocoding) was already stored
+        // as CALENDAR_EVENT for this event before this fix. Every subsequent same-target retry
+        // must now converge to the plain card instead of preserving that broken data forever.
+        val brokenPrevious = staleCalendarEvent.copy(
+            durationSeconds = 0L,
+            mapImagePath = null,
+            healthNudges = staleCommuteWithHealth.healthNudges,
+            sleepEstimateMinutes = 390,
+            shortSleepDay = true,
+            customPillOccurrences = staleCommuteWithHealth.customPillOccurrences,
+        )
+
+        val result = failureSnapshot(
+            previous = brokenPrevious,
+            direction = Direction.TO_WORK,
+            message = "Event location not found",
+            modeOverride = SnapshotMode.CALENDAR_EVENT,
+            destinationLabelOverride = brokenPrevious.destinationLabel,
+            eventStartEpochMillisOverride = brokenPrevious.eventStartEpochMillis,
+        )
+
+        assertEquals(SnapshotMode.CALENDAR_EMPTY, result.mode)
+        assertFalse(result.lastFetchFailed)
+        assertNull(result.lastErrorMessage)
+        assertEquals(brokenPrevious.destinationLabel, result.destinationLabel)
+        assertEquals(brokenPrevious.eventStartEpochMillis, result.eventStartEpochMillis)
+        assertNull(result.mapImagePath)
+        assertNull(result.destinationLat)
+        assertNull(result.destinationLng)
+        assertEquals(0L, result.durationSeconds)
+        // Health fields still carried forward, exactly like every other fallback branch here.
+        assertEquals(brokenPrevious.healthNudges, result.healthNudges)
+        assertEquals(390, result.sleepEstimateMinutes)
+        assertTrue(result.shortSleepDay)
+        assertEquals(brokenPrevious.customPillOccurrences, result.customPillOccurrences)
     }
 
     @Test
