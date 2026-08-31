@@ -507,6 +507,12 @@ object CommuteRefresher {
      * outcome). Only the far-located branch re-arms [EventNearScheduler], and only the final
      * located-event success path re-schedules the tick, each only when its own condition holds;
      * the commute leave-by alarm and event leave-by are never re-scheduled from this function.
+     *
+     * A failure anywhere in the routed pipeline below (geocode, device location, Routes, Static
+     * Maps) goes through [saveFailure] with `modeOverride = SnapshotMode.CALENDAR_EVENT`. See
+     * [failureSnapshot]'s doc for the resulting split: a first attempt at this event falls back to
+     * the plain card, while a same-target failure (this event routed successfully before) keeps
+     * showing the stale route/map with the warning glyph.
      */
     private suspend fun performCalendarRefresh(
         context: Context,
@@ -1124,6 +1130,21 @@ internal fun calendarPlainEventSnapshot(
  * event) - [destinationLabelOverride] is passed at every call site that has a concrete new
  * target, so a label mismatch is enough to detect it without needing to thread destination
  * coordinates through every failure branch too.
+ *
+ * A NEW-target [SnapshotMode.CALENDAR_EVENT] failure (this event's first routed attempt, or any
+ * target change landing here) is a special case: instead of the generic cleared-but-still-broken
+ * shell below (0-min ETA, warning glyph, calendar-emoji map placeholder - alarming for what is
+ * usually just a junk location the calendar reader's marker list missed, or a transient geocode/
+ * device-location/Static-Maps hiccup on an address that has never successfully routed), it falls
+ * back to the exact zero-API plain card an unlocated or far-located event gets - see
+ * [calendarPlainEventSnapshot]: `mode = CALENDAR_EMPTY`, `lastFetchFailed = false`, title and
+ * start carried, no route/map data. Health fields still carry forward from [previous] exactly as
+ * every other branch here does. A SAME-target event failure is unaffected (the branch above
+ * returns first) and keeps preserving stale route/map data with the warning glyph - that protects
+ * a real address that hiccups after a previously successful render. No retry is armed for this
+ * fallback; recovery stays via the next tap, window boundary, or calendar change, same as every
+ * other failure path in this file. This only ever triggers when [modeOverride] resolves to
+ * [SnapshotMode.CALENDAR_EVENT] - commute failures are untouched.
  */
 internal fun failureSnapshot(
     previous: CommuteSnapshot?,
@@ -1143,6 +1164,35 @@ internal fun failureSnapshot(
             lastErrorMessage = message,
             destinationLabel = destinationLabelOverride ?: previous.destinationLabel,
             eventStartEpochMillis = eventStartEpochMillisOverride ?: previous.eventStartEpochMillis,
+        )
+    }
+
+    // First-attempt (new-target) event routing failure: fall back to the plain card instead of
+    // the broken routed shell - see this function's doc for the full reasoning. Reached only for
+    // CALENDAR_EVENT because sameTarget already returned above for the one case that must keep
+    // the old broken-shell behavior (a same-target event failure).
+    if (mode == SnapshotMode.CALENDAR_EVENT) {
+        return CommuteSnapshot(
+            direction = direction,
+            durationSeconds = 0L,
+            durationNoTrafficSeconds = 0L,
+            distanceMeters = 0L,
+            mapImagePath = null,
+            fetchedAtEpochMillis = 0L,
+            lastFetchFailed = false,
+            lastErrorMessage = null,
+            destinationLabel = destinationLabelOverride,
+            destinationLat = null,
+            destinationLng = null,
+            leaveByMinuteOfDay = null,
+            mode = SnapshotMode.CALENDAR_EMPTY,
+            eventStartEpochMillis = eventStartEpochMillisOverride,
+            nextWindowLabel = null,
+            nextWindowStartMinuteOfDay = null,
+            healthNudges = previous?.healthNudges ?: emptyList(),
+            sleepEstimateMinutes = previous?.sleepEstimateMinutes,
+            shortSleepDay = previous?.shortSleepDay ?: false,
+            customPillOccurrences = previous?.customPillOccurrences ?: emptyList(),
         )
     }
 

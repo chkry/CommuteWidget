@@ -173,6 +173,48 @@ class TodayEventSelectionTest {
         assertEquals("Event", blankTitle?.title)
     }
 
+    @Test
+    fun junkLocatedEvent_locationIsNormalizedToNull() {
+        val result = selectTodayEvent(listOf(row(location = "Microsoft Teams Meeting")), setOf(1L), now)
+
+        assertEquals("Meeting", result?.title)
+        assertNull(result?.location)
+    }
+
+    @Test
+    fun junkLocatedEvent_doesNotWinLocationPreferenceOverEarlierUnlocated() {
+        // Same shape as locatedCandidateStartsWithin30Minutes_ofUnlocated_locatedWins above, but
+        // the "located" candidate's location is a Teams link - it must lose the preference to the
+        // unlocated candidate exactly as if it had no location at all, and must not be flagged as
+        // a reordering (preferredOverEarlierEvent stays false).
+        val result = selectTodayEvent(
+            listOf(
+                row(title = "Unlocated first", location = null, beginEpochMillis = now),
+                row(
+                    title = "Junk-located soon after",
+                    location = "https://teams.microsoft.com/l/meetup-join/abc123",
+                    beginEpochMillis = now + 5 * 60_000L,
+                ),
+            ),
+            setOf(1L),
+            now,
+        )
+
+        assertEquals("Unlocated first", result?.title)
+        assertNull(result?.location)
+        assertEquals(false, result?.preferredOverEarlierEvent)
+    }
+
+    @Test
+    fun junkLocatedEvent_isOnlyCandidate_stillSelectedButUnlocated() {
+        // No unlocated alternative exists, so the junk-located event is still the only candidate -
+        // it must be selected (the event itself is real), just with location normalized to null.
+        val result = selectTodayEvent(listOf(row(location = "zoom.us/j/1234567890")), setOf(1L), now)
+
+        assertEquals("Meeting", result?.title)
+        assertNull(result?.location)
+    }
+
     private fun row(
         calendarId: Long = 1L,
         title: String? = "Meeting",

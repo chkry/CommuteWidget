@@ -162,6 +162,7 @@ The widget selects its active display mode according to configured schedules and
    - Located events starting further out than the threshold render as a full-width plain card showing title, start time, and countdown at zero Google API cost, flipping to routed mode automatically via a background worker when within the window.
    - Tapping a far located event remains a plain refresh and consumes zero Google API calls.
    - An unlocated event displays a card showing its event title, start time, and a free-time countdown caption (for example, "Free for 2h 10m").
+   - An event whose location is a virtual-meeting link or platform name (Microsoft Teams, Zoom, Google Meet, Webex) is treated as unlocated and shows the same normal event card with no map, instead of attempting to route it.
    - When no events remain today, the wind-down card displays "Next up - To Work at 7:00 am" (or the next upcoming window), tomorrow's first calendar event (for example, "Standup at 9:00 am"), and the next scheduled device alarm (for example, "Alarm 6:45 am").
    - When no schedule exists, the bare no-events card displays a quiet empty message along with the next scheduled device alarm line.
    - A small "Routed" caption appears when the widget prioritizes a located event over a chronologically earlier unlocated event.

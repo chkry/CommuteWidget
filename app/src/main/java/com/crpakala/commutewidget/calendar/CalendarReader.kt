@@ -270,6 +270,51 @@ internal data class RawInstance(
 private const val LOCATION_PREFERENCE_WINDOW_MILLIS = 30 * 60_000L
 
 /**
+ * Junk-location markers office-email invites carry instead of a real address: virtual-meeting
+ * URLs and platform names. Matched case-insensitively against the whole trimmed location text, so
+ * a room-plus-link string like `"Conf Room 4B / https://teams.microsoft.com/..."` still rejects.
+ * Deliberately conservative - a marker miss (a bare conference-room code, say) still attempts
+ * routing once and lands on the plain card via the event failure fallback in
+ * [com.crpakala.commutewidget.engine.failureSnapshot] after spending the calls (an accepted known
+ * edge - see AGENTS.md).
+ */
+private val JUNK_LOCATION_MARKERS = listOf(
+    "http://",
+    "https://",
+    "teams.microsoft",
+    "zoom.us",
+    "meet.google",
+    "webex",
+    "microsoft teams meeting",
+)
+
+/**
+ * True when [location] looks like a real, geocodable place rather than a virtual-meeting marker
+ * (see [JUNK_LOCATION_MARKERS]). Conservative by design: only literal known markers reject, so a
+ * real street address, mall name, or bare city name is never rejected. [location] is compared
+ * trimmed and lowercased; callers are expected to pass an already non-blank string - blank/null
+ * locations are "no location" before this check ever runs (see [RawInstance.routableLocation]).
+ */
+internal fun isRoutableEventLocation(location: String): Boolean {
+    val normalized = location.trim().lowercase()
+    return JUNK_LOCATION_MARKERS.none { normalized.contains(it) }
+}
+
+/**
+ * The single normalization point for "does this row have a usable location": trimmed, non-blank
+ * location text, or null when it is blank OR a junk virtual-meeting marker (see
+ * [isRoutableEventLocation]). [selectTodayEvent] reads location exclusively through this - never
+ * through [RawInstance.location] directly - so a junk location becomes "no location" before both
+ * the located-over-unlocated preference and [TodayEvent.location] are built from it, and every
+ * downstream consumer (event takeover, calendar-mode routing, the far-event gate, leave-by, the
+ * event_near flip) inherits "unlocated" for free.
+ */
+private fun RawInstance.routableLocation(): String? {
+    val trimmed = location?.trim()?.takeUnless { it.isEmpty() } ?: return null
+    return trimmed.takeIf { isRoutableEventLocation(it) }
+}
+
+/**
  * Query end for [CalendarReader.nextEventToday]: end of the local day, extended to at least
  * `now + minLookaheadMinutes` so a temporally imminent after-midnight event still qualifies.
  */
@@ -291,8 +336,11 @@ internal fun calendarQueryEndEpochMillis(
 /**
  * Selects the v3 calendar-mode candidate from today's remaining [rows]. Unlike [selectEvent], an
  * unlocated event is eligible - only all-day, cancelled, declined, and already-finished instances
- * are excluded. Among eligible rows, the earliest-starting *located* candidate is preferred over
- * the earliest-starting *unlocated* candidate when it starts within
+ * are excluded. Every read of a row's location goes through [RawInstance.routableLocation] - a
+ * junk virtual-meeting location (see [isRoutableEventLocation]) counts as no location at all
+ * here, so it can never win the location preference below and [TodayEvent.location] comes back
+ * null for it. Among eligible rows, the earliest-starting *located* (routable) candidate is
+ * preferred over the earliest-starting *unlocated* candidate when it starts within
  * [LOCATION_PREFERENCE_WINDOW_MILLIS] of it (a route we can draw is more actionable than a bare
  * reminder); otherwise the plain earliest-begin (then earliest-end) candidate wins, located or not.
  */
@@ -311,8 +359,8 @@ internal fun selectTodayEvent(
     if (eligible.isEmpty()) return null
 
     val beginThenEnd = compareBy<RawInstance>({ it.beginEpochMillis }, { it.endEpochMillis })
-    val earliestUnlocated = eligible.filter { it.location.isNullOrBlank() }.minWithOrNull(beginThenEnd)
-    val earliestLocated = eligible.filter { !it.location.isNullOrBlank() }.minWithOrNull(beginThenEnd)
+    val earliestUnlocated = eligible.filter { it.routableLocation() == null }.minWithOrNull(beginThenEnd)
+    val earliestLocated = eligible.filter { it.routableLocation() != null }.minWithOrNull(beginThenEnd)
 
     val chosen = when {
         earliestLocated == null -> earliestUnlocated
@@ -331,7 +379,7 @@ internal fun selectTodayEvent(
 
     return TodayEvent(
         title = chosen.title?.trim().takeUnless { it.isNullOrEmpty() } ?: "Event",
-        location = chosen.location?.trim().takeUnless { it.isNullOrEmpty() },
+        location = chosen.routableLocation(),
         startEpochMillis = chosen.beginEpochMillis,
         endEpochMillis = chosen.endEpochMillis,
         preferredOverEarlierEvent = preferredOverEarlierEvent,
