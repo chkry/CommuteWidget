@@ -264,14 +264,63 @@ fun sleepPillCandidate(sleepMinutes: Int?): NudgeCandidate? {
     )
 }
 
+/**
+ * Sprint 2: the "To bed" / "Woke up" manual tap pills ([toBedCandidate], [wokeUpCandidate]) rank
+ * below active supplements and above water/walk (owner-approved ranking) - see
+ * [selectionPriority].
+ */
+fun toBedCandidate(
+    nowEpochMillis: Long,
+    zone: ZoneId,
+    toBedTapEpochMillis: Long?,
+): NudgeCandidate? {
+    if (toBedTapInCurrentDomain(toBedTapEpochMillis, nowEpochMillis, zone)) return null
+    val now = Instant.ofEpochMilli(nowEpochMillis).atZone(zone)
+    val nowMinuteOfDay = now.hour * 60 + now.minute
+    return when {
+        nowMinuteOfDay >= TO_BED_EVENING_START_MINUTE_OF_DAY -> NudgeCandidate(
+            kind = NudgeKind.SLEEP_TO_BED,
+            label = "To bed",
+            startMinuteOfDay = TO_BED_EVENING_START_MINUTE_OF_DAY,
+            endMinuteOfDay = 24 * 60,
+        )
+        nowMinuteOfDay < TO_BED_EARLY_MORNING_END_MINUTE_OF_DAY -> NudgeCandidate(
+            kind = NudgeKind.SLEEP_TO_BED,
+            label = "To bed",
+            startMinuteOfDay = 0,
+            endMinuteOfDay = TO_BED_EARLY_MORNING_END_MINUTE_OF_DAY,
+        )
+        else -> null
+    }
+}
+
+/** Sprint 2: the "Woke up" manual tap pill, visible 04:30-10:00; see [toBedCandidate]'s doc for the ranking note. */
+fun wokeUpCandidate(
+    nowEpochMillis: Long,
+    zone: ZoneId,
+    wokeUpTapEpochMillis: Long?,
+): NudgeCandidate? {
+    if (wokeUpTapInCurrentDomain(wokeUpTapEpochMillis, nowEpochMillis, zone)) return null
+    val now = Instant.ofEpochMilli(nowEpochMillis).atZone(zone)
+    val nowMinuteOfDay = now.hour * 60 + now.minute
+    if (nowMinuteOfDay < WOKE_UP_WINDOW_START_MINUTE_OF_DAY || nowMinuteOfDay >= WOKE_UP_WINDOW_END_MINUTE_OF_DAY) return null
+    return NudgeCandidate(
+        kind = NudgeKind.SLEEP_WOKE_UP,
+        label = "Woke up",
+        startMinuteOfDay = WOKE_UP_WINDOW_START_MINUTE_OF_DAY,
+        endMinuteOfDay = WOKE_UP_WINDOW_END_MINUTE_OF_DAY,
+    )
+}
+
 private fun selectionPriority(candidate: NudgeCandidate): Int = when {
     candidate.kind in SUPPLEMENT_KINDS && !candidate.demoted -> 0
-    candidate.kind == NudgeKind.SLEEP_ESTIMATE -> 1
-    candidate.kind == NudgeKind.MORNING_LIGHT -> 2
-    candidate.kind == NudgeKind.WATER -> 3
-    candidate.kind in SUPPLEMENT_KINDS -> 4
-    candidate.kind == NudgeKind.WALK -> 5
-    candidate.kind == NudgeKind.FOCUS_GAP -> 6
+    candidate.kind in SLEEP_TAP_KINDS -> 1
+    candidate.kind == NudgeKind.SLEEP_ESTIMATE -> 2
+    candidate.kind == NudgeKind.MORNING_LIGHT -> 3
+    candidate.kind == NudgeKind.WATER -> 4
+    candidate.kind in SUPPLEMENT_KINDS -> 5
+    candidate.kind == NudgeKind.WALK -> 6
+    candidate.kind == NudgeKind.FOCUS_GAP -> 7
     else -> Int.MAX_VALUE
 }
 
@@ -287,6 +336,11 @@ private fun formatCompactClock(minuteOfDay: Int): String {
 private val SUPPLEMENT_KINDS = setOf(
     NudgeKind.SUPPLEMENT_MORNING,
     NudgeKind.SUPPLEMENT_PROTEIN,
+)
+
+private val SLEEP_TAP_KINDS = setOf(
+    NudgeKind.SLEEP_TO_BED,
+    NudgeKind.SLEEP_WOKE_UP,
 )
 
 private val SHIELD_SUPPRESSED_KINDS = setOf(

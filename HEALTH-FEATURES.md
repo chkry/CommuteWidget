@@ -7,9 +7,9 @@ It supersedes the `.sprint0-*.md` scratch reports listed at the end.
 
 The health layer adds on-device wellness nudges to the existing commute widget without new Google Maps Platform calls.
 Every feature has its own settings toggle (no master switch).
-Signals come from Health Connect, UsageStats screen events, calendar context, and MediaSession audiobook detection.
+Signals come from Health Connect, UsageStats keyguard lock/unlock events with a screen-event fallback, calendar context, and MediaSession audiobook detection.
 Computation runs locally with safe degradation: missing permissions or failed reads hide only the affected nudge, never the commute route.
-Anti-nag rules cap surface density (two health pills, two card chips), forbid water on commute maps, suppress all health UI during audiobook playback, never backfill missed water slots, and keep health elements out of pending or stale route styling.
+Anti-nag rules cap map density at two built-in health pills and card density at four built-in pills plus four custom reminder pills per row, forbid water on commute maps, suppress all health UI during audiobook playback, never backfill missed water slots, and keep health elements out of pending or stale route styling.
 
 ## Feature-by-toggle table
 
@@ -19,7 +19,7 @@ Anti-nag rules cap surface density (two health pills, two card chips), forbid wa
 | Evening protein | Evening protein | ON | One pill marks protein taken during 18:00-21:00. |
 | Water reminders | Water reminders | ON | Up to five dynamic hydration slots per day; tap logs 250 ml to Health Connect. |
 | Evening walk | Evening walk | ON | Suggests a calendar-aware walk slot when steps lag goal or the afternoon is sedentary. |
-| Sleep prefix | Sleep estimate in morning brief | ON | Prefixes the To Work brief with `Slept ~6h 40m` from UsageStats. |
+| Sleep prefix | Sleep estimate in morning brief | ON | Prefixes the To Work brief with `Slept ~6h 40m` from UsageStats keyguard lock/unlock events. |
 | Audiobook suppression | Suppress during audiobooks | ON | Hides all health nudges while a configured audiobook app is playing. |
 | Sleep-debt brief soften | Soften after short sleep | OFF | Rewrites the brief to `Short sleep · ...` after short sleep plus 3+ meetings. |
 | Gym protein priority | Prioritize protein on gym days | OFF | Promotes the Protein pill above water after gym exercise or a matching calendar title. |
@@ -39,20 +39,48 @@ See the permissions section below.
 
 **Toggle:** Sleep estimate in morning brief (default ON).
 
-**What it does:** Estimates prior-night sleep from UsageStats screen on/off events and prefixes the To Work morning brief when a valid estimate exists.
+**What it does:** Estimates prior-night sleep from UsageStats KEYGUARD_SHOWN and KEYGUARD_HIDDEN events and prefixes the To Work morning brief when a valid estimate exists.
+The strict model selects the latest locked interval lasting at least three hours whose end falls in the 22:30-10:00 night domain.
+The actual lock time counts even when it occurred before 22:30.
+A real unlock ends an interval, and a phone check at 2:00 am intentionally restarts the clock rather than merging intervals.
+The estimate waits for a real end, a valid Woke Up tap, or 10:00 after a device remains locked.
+It is recomputed on every health computation until it freezes at 10:00 or immediately after a valid Woke Up tap.
 
 | Parameter | Value | Evidence |
 | --- | --- | --- |
-| Overnight search window | 21:00 to 13:00 next day | convention |
-| Morning poll | Daily 06:30 via `health_morning` worker, plus lazy backfill on first health compute | convention |
-| Minimum screen-off span to seed a candidate | 20 minutes | weak |
-| Brief-wake merge tolerance | 10 minutes | weak-moderate |
-| Minimum plausible sleep | 180 minutes (3 hours); below this, no prefix is shown | convention |
+| Overnight search window | 22:30 to 10:00 next day | convention |
+| Primary signal | UsageStats KEYGUARD_SHOWN and KEYGUARD_HIDDEN events from the existing Usage access query | strong |
+| Candidate selection | Latest completed locked interval in the night domain; no brief-wake merge | convention |
+| Minimum plausible sleep | 180 minutes (3 hours); only anchored nights may bypass this floor | convention |
 | Maximum plausible sleep cap | 720 minutes (12 hours) | convention |
+| Deferred estimate | No estimate until an end exists, from an unlock, Woke Up tap, or 10:00 close for a still-locked interval | convention |
+| Freeze lifecycle | Live recomputation until 10:00 or a valid Woke Up tap; no once-per-day write guard | convention |
+| To Bed anchor | Valid 21:00-02:00 tap ignores locks before the tap while retaining strict lock/unlock pairing | convention |
+| Woke Up anchor | Valid 04:30-10:00 tap bounds the end at the preceding unlock, or closes an open interval at the tap | convention |
+| Fallback | Legacy screen on/off estimator only when the night has zero keyguard events | convention |
 | Rolling history | 14 days in DataStore (`HealthHistory`); no stats UI | weak-moderate |
 | Display format | `Slept ~6h 40m` prefix on the morning brief | convention |
 
-**Known blind spots (evidence: weak):** phone left charging away from bed (overestimate); fragmented scrolling nights (underestimate); alarm-then-sleep-in splits (underestimate); another person using the phone overnight.
+**Known blind spots (evidence: weak):** Smart Lock dismissals count as unlocks; an evening phone-away lock can win before a fragmented tap-less night; phone-away-while-awake overestimates if the phone is never unlocked; another person using the phone overnight remains indistinguishable.
+
+### To Bed and Woke Up pills
+
+**Toggle:** Sleep estimate in morning brief (default ON).
+
+`To bed` shows a bed glyph from 21:00 through 02:00 until tapped.
+`Woke up` shows a sunrise glyph from 04:30 through 10:00 until tapped.
+Both glyphs are distinct from the sleep-estimate moon and the morning-light sun, which can render at the same time.
+Both rank below active supplements and above water and walk.
+
+| Pill | Tap effect | Evidence |
+| --- | --- | --- |
+| To bed | Stores `last_to_bed_tap_epoch_millis`, hides the pill instantly (snapshot strip), narrows the estimator to locks at or after the tap, and triggers an immediate `health_boundary` run for the local recompute | convention |
+| Woke up | Stores `last_woke_up_tap_epoch_millis`, hides the pill instantly (snapshot strip), bounds the estimator to the preceding unlock or closes an open interval at the tap, and finalizes the estimate via an immediate `health_boundary` run | convention |
+| Tap cost | The tap itself is a bounded local write inside the Glance action budget; the full recompute (calendar, Health Connect, UsageStats reads) runs on the boundary worker, whose self-reschedule also restores the next wake | convention |
+
+The timestamps survive midnight and stale taps from another night are ignored.
+Neither tap sends a notification or makes a network request.
+The `health_boundary` chain adds local candidates at 21:00, 02:00, 04:30, and 10:00 while the related pill remains untapped.
 
 ## Evening walk advisor
 
@@ -129,7 +157,7 @@ Tap marks only that pill's current slot done for the day with no notification, n
 | Midnight crossing | Active windows truncate at midnight | convention |
 
 **UI rules:** Custom pills render as a horizontal row on WIDE and LARGE maps, stacked 4 dp from the built-in health pill stack, and as chips on cards.
-At most three occurrences are shown, followed by inert `+N` overflow when needed.
+Cards show up to four occurrences, while maps show up to three, followed by inert `+N` overflow when needed.
 The 2x2 size shows no custom pill UI.
 Custom pills never inherit pending or stale route styling.
 
@@ -217,9 +245,9 @@ No caffeine intake logging.
 - **Map pills:** Max two built-in health pills are stacked 4 dp apart in the map corner diagonally opposite commute pills (leave-by, best departure).
 - **Custom pills:** A separate horizontal row, max three visible plus inert `+N` overflow, is stacked 4 dp from the built-in health pill stack on WIDE and LARGE maps.
 - **Glyphs:** Checkmark (supplements), droplet (water), walker (walk).
-- **Priority:** Supplements, then water, then walk; UX demotion overrides (carry-over at 60 percent alpha; evening protein outranks morning carry-over after 18:00).
+- **Priority:** Active supplements, then To Bed and Woke Up, then sleep estimate, morning light, water, demoted supplements, walk, and focus gaps; UX demotion overrides apply where relevant.
 - **Water on commute map:** Never.
-- **Card chips:** Max two built-in tappable 48 dp mini-chips plus one optional line (morning light, caffeine cutoff), with custom reminder chips in their own row.
+- **Card chips:** Calendar-empty and wind-down cards show up to four built-in tappable 48 dp mini-chips plus one optional line (morning light, caffeine cutoff), with up to four custom reminder chips in their own row and `+N` overflow beyond either cap.
 - **2x2 size:** Zero health or custom reminder UI (no pills, no chips, no brief sleep prefix).
 - **Pending/stale:** Health and custom reminder elements never inherit pending alpha or stale grey; only route ETA does.
 - **LARGE size:** Morning supplement label expands to `Vitamins + creatine`.
@@ -233,7 +261,7 @@ Three health WorkManager chains; zero new Google API calls.
 | Worker | Unique name | Pattern | Role |
 | --- | --- | --- | --- |
 | `HealthMorningWorker` | `health_morning` | Daily 06:30 self-rescheduling chain | Sleep backfill, 14-day history upsert, water-slot plan for the day |
-| `HealthBoundaryWorker` | `health_boundary` | One-shot chain to next transition | Recomputes health fields only (no network); wakes at water and custom-reminder slot starts and active-window ends, supplement window edges, 21:30 vitamins cutoff, 18:00 protein transition, walk target, shield end, caffeine lead/cutoff, midnight rollover |
+| `HealthBoundaryWorker` | `health_boundary` | One-shot chain to next transition | Recomputes health fields only (no network); wakes at water and custom-reminder slot starts and active-window ends, supplement window edges, 21:30 vitamins cutoff, 18:00 protein transition, walk target, shield end, caffeine lead/cutoff, To Bed and Woke Up pill boundaries at 21:00, 02:00, 04:30, and 10:00 when untapped, and midnight rollover |
 | `HealthWalkNotifyWorker` | `health_walk_notify` | One-shot at walk start | Mutex-guarded post-then-mark against `walkNotified` |
 
 **Reschedule policy:** Workers use `APPEND_OR_REPLACE` when rescheduling their own unique name from inside a running worker; `REPLACE` only from external callers (`ensureScheduled`).

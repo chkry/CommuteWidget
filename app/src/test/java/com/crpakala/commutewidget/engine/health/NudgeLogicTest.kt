@@ -460,6 +460,103 @@ class NudgeLogicTest {
         )
     }
 
+    // toBedCandidate / wokeUpCandidate
+
+    @Test
+    fun toBedCandidate_presentInEveningBand() {
+        val result = toBedCandidate(epoch(21, 30), zone, null)
+
+        assertEquals(NudgeKind.SLEEP_TO_BED, result?.kind)
+        assertEquals("To bed", result?.label)
+    }
+
+    @Test
+    fun toBedCandidate_presentInEarlyMorningBand() {
+        val result = toBedCandidate(epoch(1, 30), zone, null)
+
+        assertEquals(NudgeKind.SLEEP_TO_BED, result?.kind)
+    }
+
+    @Test
+    fun toBedCandidate_absentOutsideWindow() {
+        assertNull(toBedCandidate(epoch(3, 0), zone, null))
+    }
+
+    @Test
+    fun toBedCandidate_absentWhenTappedInCurrentDomain() {
+        val tapEpochMillis = epoch(22, 0)
+
+        assertNull(toBedCandidate(epoch(23, 0), zone, tapEpochMillis))
+    }
+
+    @Test
+    fun toBedCandidate_eveningTapStillSuppressesAcrossMidnightAtOneThirty() {
+        // Sprint 4 review test gap: a 22:00 tap and a 01:30 re-evaluation are the SAME night's
+        // domain, so the early-morning band must stay suppressed by the evening tap.
+        val eveningTapEpochMillis = epoch(22, 0)
+        val oneThirtyNextDay = epoch(1, 30) + 24L * 60 * 60 * 1000
+
+        assertNull(toBedCandidate(oneThirtyNextDay, zone, eveningTapEpochMillis))
+    }
+
+    @Test
+    fun wokeUpCandidate_presentAtFiveAm() {
+        val result = wokeUpCandidate(epoch(5, 0), zone, null)
+
+        assertEquals(NudgeKind.SLEEP_WOKE_UP, result?.kind)
+        assertEquals("Woke up", result?.label)
+    }
+
+    @Test
+    fun wokeUpCandidate_absentAtTenThirty() {
+        assertNull(wokeUpCandidate(epoch(10, 30), zone, null))
+    }
+
+    @Test
+    fun wokeUpCandidate_absentWhenTappedInCurrentDomain() {
+        val tapEpochMillis = epoch(5, 0)
+
+        assertNull(wokeUpCandidate(epoch(6, 0), zone, tapEpochMillis))
+    }
+
+    // Sprint 2 ranking: To Bed / Woke Up rank below active supplements, above water/walk.
+
+    @Test
+    fun activeSupplementBeatsToBed() {
+        val result = selectVisibleNudges(
+            listOf(candidate(NudgeKind.SLEEP_TO_BED), candidate(NudgeKind.SUPPLEMENT_MORNING)),
+            NudgeSurface.CARD,
+            audiobookPlaying = false,
+            shieldActive = false,
+        )
+
+        assertEquals(NudgeKind.SUPPLEMENT_MORNING, result.first().kind)
+    }
+
+    @Test
+    fun toBedBeatsWater() {
+        val result = selectVisibleNudges(
+            listOf(candidate(NudgeKind.WATER), candidate(NudgeKind.SLEEP_TO_BED)),
+            NudgeSurface.CARD,
+            audiobookPlaying = false,
+            shieldActive = false,
+        )
+
+        assertEquals(NudgeKind.SLEEP_TO_BED, result.first().kind)
+    }
+
+    @Test
+    fun wokeUpBeatsWalk() {
+        val result = selectVisibleNudges(
+            listOf(candidate(NudgeKind.WALK), candidate(NudgeKind.SLEEP_WOKE_UP)),
+            NudgeSurface.CARD,
+            audiobookPlaying = false,
+            shieldActive = false,
+        )
+
+        assertEquals(NudgeKind.SLEEP_WOKE_UP, result.first().kind)
+    }
+
     @Test
     fun sleepPillCandidate_formatsCompactLabelAllDay() {
         val pill = sleepPillCandidate(400)!!

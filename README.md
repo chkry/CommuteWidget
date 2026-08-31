@@ -28,7 +28,7 @@ The audit and design rulings driving these changes are documented in `UX-AUDIT.m
 - Scheduled automatic background updates at window boundaries (4 calls per day) powered by Android WorkManager across device reboots.
 - Graceful offline and failure state caching with relative error tracking and automatic 60-second recovery.
 - In-app configuration for addresses, saved places, commute days, commute windows, leave-by targets, early arrival buffers, live traffic thresholds, geocoding selection, transit modes, and calendar selection.
-- On-device health layer (v6): supplement pills, water reminders with Health Connect logging, evening walk advisor, sleep prefix on the morning brief, and audiobook-aware suppression, each independently toggleable with zero new Google API calls (see `HEALTH-FEATURES.md`).
+- On-device health layer (v6): supplement pills, water reminders with Health Connect logging, evening walk advisor, a UsageStats lock/unlock sleep prefix with To Bed and Woke Up anchors, and audiobook-aware suppression, each independently toggleable with zero new Google API calls (see `HEALTH-FEATURES.md`).
 - Custom pill reminders (v7): up to six user-defined, weekday-aware reminders with up to four daily slots each, per-slot tap dismissal, and no notifications or network calls.
 
 ## Google Cloud API Key Setup
@@ -243,11 +243,14 @@ Core toggles default ON; experimental nudges default OFF under **Experimental nu
 - **Evening protein** (`Protein`): one tap marks protein taken; window 18:00-21:00 with carry-over to midnight.
 - **Water reminders**: dynamic slots across the day (default five); tap logs 250 ml to Health Connect and dismisses the pill.
 - **Evening walk**: suggests a calendar-aware walk time when steps lag the goal (default 8000) or the afternoon is sedentary; one notification at walk start.
-- **Sleep prefix**: on To Work commute, prepends `Slept ~6h 40m` to the morning brief when UsageStats yields a valid estimate.
+- **Sleep prefix**: on To Work commute, prepends `Slept ~6h 40m` to the morning brief when UsageStats lock/unlock events yield a valid estimate for the 10:30 pm to 10:00 am night domain.
+- **To Bed and Woke Up pills**: when sleep estimation is enabled, `To bed` appears from 9:00 pm to 2:00 am and `Woke up` appears from 4:30 am to 10:00 am.
+  Tapping either stores a private on-device timestamp, anchors the automatic estimate, and immediately refreshes health fields locally without network activity or notifications.
 - **Audiobook suppression**: while a configured audiobook app (default Audible) is playing, all health nudges hide.
 
 Health pills appear on 4x2 and 4x4 map layouts (max two, opposite corner from commute pills).
 Water never appears on commute maps.
+Calendar-empty and wind-down cards can show up to four built-in health pills and four custom reminder pills in their separate rows, with `+N` for additional items.
 The 2x2 size shows no health UI.
 
 ### Toggle list
@@ -260,7 +263,7 @@ The 2x2 size shows no health UI.
 
 | Issue | Cause | Solution |
 | --- | --- | --- |
-| No sleep prefix on morning brief | Usage access not granted, or estimated sleep under 3 hours | Grant Usage access in **Access & app info**; a very short estimate is intentionally hidden |
+| No sleep prefix on morning brief | Usage access not granted, the device has no completed qualifying lock interval yet, or an unanchored estimate is under 3 hours | Grant Usage access in **Access & app info**; wait for an unlock, Woke Up tap, or the 10:00 close, because an anchored short night can still produce an estimate |
 | Water pill does not dismiss after tap | Health Connect write failed or WRITE_HYDRATION not granted | Re-grant Health Connect permissions from **Access & app info** and tap again; the pill stays until a confirmed write |
 | No health nudges during a drive | Audiobook suppression is active by design | Expected while a configured audiobook app is playing; disable **Suppress during audiobooks** if you want nudges during playback |
 | Walk or step nudges never appear | Health Connect steps not syncing | Complete Samsung Health to Health Connect sync (permissions, Consents, account sync) |

@@ -565,6 +565,36 @@ class StoredValueCodecTest {
     }
 
     @Test
+    fun commuteSnapshotJson_sleepTapNudgeKindsRoundTrip() {
+        val snapshot = CommuteSnapshot(
+            direction = Direction.TO_HOME,
+            durationSeconds = 1200L,
+            durationNoTrafficSeconds = 1000L,
+            distanceMeters = 8000L,
+            mapImagePath = null,
+            fetchedAtEpochMillis = 1_700_000_000_000L,
+            lastFetchFailed = false,
+            lastErrorMessage = null,
+            healthNudges = listOf(
+                HealthNudge(
+                    kind = HealthNudgeKind.SLEEP_TO_BED,
+                    label = "To bed",
+                    startMinuteOfDay = 1260,
+                    endMinuteOfDay = 1440,
+                ),
+                HealthNudge(
+                    kind = HealthNudgeKind.SLEEP_WOKE_UP,
+                    label = "Woke up",
+                    startMinuteOfDay = 270,
+                    endMinuteOfDay = 600,
+                ),
+            ),
+        )
+
+        assertEquals(snapshot, decodeCommuteSnapshot(encodeCommuteSnapshot(snapshot)))
+    }
+
+    @Test
     fun healthDayStateJson_roundTrip() {
         val state = HealthDayState(
             date = "2026-08-31",

@@ -27,22 +27,26 @@ import com.crpakala.commutewidget.engine.health.briefPrefix
 import com.crpakala.commutewidget.engine.health.caffeineLineCandidate
 import com.crpakala.commutewidget.engine.health.computeVisibleCustomPillOccurrences
 import com.crpakala.commutewidget.engine.health.customPillAudiobookSuppression
-import com.crpakala.commutewidget.engine.health.estimateSleep
+import com.crpakala.commutewidget.engine.health.estimateOvernightSleep
 import com.crpakala.commutewidget.engine.health.focusGapCandidate
 import com.crpakala.commutewidget.engine.health.focusShieldActive
 import com.crpakala.commutewidget.engine.health.localSunsetMinuteOfDay
 import com.crpakala.commutewidget.engine.health.medianSleepMinutes
 import com.crpakala.commutewidget.engine.health.morningLightEligible
 import com.crpakala.commutewidget.engine.health.planWaterSlots
+import com.crpakala.commutewidget.engine.health.sleepBackfillFrozen
 import com.crpakala.commutewidget.engine.health.sleepPillCandidate
 import com.crpakala.commutewidget.engine.health.suggestWalk
 import com.crpakala.commutewidget.engine.health.supplementCandidates
+import com.crpakala.commutewidget.engine.health.toBedCandidate
 import com.crpakala.commutewidget.engine.health.typicalBedtimeMinuteOfDay
 import com.crpakala.commutewidget.engine.health.waterPulseSlot
 import com.crpakala.commutewidget.engine.health.waterSlotActiveAt
+import com.crpakala.commutewidget.engine.health.wokeUpCandidate
 import com.crpakala.commutewidget.health.CommuteAudioDetector
 import com.crpakala.commutewidget.health.HealthConnectFacade
 import com.crpakala.commutewidget.health.ScreenEventsReader
+import com.crpakala.commutewidget.health.UsageWindowEvents
 import com.crpakala.commutewidget.schedule.HealthWalkNotifyScheduler
 import com.crpakala.commutewidget.schedule.shouldScheduleWalkNotification
 import java.time.Instant
@@ -51,7 +55,6 @@ import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import kotlin.coroutines.cancellation.CancellationException
 
-private const val SLEEP_BACKFILL_EARLIEST_MINUTE_OF_DAY = 6 * 60 + 30
 private const val NOON_MINUTE_OF_DAY = 12 * 60
 private const val MAX_CHAINED_EVENTS = 30
 
@@ -86,10 +89,12 @@ internal fun CommuteSnapshot.withHealthComputation(computation: HealthComputatio
 
 /**
  * Computes this refresh's health nudge state: ensures today's [HealthDayState] exists (planning
- * water slots on first touch of a new day), lazily backfills yesterday's sleep estimate once past
- * 06:30, detects gym days, latches the last-observed commute-audio-playing minute, builds every
- * enabled nudge candidate, applies the restless-night focus shield, and schedules the walk
- * notification one-shot when applicable.
+ * water slots on first touch of a new day), runs the "live until frozen" sleep backfill
+ * unconditionally (see [performSleepBackfill] and [sleepBackfillFrozen] - the old 06:30-earliest
+ * gate is gone; the estimator's own null-return defer plus the freeze rule replace it), detects
+ * gym days, latches the last-observed commute-audio-playing minute, builds every enabled nudge
+ * candidate, applies the restless-night focus shield, and schedules the walk notification
+ * one-shot when applicable.
  *
  * Every sub-step degrades gracefully (null/empty/false) on a missing permission or platform
  * failure - this function itself never throws; callers still wrap it (see
@@ -182,12 +187,9 @@ private suspend fun computeHealthStateUnsafe(
         eligibleAfterMinuteOfDay = params.walkLatchEligibleAfterMinuteOfDay,
     )
 
-    var sleepEstimateMinutes: Int? = null
-    if (nowMinuteOfDay >= SLEEP_BACKFILL_EARLIEST_MINUTE_OF_DAY) {
-        sleepEstimateMinutes = runCatching {
-            performSleepBackfill(context, repo, nowEpochMillis, zone, params)
-        }.getOrNull()?.minutes
-    }
+    var sleepEstimateMinutes: Int? = runCatching {
+        performSleepBackfill(context, repo, nowEpochMillis, zone, params)
+    }.getOrNull()?.minutes
     val history = runCatching { repo.healthHistory() }.getOrNull() ?: HealthHistory()
     if (sleepEstimateMinutes == null) {
         sleepEstimateMinutes = history.days.find { it.date == todayDateStr }?.sleepMinutes
@@ -318,6 +320,16 @@ private suspend fun computeHealthStateUnsafe(
     // commute mornings, cards carry it as a caption, and event maps get this dismissable pill.
     if (settings.sleepBriefEnabled && !dayState.sleepPillDismissed) {
         sleepPillCandidate(sleepEstimateMinutes)?.let { candidates += it }
+    }
+
+    // Sprint 2: the "To bed" / "Woke up" manual tap pills. Suppression is computation-time only
+    // (from the two tap timestamps, not a HealthDayState dismissal flag) - sprint 3's tap actions
+    // write the timestamp then trigger an immediate local recompute.
+    if (settings.sleepBriefEnabled) {
+        val toBedTapEpochMillis = runCatching { repo.lastToBedTapEpochMillis() }.getOrNull()
+        val wokeUpTapEpochMillis = runCatching { repo.lastWokeUpTapEpochMillis() }.getOrNull()
+        toBedCandidate(nowEpochMillis, zone, toBedTapEpochMillis)?.let { candidates += it }
+        wokeUpCandidate(nowEpochMillis, zone, wokeUpTapEpochMillis)?.let { candidates += it }
     }
 
     if (settings.caffeineCutoffLineEnabled) {
@@ -511,9 +523,17 @@ internal suspend fun ensureTodayHealthDayState(
 }
 
 /**
- * Shared by [computeHealthState]'s lazy backfill (guarded by 06:30) and
- * [com.crpakala.commutewidget.schedule.HealthMorningWorker]'s unconditional daily 06:30 run. A
- * no-op (returns null, writes nothing) once today's history record already has a sleep estimate.
+ * Sprint 2 "live until frozen" sleep backfill, shared by [computeHealthState]'s per-refresh call
+ * (now unconditional - the old 06:30-earliest gate is gone) and
+ * [com.crpakala.commutewidget.schedule.HealthMorningWorker]'s daily 06:30 run. Reads keyguard and
+ * screen events from previous-day noon through [nowEpochMillis] (wide enough that an early actual
+ * lock start is visible) plus the two manual tap anchors from [repo], then defers to
+ * [sleepBackfillFrozen] to decide whether today's estimate is already settled - frozen means an
+ * early return with no read, no recompute, no history write at all (preserving today's write-
+ * amplification behavior). While NOT frozen, every call recomputes and upserts even over an
+ * existing value - live correction is the point (a 02:30 partial estimate gets corrected by the
+ * 07:30 unlock); a null estimate (the estimator's own "no end exists yet" defer) writes nothing
+ * and leaves any existing value untouched.
  */
 internal suspend fun performSleepBackfill(
     context: Context,
@@ -528,17 +548,36 @@ internal suspend fun performSleepBackfill(
     val yesterdayDateStr = yesterday.format(DateTimeFormatter.ISO_LOCAL_DATE)
 
     val history = runCatching { repo.healthHistory() }.getOrNull() ?: HealthHistory()
-    if (history.days.find { it.date == todayDateStr }?.sleepMinutes != null) return null
+    val wokeUpTapEpochMillis = runCatching { repo.lastWokeUpTapEpochMillis() }.getOrNull()
+    val frozen = sleepBackfillFrozen(
+        hasSleepMinutesToday = history.days.find { it.date == todayDateStr }?.sleepMinutes != null,
+        nowEpochMillis = nowEpochMillis,
+        zone = zone,
+        wokeUpTapEpochMillis = wokeUpTapEpochMillis,
+    )
+    if (frozen) return null
 
+    val toBedTapEpochMillis = runCatching { repo.lastToBedTapEpochMillis() }.getOrNull()
     val dayStartEpochMillis = today.atStartOfDay(zone).toInstant().toEpochMilli()
     val yesterdayStartEpochMillis = yesterday.atStartOfDay(zone).toInstant().toEpochMilli()
-    val windowStart = yesterday.atStartOfDay(zone).plusMinutes(21L * 60).toInstant().toEpochMilli()
+    val lookbackStartEpochMillis = yesterday.atTime(12, 0).atZone(zone).toInstant().toEpochMilli()
 
-    val samples = runCatching {
-        ScreenEventsReader.readScreenEvents(context, windowStart, nowEpochMillis)
-            .map { ScreenSample(it.timestampEpochMillis, it.interactive) }
-    }.getOrDefault(emptyList())
-    val estimate = runCatching { estimateSleep(samples, nowEpochMillis, zone, params) }.getOrNull()
+    val usageEvents = runCatching {
+        ScreenEventsReader.readUsageWindowEvents(context, lookbackStartEpochMillis, nowEpochMillis)
+    }.getOrDefault(UsageWindowEvents(emptyList(), emptyList()))
+
+    val estimate = runCatching {
+        estimateOvernightSleep(
+            keyguardEvents = usageEvents.keyguard,
+            screenSamples = usageEvents.screen.map { ScreenSample(it.timestampEpochMillis, it.interactive) },
+            dayStartEpochMillis = dayStartEpochMillis,
+            nowEpochMillis = nowEpochMillis,
+            zone = zone,
+            toBedTapEpochMillis = toBedTapEpochMillis,
+            wokeUpTapEpochMillis = wokeUpTapEpochMillis,
+            params = params,
+        )
+    }.getOrNull() ?: return null
 
     val yesterdaySteps = runCatching {
         HealthConnectFacade.readStepsBetween(context, yesterdayStartEpochMillis, dayStartEpochMillis)
@@ -555,9 +594,9 @@ internal suspend fun performSleepBackfill(
                 withYesterday.days.find { it.date == todayDateStr },
                 todayDateStr,
                 steps = todaySteps,
-                sleepMinutes = estimate?.minutes,
-                overnightUnlockCount = estimate?.overnightUnlockCount,
-                sleepStartEpochMillis = estimate?.startEpochMillis,
+                sleepMinutes = estimate.minutes,
+                overnightUnlockCount = estimate.overnightUnlockCount,
+                sleepStartEpochMillis = estimate.startEpochMillis,
             ),
         )
     }
@@ -642,4 +681,6 @@ internal fun NudgeKind.toHealthNudgeKind(): HealthNudgeKind = when (this) {
     NudgeKind.MORNING_LIGHT -> HealthNudgeKind.MORNING_LIGHT
     NudgeKind.CAFFEINE_CUTOFF -> HealthNudgeKind.CAFFEINE_CUTOFF
     NudgeKind.SLEEP_ESTIMATE -> HealthNudgeKind.SLEEP_ESTIMATE
+    NudgeKind.SLEEP_TO_BED -> HealthNudgeKind.SLEEP_TO_BED
+    NudgeKind.SLEEP_WOKE_UP -> HealthNudgeKind.SLEEP_WOKE_UP
 }

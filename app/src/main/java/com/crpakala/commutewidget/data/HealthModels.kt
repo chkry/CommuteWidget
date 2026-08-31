@@ -12,6 +12,10 @@ enum class HealthNudgeKind {
     MORNING_LIGHT,
     CAFFEINE_CUTOFF,
     SLEEP_ESTIMATE,
+    /** Sprint 2: manual "To bed" tap pill, visible 21:00-02:00 crossing midnight. */
+    SLEEP_TO_BED,
+    /** Sprint 2: manual "Woke up" tap pill, visible 04:30-10:00. */
+    SLEEP_WOKE_UP,
 }
 
 @Serializable

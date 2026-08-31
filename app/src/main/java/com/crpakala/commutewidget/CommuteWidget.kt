@@ -172,6 +172,7 @@ class CommuteWidget : GlanceAppWidget() {
                     occurrences = snapshot.customPillOccurrences,
                     dayState = data.healthDayState,
                     todayIsoDate = now.toLocalDate().toString(),
+                    maxVisible = customPillCapFor(snapshot.mode),
                 )
             } else {
                 CustomPillRowContent(occurrences = emptyList(), overflowLabel = null)

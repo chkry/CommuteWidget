@@ -170,6 +170,50 @@ class HealthBoundaryWorkerTest {
         assertEquals(at(15, 0), result) // 900 minutes = 15:00
     }
 
+    // Sprint 2: To Bed / Woke Up boundary wakes, gated on sleepBriefEnabled.
+
+    @Test
+    fun sleepBriefEnabled_wakesAtNearestUntappedSleepBoundary() {
+        val settings = allDisabled.copy(sleepBriefEnabled = true)
+
+        // Candidates: 120 (02:00), 270 (04:30), 600 (10:00), 1260 (21:00). Now is 6:00 (360 min).
+        val result = nextHealthBoundary(at(6, 0), settings, dayState = null)
+
+        assertEquals(at(10, 0), result) // 600 minutes = the Woke Up window end
+    }
+
+    @Test
+    fun toBedTapInEarlyMorningDomain_omitsToBedWindowEndBoundary() {
+        val settings = allDisabled.copy(sleepBriefEnabled = true)
+        val tapEpochMillis = ZonedDateTime.of(2026, 8, 30, 23, 0, 0, 0, zone).toInstant().toEpochMilli()
+
+        val result = nextHealthBoundary(
+            now = at(1, 0),
+            settings = settings,
+            dayState = null,
+            toBedTapEpochMillis = tapEpochMillis,
+        )
+
+        // 120 (To Bed window end) is excluded by the tap; Woke Up start (270) is nearest.
+        assertEquals(at(4, 30), result)
+    }
+
+    @Test
+    fun wokeUpTapInDomain_omitsWokeUpBoundaries() {
+        val settings = allDisabled.copy(sleepBriefEnabled = true)
+        val tapEpochMillis = at(5, 0).toInstant().toEpochMilli()
+
+        val result = nextHealthBoundary(
+            now = at(6, 0),
+            settings = settings,
+            dayState = null,
+            wokeUpTapEpochMillis = tapEpochMillis,
+        )
+
+        // Woke Up boundaries (270, 600) are excluded by the tap; To Bed evening start (1260) is nearest.
+        assertEquals(at(21, 0), result)
+    }
+
     @Test
     fun customPillAndAnotherFeature_picksTheEarliestAcrossBoth() {
         val settings = allDisabled.copy(

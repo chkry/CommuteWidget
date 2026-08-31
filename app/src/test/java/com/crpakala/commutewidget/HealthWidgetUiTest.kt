@@ -383,6 +383,35 @@ class HealthWidgetUiTest {
         assertEquals("🌙", healthGlyph(NudgeKind.SLEEP_ESTIMATE))
         assertEquals("☀", healthGlyph(NudgeKind.MORNING_LIGHT))
         assertEquals("", healthGlyph(NudgeKind.CAFFEINE_CUTOFF))
+        // Distinct from the sleep-estimate moon and morning-light sun, which can co-render.
+        assertEquals("🛏", healthGlyph(NudgeKind.SLEEP_TO_BED))
+        assertEquals("🌅", healthGlyph(NudgeKind.SLEEP_WOKE_UP))
+    }
+
+    @Test
+    fun withoutNudgeKind_removesOnlyTheGivenKindPreservingOrder() {
+        val nudges = listOf(
+            nudge(HealthNudgeKind.SUPPLEMENT_PROTEIN, "Protein", start = 1080, end = 1260),
+            nudge(HealthNudgeKind.SLEEP_TO_BED, "To bed", start = 1260, end = 1440),
+            nudge(HealthNudgeKind.WATER, "Water", start = 1200, end = 1230),
+        )
+
+        val result = withoutNudgeKind(nudges, HealthNudgeKind.SLEEP_TO_BED)
+
+        assertEquals(
+            listOf(HealthNudgeKind.SUPPLEMENT_PROTEIN, HealthNudgeKind.WATER),
+            result.map { it.kind },
+        )
+        assertEquals(nudges, withoutNudgeKind(nudges, HealthNudgeKind.FOCUS_GAP))
+    }
+
+    @Test
+    fun filter_keepsSleepToBedAndWokeUp_dismissalIsHandledAtComputationTime() {
+        val toBed = listOf(nudge(HealthNudgeKind.SLEEP_TO_BED, "To bed", start = 1260, end = 1440))
+        val wokeUp = listOf(nudge(HealthNudgeKind.SLEEP_WOKE_UP, "Woke up", start = 270, end = 600))
+
+        assertEquals(1, filterHealthNudgesAgainstDayState(toBed, emptyState(), today, nowMinuteOfDay = 1300).size)
+        assertEquals(1, filterHealthNudgesAgainstDayState(wokeUp, emptyState(), today, nowMinuteOfDay = 300).size)
     }
 
     @Test
@@ -542,6 +571,78 @@ class HealthWidgetUiTest {
         )
         assertEquals(listOf(NudgeKind.FOCUS_GAP), chrome.pills.map { it.kind })
         assertEquals(NudgeKind.CAFFEINE_CUTOFF, chrome.line?.kind)
+    }
+
+    // --- Card pill density (sprint 3) ---
+
+    @Test
+    fun healthPillCapFor_cardIsFourMapsStayAtTwo() {
+        assertEquals(4, healthPillCapFor(NudgeSurface.CARD))
+        assertEquals(2, healthPillCapFor(NudgeSurface.MAP_COMMUTE))
+        assertEquals(2, healthPillCapFor(NudgeSurface.MAP_EVENT))
+    }
+
+    @Test
+    fun customPillCapFor_calendarEmptyIsFourOtherModesStayAtThree() {
+        assertEquals(4, customPillCapFor(SnapshotMode.CALENDAR_EMPTY))
+        assertEquals(CUSTOM_PILL_MAX_VISIBLE, customPillCapFor(SnapshotMode.COMMUTE))
+        assertEquals(CUSTOM_PILL_MAX_VISIBLE, customPillCapFor(SnapshotMode.CALENDAR_EVENT))
+    }
+
+    @Test
+    fun resolveVisibleHealthChrome_cardModeShowsUpToFourPills() {
+        val chrome = resolveVisibleHealthChrome(
+            snapshotNudges = listOf(
+                nudge(HealthNudgeKind.SUPPLEMENT_MORNING, "Vitamins + Cr"),
+                nudge(HealthNudgeKind.SUPPLEMENT_PROTEIN, "Protein"),
+                nudge(HealthNudgeKind.WALK, "Walk 7:30", start = 1110, end = 1290),
+                nudge(HealthNudgeKind.FOCUS_GAP, "Focus 45m", start = 600, end = 720),
+                nudge(HealthNudgeKind.WATER, "Drink water", start = 450, end = 480),
+            ),
+            dayState = emptyState(),
+            todayIsoDate = today,
+            nowMinuteOfDay = 460,
+            mode = SnapshotMode.CALENDAR_EMPTY,
+            audiobookPlaying = false,
+        )
+        assertEquals(4, chrome.pills.size)
+    }
+
+    @Test
+    fun resolveVisibleHealthChrome_mapModesStillCapAtTwoWithFourEligibleCandidates() {
+        val nudges = listOf(
+            nudge(HealthNudgeKind.SUPPLEMENT_MORNING, "Vitamins + Cr"),
+            nudge(HealthNudgeKind.SUPPLEMENT_PROTEIN, "Protein"),
+            nudge(HealthNudgeKind.WALK, "Walk 7:30", start = 1110, end = 1290),
+            nudge(HealthNudgeKind.SLEEP_TO_BED, "To bed", start = 1260, end = 1440),
+        )
+        val commuteChrome = resolveVisibleHealthChrome(
+            snapshotNudges = nudges,
+            dayState = emptyState(),
+            todayIsoDate = today,
+            nowMinuteOfDay = 460,
+            mode = SnapshotMode.COMMUTE,
+            audiobookPlaying = false,
+        )
+        assertEquals(2, commuteChrome.pills.size)
+
+        val eventChrome = resolveVisibleHealthChrome(
+            snapshotNudges = nudges,
+            dayState = emptyState(),
+            todayIsoDate = today,
+            nowMinuteOfDay = 460,
+            mode = SnapshotMode.CALENDAR_EVENT,
+            audiobookPlaying = false,
+        )
+        assertEquals(2, eventChrome.pills.size)
+    }
+
+    @Test
+    fun resolveCustomPillRowContent_fourVisibleCapLeavesOneInOverflow() {
+        val occurrences = (1..5).map { customPill("p$it", it * 100, active = true) }
+        val content = resolveCustomPillRowContent(occurrences, emptyState(), today, maxVisible = 4)
+        assertEquals(listOf("p1", "p2", "p3", "p4"), content.occurrences.map { it.pillId })
+        assertEquals("+1", content.overflowLabel)
     }
 
     @Test

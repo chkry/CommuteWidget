@@ -8,11 +8,14 @@ import androidx.glance.action.actionParametersOf
 import androidx.glance.appwidget.action.ActionCallback
 import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.appwidget.updateAll
+import androidx.work.ExistingWorkPolicy
 import com.crpakala.commutewidget.data.CustomPillOccurrence
+import com.crpakala.commutewidget.data.HealthNudgeKind
 import com.crpakala.commutewidget.data.SettingsRepository
 import com.crpakala.commutewidget.engine.health.NudgeCandidate
 import com.crpakala.commutewidget.engine.health.NudgeKind
 import com.crpakala.commutewidget.health.HealthConnectFacade
+import com.crpakala.commutewidget.schedule.HealthBoundaryScheduler
 import java.time.LocalDate
 import java.time.ZonedDateTime
 import kotlinx.coroutines.NonCancellable
@@ -48,6 +51,11 @@ internal fun healthNudgeClickAction(candidate: NudgeCandidate): Action? = when (
         actionParametersOf(healthInfoKindKey to INFO_KIND_MORNING_LIGHT),
     )
     NudgeKind.CAFFEINE_CUTOFF -> null
+    // Sprint 3: the tap writes its timestamp and immediately recomputes health fields locally,
+    // which is what makes the tapped pill vanish on the next settled render (there is no
+    // day-state dismissal flag for either kind - see filterHealthNudgesAgainstDayState).
+    NudgeKind.SLEEP_TO_BED -> actionRunCallback<ToBedTapAction>()
+    NudgeKind.SLEEP_WOKE_UP -> actionRunCallback<WokeUpTapAction>()
 }
 
 /** Custom pill reminders always have a tap target - no line-only surface, no non-clickable kind. */
@@ -125,6 +133,72 @@ class WalkDismissAction : ActionCallback {
                 )
             }
             CommuteWidget().updateAll(context)
+        }
+    }
+}
+
+/**
+ * Sprint 4 review finding 2: the tap itself stays CHEAP and bounded (Glance cancels action
+ * coroutines after roughly 10 seconds) - it records the timestamp, strips the tapped kind from
+ * the stored snapshot's nudges so the pill vanishes on the immediate re-render, and hands the
+ * heavy full health recompute (calendar + Health Connect + UsageStats reads) to an immediate
+ * one-shot run of the health boundary chain. REPLACE is the correct policy here: the tap action
+ * is an external caller of the chain, and the worker's own self-reschedule (APPEND_OR_REPLACE)
+ * re-establishes the future boundary - which also restores the safety-net wake the tap's domain
+ * suppression removes from the candidate list. Re-tapping is harmless: the latest timestamp
+ * wins, and the pill is already stripped.
+ */
+private suspend fun recordSleepTap(
+    context: Context,
+    strippedKind: HealthNudgeKind,
+    persistTap: suspend (SettingsRepository) -> Unit,
+) {
+    withContext(NonCancellable) {
+        val repo = SettingsRepository.get(context)
+        persistTap(repo)
+        repo.snapshot()?.let { snapshot ->
+            repo.saveSnapshot(snapshot.copy(healthNudges = withoutNudgeKind(snapshot.healthNudges, strippedKind)))
+        }
+        runCatching { CommuteWidget().updateAll(context) }
+        runCatching {
+            HealthBoundaryScheduler.scheduleAt(context, ZonedDateTime.now(), ExistingWorkPolicy.REPLACE)
+        }
+    }
+}
+
+/**
+ * Records the To Bed tap timestamp; the immediate boundary-worker run then recomputes health
+ * fields with the tap as an anchor. Candidate suppression comes from
+ * [SettingsRepository.lastToBedTapEpochMillis] at computation time - there is no day-state
+ * dismissal flag; the snapshot strip in [recordSleepTap] only bridges the render gap until that
+ * recompute lands.
+ */
+class ToBedTapAction : ActionCallback {
+    override suspend fun onAction(
+        context: Context,
+        glanceId: GlanceId,
+        parameters: ActionParameters,
+    ) {
+        recordSleepTap(context, HealthNudgeKind.SLEEP_TO_BED) { repo ->
+            repo.setLastToBedTapEpochMillis(System.currentTimeMillis())
+        }
+    }
+}
+
+/**
+ * Records the Woke Up tap timestamp. This tap FINALIZES the night's sleep estimate: the
+ * immediate boundary-worker run anchors the estimate to the unlock preceding the tap and the
+ * freeze rule locks it in - off the Glance action budget, with the chain's own reschedule as
+ * the safety net.
+ */
+class WokeUpTapAction : ActionCallback {
+    override suspend fun onAction(
+        context: Context,
+        glanceId: GlanceId,
+        parameters: ActionParameters,
+    ) {
+        recordSleepTap(context, HealthNudgeKind.SLEEP_WOKE_UP) { repo ->
+            repo.setLastWokeUpTapEpochMillis(System.currentTimeMillis())
         }
     }
 }

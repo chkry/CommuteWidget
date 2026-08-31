@@ -16,7 +16,13 @@ import com.crpakala.commutewidget.engine.computeHealthState
 import com.crpakala.commutewidget.engine.withHealthComputation
 import com.crpakala.commutewidget.engine.health.CustomPillDefinition
 import com.crpakala.commutewidget.engine.health.HealthParams
+import com.crpakala.commutewidget.engine.health.TO_BED_EARLY_MORNING_END_MINUTE_OF_DAY
+import com.crpakala.commutewidget.engine.health.TO_BED_EVENING_START_MINUTE_OF_DAY
+import com.crpakala.commutewidget.engine.health.WOKE_UP_WINDOW_END_MINUTE_OF_DAY
+import com.crpakala.commutewidget.engine.health.WOKE_UP_WINDOW_START_MINUTE_OF_DAY
 import com.crpakala.commutewidget.engine.health.customPillTransitionCandidates
+import com.crpakala.commutewidget.engine.health.toBedTapInCurrentDomain
+import com.crpakala.commutewidget.engine.health.wokeUpTapInCurrentDomain
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import java.time.Duration
@@ -74,7 +80,16 @@ class HealthBoundaryWorker(
             ?.healthNudges
             ?.firstOrNull { it.kind == HealthNudgeKind.WALK }
             ?.targetMinuteOfDay
-        val next = nextHealthBoundary(ZonedDateTime.now(), settings, dayState, walkTargetMinuteOfDay)
+        val toBedTapEpochMillis = repo.lastToBedTapEpochMillis()
+        val wokeUpTapEpochMillis = repo.lastWokeUpTapEpochMillis()
+        val next = nextHealthBoundary(
+            now = ZonedDateTime.now(),
+            settings = settings,
+            dayState = dayState,
+            walkTargetMinuteOfDay = walkTargetMinuteOfDay,
+            toBedTapEpochMillis = toBedTapEpochMillis,
+            wokeUpTapEpochMillis = wokeUpTapEpochMillis,
+        )
         HealthBoundaryScheduler.scheduleAt(context, next, ExistingWorkPolicy.APPEND_OR_REPLACE)
     }
 }
@@ -120,7 +135,16 @@ object HealthBoundaryScheduler {
             ?.healthNudges
             ?.firstOrNull { it.kind == HealthNudgeKind.WALK }
             ?.targetMinuteOfDay
-        val next = nextHealthBoundary(ZonedDateTime.now(), settings, dayState, walkTargetMinuteOfDay)
+        val toBedTapEpochMillis = repo.lastToBedTapEpochMillis()
+        val wokeUpTapEpochMillis = repo.lastWokeUpTapEpochMillis()
+        val next = nextHealthBoundary(
+            now = ZonedDateTime.now(),
+            settings = settings,
+            dayState = dayState,
+            walkTargetMinuteOfDay = walkTargetMinuteOfDay,
+            toBedTapEpochMillis = toBedTapEpochMillis,
+            wokeUpTapEpochMillis = wokeUpTapEpochMillis,
+        )
         scheduleAt(appContext, next, existingWorkPolicy)
     }
 
@@ -149,6 +173,11 @@ object HealthBoundaryScheduler {
  * - [walkTargetMinuteOfDay] (the last computed walk suggestion's start, if any),
  * - the shield's default no-early-event end minute, when the restless-night shield is enabled,
  * - the caffeine lead-time window start and cutoff,
+ * - Sprint 2: the To Bed pill's evening start (21:00) and early-morning window end (02:00), and
+ *   the Woke Up pill's window start (04:30) and end (10:00), when the sleep brief is enabled -
+ *   each pair omitted once its manual tap already falls in the CURRENT night's tap domain (see
+ *   [com.crpakala.commutewidget.engine.health.toBedTapInCurrentDomain] /
+ *   [com.crpakala.commutewidget.engine.health.wokeUpTapInCurrentDomain]),
  * - each of today's enabled custom pill reminders' eligible slot starts and active-window ends
  *   (see [com.crpakala.commutewidget.engine.health.customPillTransitionCandidates] - midnight
  *   itself is excluded there, since the day-rollover fallback below already covers it).
@@ -161,9 +190,20 @@ internal fun nextHealthBoundary(
     dayState: HealthDayState?,
     walkTargetMinuteOfDay: Int? = null,
     params: HealthParams = HealthParams(),
+    toBedTapEpochMillis: Long? = null,
+    wokeUpTapEpochMillis: Long? = null,
 ): ZonedDateTime {
     val nowMinuteOfDay = now.hour * 60 + now.minute
-    val candidates = healthBoundaryMinutesOfDay(settings, dayState, walkTargetMinuteOfDay, params, now.dayOfWeek.value)
+    val candidates = healthBoundaryMinutesOfDay(
+        settings = settings,
+        dayState = dayState,
+        walkTargetMinuteOfDay = walkTargetMinuteOfDay,
+        params = params,
+        dayOfWeekIso = now.dayOfWeek.value,
+        now = now,
+        toBedTapEpochMillis = toBedTapEpochMillis,
+        wokeUpTapEpochMillis = wokeUpTapEpochMillis,
+    )
     val nextToday = candidates.firstOrNull { it > nowMinuteOfDay }
     return if (nextToday != null) {
         atMinuteOfDay(now, nextToday)
@@ -178,6 +218,9 @@ internal fun healthBoundaryMinutesOfDay(
     walkTargetMinuteOfDay: Int?,
     params: HealthParams,
     dayOfWeekIso: Int,
+    now: ZonedDateTime,
+    toBedTapEpochMillis: Long? = null,
+    wokeUpTapEpochMillis: Long? = null,
 ): List<Int> = buildList {
     if (settings.waterRemindersEnabled) {
         dayState?.waterSlotPlanMinutes?.forEach { slot ->
@@ -202,6 +245,18 @@ internal fun healthBoundaryMinutesOfDay(
     if (settings.caffeineCutoffLineEnabled) {
         add((settings.caffeineCutoffMinuteOfDay - params.caffeineLeadMinutes).coerceAtLeast(0))
         add(settings.caffeineCutoffMinuteOfDay)
+    }
+    if (settings.sleepBriefEnabled) {
+        val nowEpochMillis = now.toInstant().toEpochMilli()
+        val zone = now.zone
+        if (!toBedTapInCurrentDomain(toBedTapEpochMillis, nowEpochMillis, zone)) {
+            add(TO_BED_EVENING_START_MINUTE_OF_DAY)
+            add(TO_BED_EARLY_MORNING_END_MINUTE_OF_DAY)
+        }
+        if (!wokeUpTapInCurrentDomain(wokeUpTapEpochMillis, nowEpochMillis, zone)) {
+            add(WOKE_UP_WINDOW_START_MINUTE_OF_DAY)
+            add(WOKE_UP_WINDOW_END_MINUTE_OF_DAY)
+        }
     }
     if (settings.customPills.isNotEmpty()) {
         addAll(

@@ -6,6 +6,7 @@ import com.crpakala.commutewidget.data.Direction
 import com.crpakala.commutewidget.data.HealthDayRecord
 import com.crpakala.commutewidget.data.HealthNudge
 import com.crpakala.commutewidget.data.HealthNudgeKind
+import com.crpakala.commutewidget.engine.health.NudgeKind
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import org.junit.Assert.assertEquals
@@ -198,5 +199,13 @@ class HealthNudgeComputerTest {
         assertEquals(450, result.sleepMinutes)
         assertEquals(1, result.overnightUnlockCount)
         assertEquals(99L, result.sleepStartEpochMillis)
+    }
+
+    // toHealthNudgeKind - Sprint 2 added SLEEP_TO_BED/SLEEP_WOKE_UP to the engine-to-data mapper.
+
+    @Test
+    fun toHealthNudgeKind_mapsSleepToBedAndWokeUp() {
+        assertEquals(HealthNudgeKind.SLEEP_TO_BED, NudgeKind.SLEEP_TO_BED.toHealthNudgeKind())
+        assertEquals(HealthNudgeKind.SLEEP_WOKE_UP, NudgeKind.SLEEP_WOKE_UP.toHealthNudgeKind())
     }
 }

@@ -82,6 +82,8 @@ private object PreferenceKeys {
     val HEALTH_HISTORY_JSON = stringPreferencesKey("health_history_json")
     val CUSTOM_PILLS_JSON = stringPreferencesKey("custom_pills_json")
     val CUSTOM_PILL_ACTIVE_WINDOW_MINUTES = intPreferencesKey("custom_pill_active_window_minutes")
+    val LAST_TO_BED_TAP_EPOCH_MILLIS = longPreferencesKey("last_to_bed_tap_epoch_millis")
+    val LAST_WOKE_UP_TAP_EPOCH_MILLIS = longPreferencesKey("last_woke_up_tap_epoch_millis")
 }
 
 private fun Preferences.toAppSettings(): AppSettings {
@@ -605,6 +607,25 @@ class SettingsRepository private constructor(
             } else {
                 preferences[PreferenceKeys.HEALTH_HISTORY_JSON] = encodeHealthHistory(updated)
             }
+        }
+    }
+
+    /** Manual sleep-tap anchors (state, not settings): last "To Bed" / "Woke Up" tap timestamps. */
+    suspend fun lastToBedTapEpochMillis(): Long? =
+        dataStore.data.first()[PreferenceKeys.LAST_TO_BED_TAP_EPOCH_MILLIS]
+
+    suspend fun setLastToBedTapEpochMillis(epochMillis: Long) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.LAST_TO_BED_TAP_EPOCH_MILLIS] = epochMillis
+        }
+    }
+
+    suspend fun lastWokeUpTapEpochMillis(): Long? =
+        dataStore.data.first()[PreferenceKeys.LAST_WOKE_UP_TAP_EPOCH_MILLIS]
+
+    suspend fun setLastWokeUpTapEpochMillis(epochMillis: Long) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.LAST_WOKE_UP_TAP_EPOCH_MILLIS] = epochMillis
         }
     }
 

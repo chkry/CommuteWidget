@@ -31,6 +31,10 @@ enum class NudgeKind {
     MORNING_LIGHT,
     CAFFEINE_CUTOFF,
     SLEEP_ESTIMATE,
+    /** Sprint 2: manual "To bed" tap pill, visible 21:00-02:00 crossing midnight. */
+    SLEEP_TO_BED,
+    /** Sprint 2: manual "Woke up" tap pill, visible 04:30-10:00. */
+    SLEEP_WOKE_UP,
 }
 
 data class NudgeCandidate(
@@ -49,8 +53,8 @@ enum class NudgeSurface {
 }
 
 data class HealthParams(
-    val sleepSearchStartMinuteOfDay: Int = 21 * 60,
-    val sleepSearchEndMinuteOfDay: Int = 13 * 60,
+    val sleepSearchStartMinuteOfDay: Int = 22 * 60 + 30,
+    val sleepSearchEndMinuteOfDay: Int = 10 * 60,
     val sleepMinimumInactiveSpanMinutes: Int = 20,
     val sleepBriefWakeToleranceMinutes: Int = 10,
     val sleepMinimumPlausibleMinutes: Int = 3 * 60,

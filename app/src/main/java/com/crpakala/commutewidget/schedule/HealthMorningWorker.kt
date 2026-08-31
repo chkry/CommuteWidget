@@ -27,11 +27,13 @@ private const val MORNING_TARGET_HOUR = 6
 private const val MORNING_TARGET_MINUTE = 30
 
 /**
- * Sprint 2: unconditional daily 06:30 run of the same sleep-estimation-and-history-upsert path
- * [com.crpakala.commutewidget.engine.computeHealthState]'s lazy backfill uses
- * ([performSleepBackfill] is a no-op once today's record already has a sleep estimate, so running
- * both this worker and the lazy path on the same day is always safe), plus the day's water-slot
- * plan (also idempotent - [ensureTodayHealthDayState] no-ops once today's [com.crpakala.commutewidget
+ * Sprint 2: unconditional daily 06:30 run of the same "live until frozen" sleep-estimation-and-
+ * history-upsert path [com.crpakala.commutewidget.engine.computeHealthState] runs on every
+ * refresh ([performSleepBackfill] defers with a null return while the owner is still asleep, and
+ * is frozen into a no-op once today's estimate is already settled - see
+ * [com.crpakala.commutewidget.engine.health.sleepBackfillFrozen] - so running both this worker
+ * and the per-refresh path on the same day is always safe), plus the day's water-slot plan (also
+ * idempotent - [ensureTodayHealthDayState] no-ops once today's [com.crpakala.commutewidget
  * .data.HealthDayState] already exists). Unique work name "health_morning"; APPEND_OR_REPLACE from
  * inside (this worker IS the current holder), REPLACE only from [HealthMorningScheduler.schedule]
  * (an external caller) - see [HealthBoundaryWorker]'s identical reasoning.

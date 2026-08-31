@@ -47,6 +47,26 @@ internal fun nudgeSurfaceFor(mode: SnapshotMode): NudgeSurface = when (mode) {
 
 internal fun showsHealthChrome(widthDp: Int): Boolean = widthDp >= HEALTH_WIDE_MIN_WIDTH_DP
 
+/**
+ * Owner-approved 2026-08-31: cards (the calendar-empty/wind-down surface) have room for 4
+ * side-by-side pills; both map surfaces (commute and event) keep the pre-existing cap of 2 - the
+ * 4x2 info panel cannot fit more.
+ */
+internal fun healthPillCapFor(surface: NudgeSurface): Int = when (surface) {
+    NudgeSurface.CARD -> 4
+    NudgeSurface.MAP_COMMUTE, NudgeSurface.MAP_EVENT -> 2
+}
+
+/**
+ * Same owner-approved density change for custom reminder pills: 4 on the card surface, the
+ * existing [CUSTOM_PILL_MAX_VISIBLE] (3) everywhere else. Card is the only mode rendering a card
+ * surface; commute and event modes render maps.
+ */
+internal fun customPillCapFor(mode: SnapshotMode): Int = when (mode) {
+    SnapshotMode.CALENDAR_EMPTY -> 4
+    SnapshotMode.COMMUTE, SnapshotMode.CALENDAR_EVENT -> CUSTOM_PILL_MAX_VISIBLE
+}
+
 internal fun toEngineNudgeKind(kind: HealthNudgeKind): NudgeKind = when (kind) {
     HealthNudgeKind.SUPPLEMENT_MORNING -> NudgeKind.SUPPLEMENT_MORNING
     HealthNudgeKind.SUPPLEMENT_PROTEIN -> NudgeKind.SUPPLEMENT_PROTEIN
@@ -56,6 +76,8 @@ internal fun toEngineNudgeKind(kind: HealthNudgeKind): NudgeKind = when (kind) {
     HealthNudgeKind.MORNING_LIGHT -> NudgeKind.MORNING_LIGHT
     HealthNudgeKind.CAFFEINE_CUTOFF -> NudgeKind.CAFFEINE_CUTOFF
     HealthNudgeKind.SLEEP_ESTIMATE -> NudgeKind.SLEEP_ESTIMATE
+    HealthNudgeKind.SLEEP_TO_BED -> NudgeKind.SLEEP_TO_BED
+    HealthNudgeKind.SLEEP_WOKE_UP -> NudgeKind.SLEEP_WOKE_UP
 }
 
 internal fun toEngineNudgeCandidate(nudge: HealthNudge): NudgeCandidate = NudgeCandidate(
@@ -96,9 +118,23 @@ internal fun filterHealthNudgesAgainstDayState(
             HealthNudgeKind.MORNING_LIGHT -> !state.morningLightDismissed
             HealthNudgeKind.SLEEP_ESTIMATE -> !state.sleepPillDismissed
             HealthNudgeKind.CAFFEINE_CUTOFF -> true
+            // Sprint 2: To Bed / Woke Up dismissal happens at COMPUTATION time from the tap
+            // timestamps (see computeHealthStateUnsafe), not from a HealthDayState flag - sprint
+            // 3's tap actions trigger an immediate local recompute, so no render-time filter here.
+            HealthNudgeKind.SLEEP_TO_BED -> true
+            HealthNudgeKind.SLEEP_WOKE_UP -> true
         }
     }
 }
+
+/**
+ * Removes every nudge of one kind from a snapshot's nudge list - the sleep tap actions' cheap
+ * render-bridge: the tapped pill disappears on the immediate re-render while the full recompute
+ * (which re-derives the whole list from the tap timestamps) runs on the boundary worker instead
+ * of the Glance action budget. Order and all other nudges are preserved.
+ */
+internal fun withoutNudgeKind(nudges: List<HealthNudge>, kind: HealthNudgeKind): List<HealthNudge> =
+    nudges.filterNot { it.kind == kind }
 
 internal fun resolveVisibleHealthChrome(
     snapshotNudges: List<HealthNudge>,
@@ -120,7 +156,7 @@ internal fun resolveVisibleHealthChrome(
         surface = surface,
         audiobookPlaying = audiobookPlaying,
         shieldActive = false,
-        maxVisible = 2,
+        maxVisible = healthPillCapFor(surface),
     )
     val line = if (audiobookPlaying && surface == NudgeSurface.MAP_COMMUTE) {
         null
@@ -202,7 +238,11 @@ internal fun healthGlyph(kind: NudgeKind): String = when (kind) {
     NudgeKind.WALK -> "🚶"
     NudgeKind.FOCUS_GAP -> "◎"
     NudgeKind.SLEEP_ESTIMATE -> "🌙"
+    // Sprint 4 review finding 3: distinct glyphs - the sleep-estimate pill (moon) and the
+    // morning-light pill (sun) can be visible at the same time as these two on event maps.
+    NudgeKind.SLEEP_TO_BED -> "🛏"
     NudgeKind.MORNING_LIGHT -> "☀"
+    NudgeKind.SLEEP_WOKE_UP -> "🌅"
     NudgeKind.CAFFEINE_CUTOFF -> ""
 }
 
