@@ -22,6 +22,10 @@
     <!-- Package visibility so HealthConnectClient.getSdkStatus resolves the on-device provider. -->
     <queries>
         <package android:name="com.google.android.apps.healthdata" />
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
     </queries>
 
     <application

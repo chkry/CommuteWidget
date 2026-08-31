@@ -230,13 +230,24 @@ private fun ReminderFormDialog(
                 }
 
                 Text("Days", style = MaterialTheme.typography.bodyMedium)
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    (1..7).forEach { day ->
-                        FilterChip(
-                            selected = day in days,
-                            onClick = { days = toggleReminderDay(days, day) },
-                            label = { Text(dayLabel(day)) },
-                        )
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        (1..4).forEach { day ->
+                            FilterChip(
+                                selected = day in days,
+                                onClick = { days = toggleReminderDay(days, day) },
+                                label = { Text(dayLabel(day)) },
+                            )
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        (5..7).forEach { day ->
+                            FilterChip(
+                                selected = day in days,
+                                onClick = { days = toggleReminderDay(days, day) },
+                                label = { Text(dayLabel(day)) },
+                            )
+                        }
                     }
                 }
 

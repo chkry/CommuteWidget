@@ -1,16 +1,22 @@
 package com.crpakala.commutewidget.ui
 
 import android.content.Context
+import android.content.Intent
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberTimePickerState
@@ -18,16 +24,19 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.crpakala.commutewidget.data.AppSettings
 import com.crpakala.commutewidget.data.SettingsRepository
 import com.crpakala.commutewidget.schedule.CommuteScheduler
-import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * "Health" category: the six core toggles with their conditional sub-rows, exactly as in the
@@ -283,35 +292,89 @@ private fun AudioPackagesDialog(
     onDismiss: () -> Unit,
     onSave: (Set<String>) -> Unit,
 ) {
+    val context = LocalContext.current
     var packages by remember(initialPackages) { mutableStateOf(initialPackages) }
-    var packageName by remember { mutableStateOf("") }
-    val normalized = packageName.trim().lowercase(Locale.ROOT)
-    val validPackage = isValidPackageName(normalized) && normalized !in packages
+    var query by remember { mutableStateOf("") }
+    val installedApps by produceState(initialValue = emptyList<InstalledApp>(), context) {
+        value = withContext(Dispatchers.IO) {
+            val packageManager = context.packageManager
+            packageManager.queryIntentActivities(
+                Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER),
+                0,
+            ).mapNotNull { resolveInfo ->
+                val packageName = resolveInfo.activityInfo.packageName ?: return@mapNotNull null
+                if (packageName == context.packageName) {
+                    return@mapNotNull null
+                }
+                InstalledApp(
+                    label = resolveInfo.loadLabel(packageManager).toString().ifBlank { packageName },
+                    packageName = packageName,
+                )
+            }.distinctBy { it.packageName }
+                .let(::sortInstalledApps)
+        }
+    }
+    val selectedButUninstalled = selectedButUninstalledPackages(packages, installedApps)
+    val filteredApps = filterInstalledApps(installedApps, query)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Audiobook apps") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                packages.sorted().forEach { existing ->
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(existing, modifier = Modifier.weight(1f))
-                        TextButton(onClick = { packages = packages - existing }) { Text("Remove") }
-                    }
-                }
                 OutlinedTextField(
-                    value = packageName,
-                    onValueChange = { packageName = it },
-                    label = { Text("Package name") },
-                    isError = packageName.isNotBlank() && !validPackage,
+                    value = query,
+                    onValueChange = { query = it },
+                    label = { Text("Search apps") },
                     modifier = Modifier.fillMaxWidth(),
                 )
-                TextButton(
-                    enabled = validPackage,
-                    onClick = {
-                        packages = packages + normalized
-                        packageName = ""
-                    },
-                ) { Text("Add") }
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    if (selectedButUninstalled.isNotEmpty()) {
+                        item { Text("Selected apps", style = MaterialTheme.typography.bodyMedium) }
+                        items(selectedButUninstalled, key = { it }) { packageName ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Text(packageName, modifier = Modifier.weight(1f))
+                                TextButton(onClick = { packages = packages - packageName }) { Text("Remove") }
+                            }
+                        }
+                    }
+                    item { Text("Installed apps", style = MaterialTheme.typography.bodyMedium) }
+                    items(filteredApps, key = { it.packageName }) { app ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    packages = if (app.packageName in packages) {
+                                        packages - app.packageName
+                                    } else {
+                                        packages + app.packageName
+                                    }
+                                }
+                                .padding(vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(app.label, style = MaterialTheme.typography.bodyMedium)
+                                Text(app.packageName, style = MaterialTheme.typography.bodySmall)
+                            }
+                            Checkbox(
+                                checked = app.packageName in packages,
+                                onCheckedChange = { checked ->
+                                    packages = if (checked) {
+                                        packages + app.packageName
+                                    } else {
+                                        packages - app.packageName
+                                    }
+                                },
+                            )
+                        }
+                    }
+                }
             }
         },
         confirmButton = { TextButton(onClick = { onSave(packages) }) { Text("Save") } },

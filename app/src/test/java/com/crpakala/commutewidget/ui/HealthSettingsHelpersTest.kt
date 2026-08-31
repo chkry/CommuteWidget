@@ -13,12 +13,4 @@ class HealthSettingsHelpersTest {
         assertTrue(hasAllHealthPermissions(required + "extra", required))
         assertFalse(hasAllHealthPermissions(setOf("read.steps"), required))
     }
-
-    @Test
-    fun packageNameValidationRequiresLowercaseDottedName() {
-        assertTrue(isValidPackageName("com.audible.application"))
-        assertFalse(isValidPackageName(""))
-        assertFalse(isValidPackageName("audible"))
-        assertFalse(isValidPackageName("com.Audible.application"))
-    }
 }

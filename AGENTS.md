@@ -13,7 +13,7 @@ Single user, single device; there is no backward-compatibility audience beyond t
 ## Build, verify, ship
 
 - Toolchain env: `source ./env.sh` from the repo root before any Gradle command (sets JAVA_HOME, ANDROID_HOME, PATH).
-- Verify: `./gradlew assembleDebug test lint` must be green before any commit; current suite is 683 JUnit4 unit tests, lint has 0 errors (pinned-version advisories are accepted).
+- Verify: `./gradlew assembleDebug test lint` must be green before any commit; current suite is 686 JUnit4 unit tests, lint has 0 errors (pinned-version advisories are accepted).
 - Tests are plain JVM JUnit4; there is no Robolectric and no instrumentation - test pure functions, extract logic to make it pure.
 - Install: `adb install -r app/build/outputs/apk/debug/app-debug.apk` (owner's phone is often connected; installing after shipping is established practice).
 - Git: repo-local identity `chkry <chkryreddy@gmail.com>`; remote `origin` uses the `github-personal` SSH alias (personal key), never the machine's default work identity.
@@ -52,6 +52,7 @@ Single user, single device; there is no backward-compatibility audience beyond t
 - Custom pill reminders (v7): up to six user-defined, widget-only reminders with up to four selected weekday slots each; their shared active window defaults to 60 minutes and is configurable from 15-240 minutes; an active occurrence carries over at 60 percent alpha until dismissed, midnight, or the next non-dismissed slot for that pill; taps dismiss only that `pillId:slotMinute` occurrence locally with no notification or network work; a "Reset dismissed reminders" action in the Reminders screen clears today's `customPillTakenSlots` only, preserving all other day state.
 - Settings use an Android-Settings-style eight-category home menu with live summaries: Commute setup, Places & Maps, Alerts & timing, Calendar, Reminders, Health, Widget appearance, and Access & app info; all permission grants are centralized in Access & app info while feature screens retain status links and automatic prompts.
 - Two today-only dismissal resets exist: Reminders resets custom pill dismissals; Alerts & timing resets built-in health and experimental nudge dismissals (supplements, walk, sleep pill, morning light, focus gaps) while preserving water taps (they mirror Health Connect hydration writes), `walkNotified` (one notification per day), and detection state.
+- "Recalculate last night's sleep" (Alerts & timing > Today) clears only the current morning's stored sleep fields (steps preserved), un-dismisses the sleep pill, and recomputes - the unfreeze path for a value written by an older estimator.
 
 ## Decision log (dated, with the why)
 

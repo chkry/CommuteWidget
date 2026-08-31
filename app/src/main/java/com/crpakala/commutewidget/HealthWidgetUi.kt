@@ -2,6 +2,7 @@ package com.crpakala.commutewidget
 
 import com.crpakala.commutewidget.data.CustomPillOccurrence
 import com.crpakala.commutewidget.data.HealthDayState
+import com.crpakala.commutewidget.data.HealthHistory
 import com.crpakala.commutewidget.data.HealthNudge
 import com.crpakala.commutewidget.data.HealthNudgeKind
 import com.crpakala.commutewidget.data.MapPillCorner
@@ -135,6 +136,31 @@ internal fun filterHealthNudgesAgainstDayState(
  */
 internal fun withoutNudgeKind(nudges: List<HealthNudge>, kind: HealthNudgeKind): List<HealthNudge> =
     nudges.filterNot { it.kind == kind }
+
+/**
+ * The "Recalculate last night's sleep" action (Alerts & timing): clears ONLY the sleep fields of
+ * [dateIso]'s history record - `sleepMinutes`, `overnightUnlockCount`, `sleepStartEpochMillis` -
+ * so the backfill's freeze rule (which requires a stored value) unfreezes and the next health
+ * computation rescores the night with the current estimator. Steps on that record and every
+ * other day's record are preserved; a missing record or history is returned untouched. This
+ * exists because a value frozen by an OLDER estimator would otherwise persist until midnight.
+ */
+internal fun clearSleepEstimateForDay(history: HealthHistory?, dateIso: String): HealthHistory? {
+    if (history == null || history.days.none { it.date == dateIso }) return history
+    return HealthHistory(
+        days = history.days.map { record ->
+            if (record.date == dateIso) {
+                record.copy(sleepMinutes = null, overnightUnlockCount = null, sleepStartEpochMillis = null)
+            } else {
+                record
+            }
+        },
+    )
+}
+
+/** Un-dismisses only the "Slept ~" pill for today, leaving every other dismissal untouched - the recalculate action's companion so the recomputed value is actually visible. */
+internal fun clearSleepPillDismissed(state: HealthDayState?, todayIsoDate: String): HealthDayState? =
+    if (state?.date == todayIsoDate && state.sleepPillDismissed) state.copy(sleepPillDismissed = false) else state
 
 internal fun resolveVisibleHealthChrome(
     snapshotNudges: List<HealthNudge>,

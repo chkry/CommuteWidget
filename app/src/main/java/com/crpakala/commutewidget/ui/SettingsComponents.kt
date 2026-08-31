@@ -240,9 +240,6 @@ internal fun PermissionStatusLinkRow(statusText: String, onClick: () -> Unit) {
 internal fun hasAllHealthPermissions(granted: Set<String>, required: Set<String>): Boolean =
     granted.containsAll(required)
 
-internal fun isValidPackageName(value: String): Boolean =
-    value.isNotBlank() && value == value.lowercase(Locale.ROOT) && '.' in value
-
 internal fun formatTime(minuteOfDay: Int): String {
     val calendar = Calendar.getInstance().apply {
         set(Calendar.HOUR_OF_DAY, minuteOfDay / 60)

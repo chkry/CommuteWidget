@@ -264,6 +264,7 @@ The 2x2 size shows no health UI.
 | Issue | Cause | Solution |
 | --- | --- | --- |
 | No sleep prefix on morning brief | Usage access not granted, the device has no completed qualifying lock interval yet, or an unanchored estimate is under 3 hours | Grant Usage access in **Access & app info**; wait for an unlock, Woke Up tap, or the 10:00 close, because an anchored short night can still produce an estimate |
+| Shown sleep looks wrong or predates an app update | The day's value froze before the fix or model change landed | Tap **Recalculate last night's sleep** under **Alerts & timing** > **Today** - it clears the stored estimate, rescores the night from lock/unlock history, and brings back the sleep pill |
 | Water pill does not dismiss after tap | Health Connect write failed or WRITE_HYDRATION not granted | Re-grant Health Connect permissions from **Access & app info** and tap again; the pill stays until a confirmed write |
 | No health nudges during a drive | Audiobook suppression is active by design | Expected while a configured audiobook app is playing; disable **Suppress during audiobooks** if you want nudges during playback |
 | Walk or step nudges never appear | Health Connect steps not syncing | Complete Samsung Health to Health Connect sync (permissions, Consents, account sync) |

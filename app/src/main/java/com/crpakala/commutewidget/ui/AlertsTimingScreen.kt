@@ -28,6 +28,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.crpakala.commutewidget.clearSleepEstimateForDay
+import com.crpakala.commutewidget.clearSleepPillDismissed
 import com.crpakala.commutewidget.clearTodayHealthNudgeDismissals
 import com.crpakala.commutewidget.data.AppSettings
 import com.crpakala.commutewidget.data.SettingsRepository
@@ -137,6 +139,25 @@ fun AlertsTimingScreen(
                 "Bring back the health and experimental nudges you dismissed today - supplements, walk, sleep, morning light, and focus chips. " +
                     "Water taps stay logged, the walk notification still fires at most once a day, " +
                     "and custom reminders have their own reset under Reminders. Today only.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            TextButton(onClick = {
+                scope.launch {
+                    val todayIsoDate = LocalDate.now().toString()
+                    repository.updateHealthHistory { history ->
+                        clearSleepEstimateForDay(history, todayIsoDate)
+                    }
+                    repository.updateHealthDayState { state ->
+                        clearSleepPillDismissed(state, todayIsoDate)
+                    }
+                    HealthFieldsRefresher.recomputeAndPersist(applicationContext)
+                    snackbarHostState.showSnackbar("Last night's sleep recalculated")
+                }
+            }) { Text("Recalculate last night's sleep") }
+            Text(
+                "Clears the stored estimate for last night and rescores it from lock/unlock history " +
+                    "with the current model, bringing back the sleep pill if you dismissed it. " +
+                    "Use it when the shown value predates an app update or looks wrong.",
                 style = MaterialTheme.typography.bodySmall,
             )
         }

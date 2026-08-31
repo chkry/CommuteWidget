@@ -77,6 +77,7 @@ Both rank below active supplements and above water and walk.
 | To bed | Stores `last_to_bed_tap_epoch_millis`, hides the pill instantly (snapshot strip), narrows the estimator to locks at or after the tap, and triggers an immediate `health_boundary` run for the local recompute | convention |
 | Woke up | Stores `last_woke_up_tap_epoch_millis`, hides the pill instantly (snapshot strip), bounds the estimator to the preceding unlock or closes an open interval at the tap, and finalizes the estimate via an immediate `health_boundary` run | convention |
 | Tap cost | The tap itself is a bounded local write inside the Glance action budget; the full recompute (calendar, Health Connect, UsageStats reads) runs on the boundary worker, whose self-reschedule also restores the next wake | convention |
+| Recalculate | "Recalculate last night's sleep" under Alerts & timing > Today clears the stored estimate for the current morning (steps preserved), un-dismisses the sleep pill, and rescores the night with the current estimator - the escape hatch for a value frozen by an older model | convention |
 
 The timestamps survive midnight and stale taps from another night are ignored.
 Neither tap sends a notification or makes a network request.

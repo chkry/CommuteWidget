@@ -3,7 +3,9 @@ package com.crpakala.commutewidget
 import com.crpakala.commutewidget.data.CommuteSnapshot
 import com.crpakala.commutewidget.data.CustomPillOccurrence
 import com.crpakala.commutewidget.data.Direction
+import com.crpakala.commutewidget.data.HealthDayRecord
 import com.crpakala.commutewidget.data.HealthDayState
+import com.crpakala.commutewidget.data.HealthHistory
 import com.crpakala.commutewidget.data.HealthNudge
 import com.crpakala.commutewidget.data.HealthNudgeKind
 import com.crpakala.commutewidget.data.MapPillCorner
@@ -386,6 +388,51 @@ class HealthWidgetUiTest {
         // Distinct from the sleep-estimate moon and morning-light sun, which can co-render.
         assertEquals("🛏", healthGlyph(NudgeKind.SLEEP_TO_BED))
         assertEquals("🌅", healthGlyph(NudgeKind.SLEEP_WOKE_UP))
+    }
+
+    // clearSleepEstimateForDay / clearSleepPillDismissed - the "Recalculate last night's sleep" action
+
+    @Test
+    fun clearSleepEstimateForDay_clearsOnlySleepFieldsOfTheDatedRecord() {
+        val history = HealthHistory(
+            days = listOf(
+                HealthDayRecord(date = "2026-08-30", steps = 7000, sleepMinutes = 400, overnightUnlockCount = 2, sleepStartEpochMillis = 1L),
+                HealthDayRecord(date = today, steps = 3500, sleepMinutes = 720, overnightUnlockCount = 1, sleepStartEpochMillis = 2L),
+            ),
+        )
+
+        val result = clearSleepEstimateForDay(history, today)
+
+        requireNotNull(result)
+        val todayRecord = result.days.single { it.date == today }
+        assertNull(todayRecord.sleepMinutes)
+        assertNull(todayRecord.overnightUnlockCount)
+        assertNull(todayRecord.sleepStartEpochMillis)
+        assertEquals(3500, todayRecord.steps)
+        // Yesterday's record is untouched.
+        assertEquals(history.days.first(), result.days.single { it.date == "2026-08-30" })
+    }
+
+    @Test
+    fun clearSleepEstimateForDay_missingRecordAndNullHistoryAreNoOps() {
+        val history = HealthHistory(days = listOf(HealthDayRecord(date = "2026-08-30", sleepMinutes = 400)))
+        assertEquals(history, clearSleepEstimateForDay(history, today))
+        assertNull(clearSleepEstimateForDay(null, today))
+    }
+
+    @Test
+    fun clearSleepPillDismissed_clearsOnlyThatFlagForToday() {
+        val state = emptyState().copy(sleepPillDismissed = true, walkDismissed = true)
+
+        val result = clearSleepPillDismissed(state, today)
+
+        requireNotNull(result)
+        assertFalse(result.sleepPillDismissed)
+        assertTrue(result.walkDismissed)
+        // Other-date and already-clear states are returned as-is.
+        val yesterday = HealthDayState(date = "2026-08-30", sleepPillDismissed = true)
+        assertEquals(yesterday, clearSleepPillDismissed(yesterday, today))
+        assertEquals(emptyState(), clearSleepPillDismissed(emptyState(), today))
     }
 
     @Test
