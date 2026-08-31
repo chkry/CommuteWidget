@@ -221,7 +221,8 @@ fun selectVisibleNudges(
                 // but only on an event map; they stay line-only on commute maps and cards.
                 !(candidate.kind in INFO_PILL_KINDS && surface != NudgeSurface.MAP_EVENT) &&
                 !(shieldActive && candidate.kind in SHIELD_SUPPRESSED_KINDS) &&
-                !(surface == NudgeSurface.MAP_COMMUTE && candidate.kind == NudgeKind.WATER) &&
+                // Owner request 2026-08-31: the prior water-never-on-commute-map ban is lifted -
+                // water now competes purely by selectionPriority and the surface's maxVisible cap.
                 !(surface != NudgeSurface.CARD && candidate.kind == NudgeKind.FOCUS_GAP)
         }
         .sortedWith(compareBy<IndexedValue<NudgeCandidate>> { selectionPriority(it.value) }.thenBy { it.index })

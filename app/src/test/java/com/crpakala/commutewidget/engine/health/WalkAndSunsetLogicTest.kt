@@ -30,14 +30,16 @@ class WalkAndSunsetLogicTest {
 
     @Test
     fun sedentarySignalWithNoDailyTotal_usesAfternoonDeficit() {
-        val result = suggest(stepsToday = null, stepsSinceNoon = 500, nowMinute = 16 * 60)
+        // Sedentary check minute (16:00) is before window start (18:00, the default `now`);
+        // the sedentary condition itself is what's under test here, not the clock boundary.
+        val result = suggest(stepsToday = null, stepsSinceNoon = 500)
 
         assertEquals(WalkSuggestion(1_080, 15), result)
     }
 
     @Test
     fun sedentarySignalStillTriggersAfterDailyGoalWasMet() {
-        val result = suggest(stepsToday = 8_100, stepsSinceNoon = 500, nowMinute = 16 * 60)
+        val result = suggest(stepsToday = 8_100, stepsSinceNoon = 500)
 
         assertEquals(WalkSuggestion(1_080, 15), result)
     }
@@ -202,6 +204,28 @@ class WalkAndSunsetLogicTest {
     }
 
     @Test
+    fun beforeWindowStart_returnsNullEvenWhenBelowDailyGoal() {
+        val result = suggest(
+            stepsToday = 5_300,
+            stepsSinceNoon = 1_000,
+            nowMinute = params.walkWindowStartMinuteOfDay - 1,
+        )
+
+        assertNull(result)
+    }
+
+    @Test
+    fun atWindowStart_returnsSuggestion() {
+        val result = suggest(
+            stepsToday = 5_300,
+            stepsSinceNoon = 1_000,
+            nowMinute = params.walkWindowStartMinuteOfDay,
+        )
+
+        assertEquals(WalkSuggestion(params.walkWindowStartMinuteOfDay, 30), result)
+    }
+
+    @Test
     fun hyderabadLateJuneSunset_isWithinEightMinutesOfSixFiftyPm() {
         val sunset = localSunsetMinuteOfDay(17.4, 78.5, LocalDate.of(2026, 6, 24), zone)
 
@@ -245,7 +269,7 @@ class WalkAndSunsetLogicTest {
         bedtime: Int? = null,
         sunset: Int? = null,
         audibleStopped: Int? = null,
-        nowMinute: Int = 17 * 60,
+        nowMinute: Int = 18 * 60,
         latch: Boolean = false,
         daylight: Boolean = false,
     ): WalkSuggestion? = suggestWalk(

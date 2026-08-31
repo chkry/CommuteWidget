@@ -13,6 +13,9 @@ fun planWaterSlots(
     params: HealthParams = HealthParams(),
 ): List<Int> {
     if (count <= 0) return emptyList()
+    // An inverted or flat window (owner-configurable start/end) has no anchor range to distribute
+    // slots across - return an empty plan rather than let waterAnchors divide by a bogus span.
+    if (params.waterLastAnchorMinuteOfDay <= params.waterFirstAnchorMinuteOfDay) return emptyList()
 
     val anchors = waterAnchors(count, params)
     val planned = mutableListOf<Int>()
@@ -117,6 +120,43 @@ fun waterPulseSlot(
     }
 
     return nowMinute
+}
+
+/**
+ * Whether a calendar meeting is ongoing at [nowEpochMillis] (start inclusive, end exclusive).
+ * Owner request 2026-08-31: gates the water candidate at computation time - all-day events are
+ * already excluded upstream (the calendar reader never yields them as [EventSpan]s here).
+ */
+fun meetingOngoing(events: List<EventSpan>, nowEpochMillis: Long): Boolean =
+    events.any { nowEpochMillis >= it.startEpochMillis && nowEpochMillis < it.endEpochMillis }
+
+/**
+ * Today's meeting start/end minutes-of-day that fall inside one of [planMinutes]'s active
+ * windows ([slot, slot + waterActiveWindowMinutes)) - the instant a meeting starts or ends
+ * mid-slot is exactly when [meetingOngoing]'s gate on the water candidate can flip, so
+ * [com.crpakala.commutewidget.schedule.HealthBoundaryWorker] must wake up there instead of
+ * waiting for the slot's own start/end and missing a meeting-end reappearance until the next
+ * scheduled boundary. An edge outside today (relative to [dayEpochMillis] under [zone], e.g. the
+ * far edge of a meeting spanning midnight) is dropped rather than wrapped into a bogus minute.
+ */
+fun waterMeetingEdgeBoundaryMinutes(
+    planMinutes: List<Int>,
+    events: List<EventSpan>,
+    dayEpochMillis: Long,
+    zone: ZoneId,
+    params: HealthParams = HealthParams(),
+): List<Int> {
+    if (planMinutes.isEmpty() || events.isEmpty()) return emptyList()
+    return events
+        .asSequence()
+        .filter { it.endEpochMillis > it.startEpochMillis }
+        .flatMap { sequenceOf(it.startEpochMillis, it.endEpochMillis) }
+        .map { minuteRelativeToDay(it, dayEpochMillis, zone) }
+        .filter { it in 0 until 24 * 60 }
+        .filter { edge -> planMinutes.any { slot -> edge in slot until slot + params.waterActiveWindowMinutes } }
+        .distinct()
+        .sorted()
+        .toList()
 }
 
 private fun waterAnchors(count: Int, params: HealthParams): List<Int> {

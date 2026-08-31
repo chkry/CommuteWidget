@@ -13,8 +13,10 @@ import com.crpakala.commutewidget.data.HealthDayState
 import com.crpakala.commutewidget.data.HealthNudgeKind
 import com.crpakala.commutewidget.data.SettingsRepository
 import com.crpakala.commutewidget.engine.computeHealthState
+import com.crpakala.commutewidget.engine.todayEventsChained
 import com.crpakala.commutewidget.engine.withHealthComputation
 import com.crpakala.commutewidget.engine.health.CustomPillDefinition
+import com.crpakala.commutewidget.engine.health.EventSpan
 import com.crpakala.commutewidget.engine.health.HealthParams
 import com.crpakala.commutewidget.engine.health.TO_BED_EARLY_MORNING_END_MINUTE_OF_DAY
 import com.crpakala.commutewidget.engine.health.TO_BED_EVENING_START_MINUTE_OF_DAY
@@ -22,6 +24,7 @@ import com.crpakala.commutewidget.engine.health.WOKE_UP_WINDOW_END_MINUTE_OF_DAY
 import com.crpakala.commutewidget.engine.health.WOKE_UP_WINDOW_START_MINUTE_OF_DAY
 import com.crpakala.commutewidget.engine.health.customPillTransitionCandidates
 import com.crpakala.commutewidget.engine.health.toBedTapInCurrentDomain
+import com.crpakala.commutewidget.engine.health.waterMeetingEdgeBoundaryMinutes
 import com.crpakala.commutewidget.engine.health.wokeUpTapInCurrentDomain
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
@@ -82,6 +85,7 @@ class HealthBoundaryWorker(
             ?.targetMinuteOfDay
         val toBedTapEpochMillis = repo.lastToBedTapEpochMillis()
         val wokeUpTapEpochMillis = repo.lastWokeUpTapEpochMillis()
+        val todayEvents = todayEventSpansForBoundary(context, settings)
         val next = nextHealthBoundary(
             now = ZonedDateTime.now(),
             settings = settings,
@@ -89,10 +93,23 @@ class HealthBoundaryWorker(
             walkTargetMinuteOfDay = walkTargetMinuteOfDay,
             toBedTapEpochMillis = toBedTapEpochMillis,
             wokeUpTapEpochMillis = wokeUpTapEpochMillis,
+            todayEvents = todayEvents,
         )
         HealthBoundaryScheduler.scheduleAt(context, next, ExistingWorkPolicy.APPEND_OR_REPLACE)
     }
 }
+
+/**
+ * Today's calendar event spans for [nextHealthBoundary]'s meeting-edge water candidates - the
+ * same [todayEventsChained] path health computation already uses, wrapped defensively here since
+ * neither of [nextHealthBoundary]'s two callers otherwise touches the calendar provider: a
+ * failed read or a revoked permission degrades to no meeting-edge candidates rather than
+ * disrupting the reschedule. Zero new Google API calls - this is a local calendar provider read.
+ */
+private fun todayEventSpansForBoundary(context: Context, settings: AppSettings): List<EventSpan> =
+    runCatching { todayEventsChained(context, settings, System.currentTimeMillis(), ZoneId.systemDefault()) }
+        .getOrDefault(emptyList())
+        .map { EventSpan(it.startEpochMillis, it.endEpochMillis) }
 
 /**
  * Recomputes health fields into the stored snapshot and re-renders the widget - no Routes/Static
@@ -137,6 +154,7 @@ object HealthBoundaryScheduler {
             ?.targetMinuteOfDay
         val toBedTapEpochMillis = repo.lastToBedTapEpochMillis()
         val wokeUpTapEpochMillis = repo.lastWokeUpTapEpochMillis()
+        val todayEvents = todayEventSpansForBoundary(appContext, settings)
         val next = nextHealthBoundary(
             now = ZonedDateTime.now(),
             settings = settings,
@@ -144,6 +162,7 @@ object HealthBoundaryScheduler {
             walkTargetMinuteOfDay = walkTargetMinuteOfDay,
             toBedTapEpochMillis = toBedTapEpochMillis,
             wokeUpTapEpochMillis = wokeUpTapEpochMillis,
+            todayEvents = todayEvents,
         )
         scheduleAt(appContext, next, existingWorkPolicy)
     }
@@ -163,14 +182,18 @@ object HealthBoundaryScheduler {
 }
 
 /**
- * Pure "when might a health nudge's visible state next change" computation, purely from settings
- * and day state (no live sensor/calendar reads - this only decides when to wake up and recompute,
- * not what the state will be). Candidate boundary minutes-of-day, each included only when its
+ * Pure "when might a health nudge's visible state next change" computation, purely from settings,
+ * day state, and [todayEvents] (no live sensor/calendar reads of its own - callers fetch calendar
+ * state via [todayEventSpansForBoundary]; this only decides when to wake up and recompute, not
+ * what the state will be). Candidate boundary minutes-of-day, each included only when its
  * owning feature is enabled (and, for the taken/dismissed-gated ones, not yet taken):
  * - every water slot's start and (start + active-window) end,
  * - the morning-supplement window start and the 21:30 vitamins cutoff,
  * - the protein window start and the 18:00 protein-outranks-morning transition,
- * - [walkTargetMinuteOfDay] (the last computed walk suggestion's start, if any),
+ * - the walk search window start ([AppSettings.walkSearchStartMinuteOfDay]) when the evening walk
+ *   feature is enabled and not dismissed for today - `suggestWalk` emits nothing before this
+ *   minute, so the chain must wake up here to pick up the first in-window suggestion - plus
+ *   [walkTargetMinuteOfDay] (the last computed walk suggestion's start, if any),
  * - the shield's default no-early-event end minute, when the restless-night shield is enabled,
  * - the caffeine lead-time window start and cutoff,
  * - Sprint 2: the To Bed pill's evening start (21:00) and early-morning window end (02:00), and
@@ -180,7 +203,11 @@ object HealthBoundaryScheduler {
  *   [com.crpakala.commutewidget.engine.health.wokeUpTapInCurrentDomain]),
  * - each of today's enabled custom pill reminders' eligible slot starts and active-window ends
  *   (see [com.crpakala.commutewidget.engine.health.customPillTransitionCandidates] - midnight
- *   itself is excluded there, since the day-rollover fallback below already covers it).
+ *   itself is excluded there, since the day-rollover fallback below already covers it),
+ * - Owner request 2026-08-31: today's meeting start/end edges that land inside an active water
+ *   slot window (see [com.crpakala.commutewidget.engine.health.waterMeetingEdgeBoundaryMinutes]),
+ *   when water reminders are enabled - the meeting-suppression gate on the water candidate can
+ *   flip mid-slot, and this is the only way the chain wakes up at that exact instant.
  * The earliest candidate strictly after [now] wins; if none remains today, the result is local
  * midnight + 1 minute (the day-rollover fallback), so this function never returns null.
  */
@@ -192,6 +219,7 @@ internal fun nextHealthBoundary(
     params: HealthParams = HealthParams(),
     toBedTapEpochMillis: Long? = null,
     wokeUpTapEpochMillis: Long? = null,
+    todayEvents: List<EventSpan> = emptyList(),
 ): ZonedDateTime {
     val nowMinuteOfDay = now.hour * 60 + now.minute
     val candidates = healthBoundaryMinutesOfDay(
@@ -203,6 +231,7 @@ internal fun nextHealthBoundary(
         now = now,
         toBedTapEpochMillis = toBedTapEpochMillis,
         wokeUpTapEpochMillis = wokeUpTapEpochMillis,
+        todayEvents = todayEvents,
     )
     val nextToday = candidates.firstOrNull { it > nowMinuteOfDay }
     return if (nextToday != null) {
@@ -221,12 +250,23 @@ internal fun healthBoundaryMinutesOfDay(
     now: ZonedDateTime,
     toBedTapEpochMillis: Long? = null,
     wokeUpTapEpochMillis: Long? = null,
+    todayEvents: List<EventSpan> = emptyList(),
 ): List<Int> = buildList {
     if (settings.waterRemindersEnabled) {
-        dayState?.waterSlotPlanMinutes?.forEach { slot ->
+        val waterPlanMinutes = dayState?.waterSlotPlanMinutes ?: emptyList()
+        waterPlanMinutes.forEach { slot ->
             add(slot)
             add(slot + params.waterActiveWindowMinutes)
         }
+        addAll(
+            waterMeetingEdgeBoundaryMinutes(
+                planMinutes = waterPlanMinutes,
+                events = todayEvents,
+                dayEpochMillis = now.toInstant().toEpochMilli(),
+                zone = now.zone,
+                params = params,
+            ),
+        )
     }
     if (settings.morningSupplementsEnabled && dayState?.morningSupplementsTakenMinute == null) {
         add(settings.morningSupplementsStartMinuteOfDay)
@@ -235,6 +275,9 @@ internal fun healthBoundaryMinutesOfDay(
     if (settings.eveningProteinEnabled && dayState?.proteinTakenMinute == null) {
         add(settings.proteinStartMinuteOfDay)
         add(params.supplementEveningPriorityMinuteOfDay)
+    }
+    if (settings.eveningWalkEnabled && dayState?.walkDismissed != true) {
+        add(settings.walkSearchStartMinuteOfDay)
     }
     if (settings.eveningWalkEnabled && walkTargetMinuteOfDay != null) {
         add(walkTargetMinuteOfDay)

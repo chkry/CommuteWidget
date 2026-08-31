@@ -32,6 +32,7 @@ import com.crpakala.commutewidget.engine.health.focusGapCandidate
 import com.crpakala.commutewidget.engine.health.focusShieldActive
 import com.crpakala.commutewidget.engine.health.localSunsetMinuteOfDay
 import com.crpakala.commutewidget.engine.health.medianSleepMinutes
+import com.crpakala.commutewidget.engine.health.meetingOngoing
 import com.crpakala.commutewidget.engine.health.morningLightEligible
 import com.crpakala.commutewidget.engine.health.planWaterSlots
 import com.crpakala.commutewidget.engine.health.sleepBackfillFrozen
@@ -127,6 +128,11 @@ private suspend fun computeHealthStateUnsafe(
     val params = HealthParams(
         walkWindowStartMinuteOfDay = settings.walkSearchStartMinuteOfDay,
         walkWindowEndMinuteOfDay = settings.walkSearchEndMinuteOfDay,
+        waterFirstAnchorMinuteOfDay = settings.waterWindowStartMinuteOfDay,
+        waterLastAnchorMinuteOfDay = settings.waterWindowEndMinuteOfDay,
+        // Preserves the existing end+30 relationship; the active-window length itself is not
+        // owner-configurable, so the default HealthParams() value is the source of truth for it.
+        waterCutoffMinuteOfDay = settings.waterWindowEndMinuteOfDay + HealthParams().waterActiveWindowMinutes,
     )
 
     val todayEvents = todayEventsChained(context, settings, nowEpochMillis, zone)
@@ -266,7 +272,8 @@ private suspend fun computeHealthStateUnsafe(
         params = params,
     )
 
-    waterCandidate(settings, dayState, nowMinuteOfDay, params)?.let { candidates += it }
+    val waterMeetingOngoing = meetingOngoing(calendarEventSpans, nowEpochMillis)
+    waterCandidate(settings, dayState, nowMinuteOfDay, waterMeetingOngoing, params)?.let { candidates += it }
 
     var walkSuggestion: WalkSuggestion? = null
     if (settings.eveningWalkEnabled && !dayState.walkDismissed) {
@@ -357,12 +364,17 @@ private suspend fun computeHealthStateUnsafe(
     )
 }
 
-private fun waterCandidate(
+internal fun waterCandidate(
     settings: AppSettings,
     dayState: HealthDayState,
     nowMinuteOfDay: Int,
+    meetingOngoing: Boolean,
     params: HealthParams,
 ): NudgeCandidate? {
+    // Owner request 2026-08-31: no water pill (plan-driven or post-gym pulse) while a calendar
+    // meeting is ongoing, computed here rather than filtered at render time - mirrors the
+    // restless-night shield's computation-time-only precedent.
+    if (meetingOngoing) return null
     if (settings.waterRemindersEnabled) {
         val activeSlot = waterSlotActiveAt(
             planMinutes = dayState.waterSlotPlanMinutes,
@@ -520,6 +532,54 @@ internal suspend fun ensureTodayHealthDayState(
     val fresh = HealthDayState(date = todayDateStr, waterSlotPlanMinutes = waterPlan)
     repo.updateHealthDayState { current -> if (current?.date == todayDateStr) current else fresh }
     return runCatching { repo.healthDayState() }.getOrNull() ?: fresh
+}
+
+/**
+ * Same-day water replan: the owner edited the water window or reminder count from
+ * [com.crpakala.commutewidget.ui.HealthScreen] and today's plan must reflect it immediately
+ * rather than waiting for tomorrow's [ensureTodayHealthDayState] rollover. Recomputes
+ * [HealthDayState.waterSlotPlanMinutes] under the caller's current [params]/[waterRemindersPerDay]
+ * and [events], and writes it back with `copy` so every OTHER field - [HealthDayState
+ * .waterTapMinutes] especially, since each tap mirrors a confirmed Health Connect write - survives
+ * untouched. Falls back to [ensureTodayHealthDayState] when there is no day state for today yet
+ * (nothing to replan; a fresh plan is the correct first touch instead).
+ */
+internal suspend fun replanTodayWaterSlots(
+    repo: SettingsRepository,
+    todayDateStr: String,
+    events: List<EventSpan>,
+    waterRemindersPerDay: Int,
+    nowEpochMillis: Long,
+    zone: ZoneId,
+    params: HealthParams,
+): HealthDayState {
+    val existing = runCatching { repo.healthDayState() }.getOrNull()
+    if (existing?.date != todayDateStr) {
+        return ensureTodayHealthDayState(
+            repo = repo,
+            todayDateStr = todayDateStr,
+            events = events,
+            waterRemindersPerDay = waterRemindersPerDay,
+            nowEpochMillis = nowEpochMillis,
+            zone = zone,
+            params = params,
+        )
+    }
+
+    val newPlan = runCatching {
+        planWaterSlots(
+            count = waterRemindersPerDay,
+            events = events,
+            dayEpochMillis = nowEpochMillis,
+            zone = zone,
+            nowEpochMillis = nowEpochMillis,
+            params = params,
+        )
+    }.getOrDefault(existing.waterSlotPlanMinutes)
+    repo.updateHealthDayState { current ->
+        if (current?.date == todayDateStr) current.copy(waterSlotPlanMinutes = newPlan) else current
+    }
+    return runCatching { repo.healthDayState() }.getOrNull() ?: existing.copy(waterSlotPlanMinutes = newPlan)
 }
 
 /**

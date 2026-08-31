@@ -68,6 +68,8 @@ private object PreferenceKeys {
     val CAFFEINE_CUTOFF_LINE_ENABLED = booleanPreferencesKey("caffeine_cutoff_line_enabled")
     val STEP_GOAL = intPreferencesKey("step_goal")
     val WATER_REMINDERS_PER_DAY = intPreferencesKey("water_reminders_per_day")
+    val WATER_WINDOW_START_MINUTE_OF_DAY = intPreferencesKey("water_window_start_minute_of_day")
+    val WATER_WINDOW_END_MINUTE_OF_DAY = intPreferencesKey("water_window_end_minute_of_day")
     val MORNING_SUPPLEMENTS_START_MINUTE_OF_DAY =
         intPreferencesKey("morning_supplements_start_minute_of_day")
     val MORNING_SUPPLEMENTS_END_MINUTE_OF_DAY =
@@ -128,6 +130,8 @@ private fun Preferences.toAppSettings(): AppSettings {
         caffeineCutoffLineEnabled = this[PreferenceKeys.CAFFEINE_CUTOFF_LINE_ENABLED] ?: false,
         stepGoal = this[PreferenceKeys.STEP_GOAL] ?: 8000,
         waterRemindersPerDay = this[PreferenceKeys.WATER_REMINDERS_PER_DAY] ?: 5,
+        waterWindowStartMinuteOfDay = this[PreferenceKeys.WATER_WINDOW_START_MINUTE_OF_DAY] ?: 450,
+        waterWindowEndMinuteOfDay = this[PreferenceKeys.WATER_WINDOW_END_MINUTE_OF_DAY] ?: 1170,
         morningSupplementsStartMinuteOfDay =
             this[PreferenceKeys.MORNING_SUPPLEMENTS_START_MINUTE_OF_DAY] ?: 420,
         morningSupplementsEndMinuteOfDay =
@@ -446,6 +450,18 @@ class SettingsRepository private constructor(
     suspend fun setWaterRemindersPerDay(remindersPerDay: Int) {
         dataStore.edit { preferences ->
             preferences[PreferenceKeys.WATER_REMINDERS_PER_DAY] = remindersPerDay
+        }
+    }
+
+    suspend fun setWaterWindowStartMinuteOfDay(minuteOfDay: Int) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.WATER_WINDOW_START_MINUTE_OF_DAY] = minuteOfDay
+        }
+    }
+
+    suspend fun setWaterWindowEndMinuteOfDay(minuteOfDay: Int) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.WATER_WINDOW_END_MINUTE_OF_DAY] = minuteOfDay
         }
     }
 

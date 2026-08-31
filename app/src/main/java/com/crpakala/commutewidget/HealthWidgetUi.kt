@@ -107,6 +107,10 @@ internal fun filterHealthNudgesAgainstDayState(
     val state = dayState?.takeIf { it.date == todayIsoDate }
     return nudges.filter { nudge ->
         if (nowMinuteOfDay >= nudge.endMinuteOfDay) return@filter false
+        // Defense against a stale snapshot (e.g. yesterday evening's walk nudge rendering after
+        // midnight before the day-rollover boundary lands): only WALK gets this pre-start gate -
+        // every other kind is already computation-gated to its own window.
+        if (nudge.kind == HealthNudgeKind.WALK && nowMinuteOfDay < nudge.startMinuteOfDay) return@filter false
         if (state == null) return@filter true
         when (nudge.kind) {
             HealthNudgeKind.SUPPLEMENT_MORNING -> state.morningSupplementsTakenMinute == null

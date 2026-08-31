@@ -292,8 +292,11 @@ class NudgeLogicTest {
             candidate(NudgeKind.FOCUS_GAP),
         )
 
+        // Owner request 2026-08-31: the prior water-never-on-commute-map ban is lifted, so water
+        // (priority 4) now outranks walk (priority 6) on every surface - FOCUS_GAP is still
+        // CARD-only, and only two of the four candidates fit the max-2 cap regardless of surface.
         assertEquals(
-            listOf(NudgeKind.SUPPLEMENT_PROTEIN, NudgeKind.WALK),
+            listOf(NudgeKind.SUPPLEMENT_PROTEIN, NudgeKind.WATER),
             selectVisibleNudges(candidates, NudgeSurface.MAP_COMMUTE, false, false).map { it.kind },
         )
         assertEquals(
@@ -304,6 +307,28 @@ class NudgeLogicTest {
             listOf(NudgeKind.SUPPLEMENT_PROTEIN, NudgeKind.WATER),
             selectVisibleNudges(candidates, NudgeSurface.CARD, false, false).map { it.kind },
         )
+    }
+
+    @Test
+    fun waterOnCommuteMap_isNoLongerBanned_competesPurelyByPriorityAndCap() {
+        // Before the 2026-08-31 reversal, MAP_COMMUTE hard-excluded WATER regardless of ranking;
+        // now it competes exactly like MAP_EVENT and CARD do - water (priority 4) beats walk
+        // (priority 6) and appears within the max-2 cap.
+        val waterAlone = selectVisibleNudges(
+            listOf(candidate(NudgeKind.WATER)),
+            NudgeSurface.MAP_COMMUTE,
+            audiobookPlaying = false,
+            shieldActive = false,
+        )
+        assertEquals(listOf(NudgeKind.WATER), waterAlone.map { it.kind })
+
+        val waterVersusWalk = selectVisibleNudges(
+            listOf(candidate(NudgeKind.WALK), candidate(NudgeKind.WATER)),
+            NudgeSurface.MAP_COMMUTE,
+            audiobookPlaying = false,
+            shieldActive = false,
+        )
+        assertEquals(NudgeKind.WATER, waterVersusWalk.first().kind)
     }
 
     @Test

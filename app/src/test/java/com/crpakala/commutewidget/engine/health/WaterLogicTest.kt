@@ -3,6 +3,7 @@ package com.crpakala.commutewidget.engine.health
 import java.time.LocalDate
 import java.time.ZoneId
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -82,6 +83,153 @@ class WaterLogicTest {
 
         assertEquals(5, result.size)
         assertEquals(450, result.first())
+    }
+
+    @Test
+    fun customWindowAnchors_driveSlotPlacement() {
+        val params = HealthParams(
+            waterFirstAnchorMinuteOfDay = 540,
+            waterLastAnchorMinuteOfDay = 1_080,
+            waterCutoffMinuteOfDay = 1_110,
+        )
+
+        val result = planWaterSlots(
+            count = 3,
+            events = emptyList(),
+            dayEpochMillis = dayStart,
+            zone = zone,
+            nowEpochMillis = epoch(6, 0),
+            params = params,
+        )
+
+        assertEquals(listOf(540, 810, 1_080), result)
+    }
+
+    @Test
+    fun invertedWindow_returnsEmptyPlan() {
+        val params = HealthParams(waterFirstAnchorMinuteOfDay = 1_170, waterLastAnchorMinuteOfDay = 450)
+
+        val result = planWaterSlots(
+            count = 5,
+            events = emptyList(),
+            dayEpochMillis = dayStart,
+            zone = zone,
+            nowEpochMillis = epoch(6, 0),
+            params = params,
+        )
+
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun flatWindow_returnsEmptyPlan() {
+        val params = HealthParams(waterFirstAnchorMinuteOfDay = 600, waterLastAnchorMinuteOfDay = 600)
+
+        val result = planWaterSlots(
+            count = 5,
+            events = emptyList(),
+            dayEpochMillis = dayStart,
+            zone = zone,
+            nowEpochMillis = epoch(6, 0),
+            params = params,
+        )
+
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun meetingOngoing_trueWhenNowInsideMeeting() {
+        val events = listOf(event(10, 0, 11, 0))
+
+        assertTrue(meetingOngoing(events, epoch(10, 30)))
+    }
+
+    @Test
+    fun meetingOngoing_falseBeforeMeetingStarts() {
+        val events = listOf(event(10, 0, 11, 0))
+
+        assertFalse(meetingOngoing(events, epoch(9, 59)))
+    }
+
+    @Test
+    fun meetingOngoing_trueAtMeetingStart_startIsInclusive() {
+        val events = listOf(event(10, 0, 11, 0))
+
+        assertTrue(meetingOngoing(events, epoch(10, 0)))
+    }
+
+    @Test
+    fun meetingOngoing_falseAtMeetingEnd_endIsExclusive() {
+        val events = listOf(event(10, 0, 11, 0))
+
+        assertFalse(meetingOngoing(events, epoch(11, 0)))
+    }
+
+    @Test
+    fun meetingOngoing_falseWithNoEvents() {
+        assertFalse(meetingOngoing(emptyList(), epoch(10, 30)))
+    }
+
+    @Test
+    fun meetingEdge_keptWhenInsideActiveWindow() {
+        // Slot 450 (07:30) has active window [450, 480). The meeting starts at 460 (inside) and
+        // ends at 490 (outside), so only the start edge should survive the filter.
+        val result = waterMeetingEdgeBoundaryMinutes(
+            planMinutes = listOf(450),
+            events = listOf(event(7, 40, 8, 10)),
+            dayEpochMillis = dayStart,
+            zone = zone,
+        )
+        assertEquals(listOf(460), result)
+    }
+
+    @Test
+    fun meetingEdge_droppedWhenOutsideEveryWindow() {
+        val result = waterMeetingEdgeBoundaryMinutes(
+            planMinutes = listOf(450),
+            events = listOf(event(9, 0, 10, 0)),
+            dayEpochMillis = dayStart,
+            zone = zone,
+        )
+
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun meetingEdge_dropsEdgeThatFallsOnAnotherDay() {
+        // Slot 1380 (23:00) has active window [1380, 1410). The meeting starts at 1380 (kept) and
+        // ends at 00:30 the next day, which is outside today's 0..1439 minute range and dropped.
+        val nextDayEnd = epoch(0, 0) + 24 * 60 * 60_000L + 30 * 60_000L
+        val events = listOf(EventSpan(epoch(23, 0), nextDayEnd))
+
+        val result = waterMeetingEdgeBoundaryMinutes(
+            planMinutes = listOf(1_380),
+            events = events,
+            dayEpochMillis = dayStart,
+            zone = zone,
+        )
+
+        assertEquals(listOf(1_380), result)
+    }
+
+    @Test
+    fun meetingEdge_emptyPlanOrEvents_returnsEmpty() {
+        assertTrue(
+            waterMeetingEdgeBoundaryMinutes(
+                planMinutes = emptyList(),
+                events = listOf(event(7, 40, 8, 10)),
+                dayEpochMillis = dayStart,
+                zone = zone,
+            ).isEmpty(),
+        )
+        assertTrue(
+            waterMeetingEdgeBoundaryMinutes(
+                planMinutes = listOf(450),
+                events = emptyList(),
+                dayEpochMillis = dayStart,
+                zone = zone,
+            ).isEmpty(),
+        )
     }
 
     @Test

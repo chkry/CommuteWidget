@@ -29,6 +29,12 @@ fun suggestWalk(
     daylightEnabled: Boolean,
     zone: ZoneId = ZoneOffset.UTC,
 ): WalkSuggestion? {
+    // Before the search window even opens, neither trigger (daily-goal deficit, which is true
+    // every morning, or the sedentary-afternoon check) may surface a pill - this is what keeps
+    // the walk suggestion out of the morning entirely. At exactly window start a suggestion is
+    // allowed.
+    if (nowMinuteOfDay < params.walkWindowStartMinuteOfDay) return null
+
     val belowDailyGoal = stepsToday != null && stepsToday < stepGoal
     val sedentaryAfternoon =
         stepsSinceNoon != null &&

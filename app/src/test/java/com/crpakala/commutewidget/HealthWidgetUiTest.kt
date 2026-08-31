@@ -344,9 +344,41 @@ class HealthWidgetUiTest {
             morningSupplementsTakenMinute = 430,
             walkDismissed = true,
         )
+        // nowMinuteOfDay is inside the WALK nudge's own window (1080-1290) so the pre-start gate
+        // does not itself explain the result - only the stale day-state handling does.
         assertEquals(
             2,
-            filterHealthNudgesAgainstDayState(nudges, yesterday, today, nowMinuteOfDay = 500).size,
+            filterHealthNudgesAgainstDayState(nudges, yesterday, today, nowMinuteOfDay = 1100).size,
+        )
+    }
+
+    @Test
+    fun filter_dropsWalkBeforeItsStartMinute() {
+        val nudges = listOf(nudge(HealthNudgeKind.WALK, start = 1080, end = 1290))
+        assertTrue(
+            filterHealthNudgesAgainstDayState(nudges, emptyState(), today, nowMinuteOfDay = 1079).isEmpty(),
+        )
+    }
+
+    @Test
+    fun filter_keepsWalkFromStartMinuteThroughEndMinute() {
+        val nudges = listOf(nudge(HealthNudgeKind.WALK, start = 1080, end = 1290))
+        assertEquals(
+            1,
+            filterHealthNudgesAgainstDayState(nudges, emptyState(), today, nowMinuteOfDay = 1080).size,
+        )
+        assertEquals(
+            1,
+            filterHealthNudgesAgainstDayState(nudges, emptyState(), today, nowMinuteOfDay = 1289).size,
+        )
+    }
+
+    @Test
+    fun filter_preStartGateAppliesOnlyToWalkNotOtherKinds() {
+        val nudges = listOf(nudge(HealthNudgeKind.WATER, start = 1080, end = 1290))
+        assertEquals(
+            1,
+            filterHealthNudgesAgainstDayState(nudges, emptyState(), today, nowMinuteOfDay = 500).size,
         )
     }
 
@@ -567,12 +599,16 @@ class HealthWidgetUiTest {
     }
 
     @Test
-    fun resolveVisibleHealthChrome_hidesWaterOnCommuteMap() {
+    fun resolveVisibleHealthChrome_waterOnCommuteMapCompetesByPriorityNotBanned() {
+        // Owner request 2026-08-31: the prior hard water-on-commute-map ban is lifted - water
+        // (priority 4) now outranks walk (priority 6) on COMMUTE the same as on every other mode.
         val chrome = resolveVisibleHealthChrome(
             snapshotNudges = listOf(
                 nudge(HealthNudgeKind.SUPPLEMENT_MORNING, "Vitamins + Cr"),
                 nudge(HealthNudgeKind.WATER, "Drink water", start = 450, end = 480),
-                nudge(HealthNudgeKind.WALK, "Walk 7:30", start = 1110, end = 1290),
+                // start is before nowMinuteOfDay (460) - the pre-start gate must not itself be
+                // why WALK is absent here; this test is about the water-on-maps invariant.
+                nudge(HealthNudgeKind.WALK, "Walk 7:30", start = 400, end = 1290),
             ),
             dayState = emptyState(),
             todayIsoDate = today,
@@ -581,7 +617,7 @@ class HealthWidgetUiTest {
             audiobookPlaying = false,
         )
         assertEquals(
-            listOf(NudgeKind.SUPPLEMENT_MORNING, NudgeKind.WALK),
+            listOf(NudgeKind.SUPPLEMENT_MORNING, NudgeKind.WATER),
             chrome.pills.map { it.kind },
         )
     }
@@ -642,7 +678,7 @@ class HealthWidgetUiTest {
             snapshotNudges = listOf(
                 nudge(HealthNudgeKind.SUPPLEMENT_MORNING, "Vitamins + Cr"),
                 nudge(HealthNudgeKind.SUPPLEMENT_PROTEIN, "Protein"),
-                nudge(HealthNudgeKind.WALK, "Walk 7:30", start = 1110, end = 1290),
+                nudge(HealthNudgeKind.WALK, "Walk 7:30", start = 400, end = 1290),
                 nudge(HealthNudgeKind.FOCUS_GAP, "Focus 45m", start = 600, end = 720),
                 nudge(HealthNudgeKind.WATER, "Drink water", start = 450, end = 480),
             ),
@@ -660,7 +696,7 @@ class HealthWidgetUiTest {
         val nudges = listOf(
             nudge(HealthNudgeKind.SUPPLEMENT_MORNING, "Vitamins + Cr"),
             nudge(HealthNudgeKind.SUPPLEMENT_PROTEIN, "Protein"),
-            nudge(HealthNudgeKind.WALK, "Walk 7:30", start = 1110, end = 1290),
+            nudge(HealthNudgeKind.WALK, "Walk 7:30", start = 400, end = 1290),
             nudge(HealthNudgeKind.SLEEP_TO_BED, "To bed", start = 1260, end = 1440),
         )
         val commuteChrome = resolveVisibleHealthChrome(

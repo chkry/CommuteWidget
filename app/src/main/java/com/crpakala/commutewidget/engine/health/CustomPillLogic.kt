@@ -127,8 +127,9 @@ fun customPillAudiobookSuppression(suppressionEnabled: Boolean, audioPlaying: Bo
  * shield is applied to water/walk at computation time (see [computeHealthState]'s architecture
  * contract in `HealthNudgeComputer.kt`). Unlike water/walk, custom pills take no shield parameter
  * at all - the owner's decision is that the shield only ever suppresses water and walk - and
- * unlike water, there is no surface parameter either, since the water-never-on-a-commute-map rule
- * does not apply to custom pills.
+ * unlike water, there is no surface parameter either: custom pill eligibility has never varied by
+ * which surface renders it (the per-surface display cap lives in `HealthWidgetUi.kt`'s
+ * `customPillCapFor`, at render time, not here).
  *
  * Returns the FULL ordered eligible list (at most one occurrence per pill, so at most
  * [MAX_PILLS] entries) - deliberately uncapped. The max-3 display cap and the "+N" overflow

@@ -1,11 +1,14 @@
 package com.crpakala.commutewidget.engine
 
+import com.crpakala.commutewidget.data.AppSettings
 import com.crpakala.commutewidget.data.CommuteSnapshot
 import com.crpakala.commutewidget.data.CustomPillOccurrence
 import com.crpakala.commutewidget.data.Direction
 import com.crpakala.commutewidget.data.HealthDayRecord
+import com.crpakala.commutewidget.data.HealthDayState
 import com.crpakala.commutewidget.data.HealthNudge
 import com.crpakala.commutewidget.data.HealthNudgeKind
+import com.crpakala.commutewidget.engine.health.HealthParams
 import com.crpakala.commutewidget.engine.health.NudgeKind
 import java.time.ZoneId
 import java.time.ZonedDateTime
@@ -199,6 +202,52 @@ class HealthNudgeComputerTest {
         assertEquals(450, result.sleepMinutes)
         assertEquals(1, result.overnightUnlockCount)
         assertEquals(99L, result.sleepStartEpochMillis)
+    }
+
+    // waterCandidate - Owner request 2026-08-31: an ongoing calendar meeting suppresses the water
+    // pill (plan-driven or post-gym pulse) at computation time, mirroring the restless-night
+    // shield's computation-time-only precedent.
+
+    @Test
+    fun ongoingMeeting_suppressesPlanDrivenWaterCandidate() {
+        val settings = AppSettings(waterRemindersEnabled = true)
+        val dayState = HealthDayState(date = "2026-08-31", waterSlotPlanMinutes = listOf(480))
+
+        val result = waterCandidate(settings, dayState, nowMinuteOfDay = 485, meetingOngoing = true, params = HealthParams())
+
+        assertNull(result)
+    }
+
+    @Test
+    fun finishedMeeting_doesNotSuppressPlanDrivenWaterCandidate() {
+        val settings = AppSettings(waterRemindersEnabled = true)
+        val dayState = HealthDayState(date = "2026-08-31", waterSlotPlanMinutes = listOf(480))
+
+        val result = waterCandidate(settings, dayState, nowMinuteOfDay = 485, meetingOngoing = false, params = HealthParams())
+
+        assertEquals(NudgeKind.WATER, result?.kind)
+        assertEquals(480, result?.startMinuteOfDay)
+    }
+
+    @Test
+    fun ongoingMeeting_suppressesPostGymWaterPulseCandidate() {
+        val settings = AppSettings(waterRemindersEnabled = false, postGymWaterPulseEnabled = true)
+        val dayState = HealthDayState(date = "2026-08-31", waterPulseShownMinute = 480)
+
+        val result = waterCandidate(settings, dayState, nowMinuteOfDay = 485, meetingOngoing = true, params = HealthParams())
+
+        assertNull(result)
+    }
+
+    @Test
+    fun finishedMeeting_doesNotSuppressPostGymWaterPulseCandidate() {
+        val settings = AppSettings(waterRemindersEnabled = false, postGymWaterPulseEnabled = true)
+        val dayState = HealthDayState(date = "2026-08-31", waterPulseShownMinute = 480)
+
+        val result = waterCandidate(settings, dayState, nowMinuteOfDay = 485, meetingOngoing = false, params = HealthParams())
+
+        assertEquals(NudgeKind.WATER, result?.kind)
+        assertEquals(480, result?.startMinuteOfDay)
     }
 
     // toHealthNudgeKind - Sprint 2 added SLEEP_TO_BED/SLEEP_WOKE_UP to the engine-to-data mapper.

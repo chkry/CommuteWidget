@@ -3,6 +3,7 @@ package com.crpakala.commutewidget.schedule
 import com.crpakala.commutewidget.data.AppSettings
 import com.crpakala.commutewidget.data.CustomPill
 import com.crpakala.commutewidget.data.HealthDayState
+import com.crpakala.commutewidget.engine.health.EventSpan
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import org.junit.Assert.assertEquals
@@ -49,6 +50,42 @@ class HealthBoundaryWorkerTest {
     }
 
     @Test
+    fun waterMeetingEdgeInsideActiveWindow_isIncludedAndPickedBeforeSlotEnd() {
+        val settings = allDisabled.copy(waterRemindersEnabled = true)
+        val dayState = HealthDayState(date = "2026-08-31", waterSlotPlanMinutes = listOf(480))
+        // Slot 480 (08:00) has active window [480, 510). Meeting: 08:05-08:40, i.e. edges at
+        // 485 (inside the window - kept) and 520 (outside - dropped).
+        val events = listOf(EventSpan(at(8, 5).toInstant().toEpochMilli(), at(8, 40).toInstant().toEpochMilli()))
+
+        val result = nextHealthBoundary(at(8, 1), settings, dayState, todayEvents = events)
+
+        assertEquals(at(8, 5), result) // 485 minutes, ahead of both the slot start and its end
+    }
+
+    @Test
+    fun waterMeetingEdge_excludedWhenWaterRemindersDisabled() {
+        val settings = allDisabled.copy(waterRemindersEnabled = false)
+        val events = listOf(EventSpan(at(8, 5).toInstant().toEpochMilli(), at(8, 40).toInstant().toEpochMilli()))
+
+        val result = nextHealthBoundary(at(8, 1), settings, dayState = null, todayEvents = events)
+
+        // Water is disabled, so neither the slot boundaries nor the meeting edge apply.
+        assertEquals(ZonedDateTime.of(2026, 9, 1, 0, 1, 0, 0, zone), result)
+    }
+
+    @Test
+    fun waterMeetingEdge_excludedWhenOutsideEverySlotWindow() {
+        val settings = allDisabled.copy(waterRemindersEnabled = true)
+        val dayState = HealthDayState(date = "2026-08-31", waterSlotPlanMinutes = listOf(480))
+        // Meeting 09:00-10:00 (540-600) falls outside the 480 slot's [480, 510) active window.
+        val events = listOf(EventSpan(at(9, 0).toInstant().toEpochMilli(), at(10, 0).toInstant().toEpochMilli()))
+
+        val result = nextHealthBoundary(at(8, 1), settings, dayState, todayEvents = events)
+
+        assertEquals(at(8, 30), result) // falls back to the slot's own active-window end (510)
+    }
+
+    @Test
     fun morningSupplementsNotYetTaken_wakesAtWindowStart() {
         val settings = allDisabled.copy(morningSupplementsEnabled = true)
         val dayState = HealthDayState(date = "2026-08-31") // morningSupplementsTakenMinute == null
@@ -73,9 +110,73 @@ class HealthBoundaryWorkerTest {
     fun eveningWalkEnabledWithFutureTarget_wakesAtWalkStart() {
         val settings = allDisabled.copy(eveningWalkEnabled = true)
 
-        val result = nextHealthBoundary(at(17, 0), settings, dayState = null, walkTargetMinuteOfDay = 19 * 60)
+        // now is past the search-window-start candidate (18:00) so the future target (19:00) is
+        // the earliest remaining candidate - see walkSearchWindowStart_isIncludedAsABoundary for
+        // the window-start candidate itself.
+        val result = nextHealthBoundary(at(18, 30), settings, dayState = null, walkTargetMinuteOfDay = 19 * 60)
 
         assertEquals(at(19, 0), result)
+    }
+
+    @Test
+    fun walkSearchWindowStart_isIncludedAsABoundaryWhenNotDismissed() {
+        val settings = allDisabled.copy(eveningWalkEnabled = true)
+
+        // AppSettings default walkSearchStartMinuteOfDay = 1080 (18:00); dayState null means
+        // "not dismissed", same treatment as the other taken/dismissed-gated candidates.
+        val nullDayState = nextHealthBoundary(at(17, 0), settings, dayState = null)
+        assertEquals(at(18, 0), nullDayState)
+
+        val notDismissed = nextHealthBoundary(
+            at(17, 0),
+            settings,
+            dayState = HealthDayState(date = "2026-08-31", walkDismissed = false),
+        )
+        assertEquals(at(18, 0), notDismissed)
+    }
+
+    @Test
+    fun walkSearchWindowStart_excludedWhenDismissed() {
+        val settings = allDisabled.copy(eveningWalkEnabled = true)
+        val dayState = HealthDayState(date = "2026-08-31", walkDismissed = true)
+
+        // No walkTargetMinuteOfDay either, so with the window-start candidate suppressed by the
+        // dismissal, evening walk contributes nothing and this falls through to the rollover.
+        val result = nextHealthBoundary(at(17, 0), settings, dayState)
+
+        assertEquals(ZonedDateTime.of(2026, 9, 1, 0, 1, 0, 0, zone), result)
+    }
+
+    @Test
+    fun walkSearchWindowStart_excludedWhenEveningWalkDisabled() {
+        val result = nextHealthBoundary(at(17, 0), allDisabled, dayState = null)
+
+        assertEquals(ZonedDateTime.of(2026, 9, 1, 0, 1, 0, 0, zone), result)
+    }
+
+    @Test
+    fun walkSearchWindowStartAndTarget_bothContributeCandidates() {
+        val settings = allDisabled.copy(eveningWalkEnabled = true)
+        val dayState = HealthDayState(date = "2026-08-31", walkDismissed = false)
+
+        // Before the window start (18:00), the search-window-start candidate (18:00) is the
+        // earliest; the rolling walkTargetMinuteOfDay (19:00) still stands as a later candidate.
+        val beforeWindowStart = nextHealthBoundary(
+            at(17, 0),
+            settings,
+            dayState,
+            walkTargetMinuteOfDay = 19 * 60,
+        )
+        assertEquals(at(18, 0), beforeWindowStart)
+
+        // After the window-start candidate has passed, the target candidate is what remains.
+        val afterWindowStart = nextHealthBoundary(
+            at(18, 30),
+            settings,
+            dayState,
+            walkTargetMinuteOfDay = 19 * 60,
+        )
+        assertEquals(at(19, 0), afterWindowStart)
     }
 
     @Test

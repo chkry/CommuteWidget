@@ -30,9 +30,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.work.ExistingWorkPolicy
 import com.crpakala.commutewidget.data.AppSettings
 import com.crpakala.commutewidget.data.SettingsRepository
+import com.crpakala.commutewidget.engine.health.EventSpan
+import com.crpakala.commutewidget.engine.health.HealthParams
+import com.crpakala.commutewidget.engine.replanTodayWaterSlots
+import com.crpakala.commutewidget.engine.todayEventsChained
 import com.crpakala.commutewidget.schedule.CommuteScheduler
+import com.crpakala.commutewidget.schedule.HealthBoundaryScheduler
+import com.crpakala.commutewidget.schedule.HealthFieldsRefresher
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -58,6 +68,39 @@ fun HealthScreen(
             update(repository)
             CommuteScheduler.ensureScheduled(applicationContext)
             refreshWidget(applicationContext)
+        }
+    }
+
+    // Water window (start/end) and reminders-per-day edits need today's plan replanned
+    // immediately, not just the generic reschedule-and-render above: the owner must see the new
+    // slots on the widget right away rather than waiting for tomorrow's rollover.
+    val onWaterPlanSettingsChange: (suspend (SettingsRepository) -> Unit) -> Unit = { update ->
+        scope.launch {
+            update(repository)
+            val freshSettings = repository.settingsSnapshot()
+            val zone = ZoneId.systemDefault()
+            val nowEpochMillis = System.currentTimeMillis()
+            val todayDateStr = Instant.ofEpochMilli(nowEpochMillis).atZone(zone).toLocalDate()
+                .format(DateTimeFormatter.ISO_LOCAL_DATE)
+            val events = runCatching { todayEventsChained(applicationContext, freshSettings, nowEpochMillis, zone) }
+                .getOrDefault(emptyList())
+                .map { EventSpan(it.startEpochMillis, it.endEpochMillis) }
+            val params = HealthParams(
+                waterFirstAnchorMinuteOfDay = freshSettings.waterWindowStartMinuteOfDay,
+                waterLastAnchorMinuteOfDay = freshSettings.waterWindowEndMinuteOfDay,
+                waterCutoffMinuteOfDay = freshSettings.waterWindowEndMinuteOfDay + HealthParams().waterActiveWindowMinutes,
+            )
+            replanTodayWaterSlots(
+                repo = repository,
+                todayDateStr = todayDateStr,
+                events = events,
+                waterRemindersPerDay = freshSettings.waterRemindersPerDay,
+                nowEpochMillis = nowEpochMillis,
+                zone = zone,
+                params = params,
+            )
+            HealthFieldsRefresher.recomputeAndPersist(applicationContext)
+            HealthBoundaryScheduler.schedule(applicationContext, freshSettings, ExistingWorkPolicy.REPLACE)
         }
     }
 
@@ -142,6 +185,16 @@ fun HealthScreen(
                     selectedNumber = HealthNumber.WATER_REMINDERS
                 }
             }
+            item {
+                TimeRow("Window start", settings.waterWindowStartMinuteOfDay) {
+                    selectedTime = HealthTime.WATER_WINDOW_START
+                }
+            }
+            item {
+                TimeRow("Window end", settings.waterWindowEndMinuteOfDay) {
+                    selectedTime = HealthTime.WATER_WINDOW_END
+                }
+            }
             item { Text("250 ml per tap - logged to Health Connect", style = MaterialTheme.typography.bodySmall) }
         }
         item {
@@ -188,8 +241,8 @@ fun HealthScreen(
             )
         }
     }
-    HealthTimeDialog(selectedTime, settings, onSettingsChange) { selectedTime = null }
-    HealthNumberDialog(selectedNumber, settings, onSettingsChange) { selectedNumber = null }
+    HealthTimeDialog(selectedTime, settings, onSettingsChange, onWaterPlanSettingsChange) { selectedTime = null }
+    HealthNumberDialog(selectedNumber, settings, onSettingsChange, onWaterPlanSettingsChange) { selectedNumber = null }
     if (editingPackages) {
         AudioPackagesDialog(
             initialPackages = settings.commuteAudioPackages,
@@ -209,6 +262,8 @@ private enum class HealthTime {
     PROTEIN_END,
     WALK_START,
     WALK_END,
+    WATER_WINDOW_START,
+    WATER_WINDOW_END,
 }
 
 private enum class HealthNumber { WATER_REMINDERS, STEP_GOAL }
@@ -219,6 +274,7 @@ private fun HealthTimeDialog(
     selection: HealthTime?,
     settings: AppSettings,
     onSettingsChange: (suspend (SettingsRepository) -> Unit) -> Unit,
+    onWaterPlanSettingsChange: (suspend (SettingsRepository) -> Unit) -> Unit,
     onDismiss: () -> Unit,
 ) {
     selection ?: return
@@ -229,22 +285,30 @@ private fun HealthTimeDialog(
         HealthTime.PROTEIN_END -> settings.proteinEndMinuteOfDay
         HealthTime.WALK_START -> settings.walkSearchStartMinuteOfDay
         HealthTime.WALK_END -> settings.walkSearchEndMinuteOfDay
+        HealthTime.WATER_WINDOW_START -> settings.waterWindowStartMinuteOfDay
+        HealthTime.WATER_WINDOW_END -> settings.waterWindowEndMinuteOfDay
     }
     key(selection, minute) {
         val picker = rememberTimePickerState(minute / 60, minute % 60, is24Hour = false)
         TimePickerDialog(picker, onDismiss) {
             val selectedMinute = picker.hour * 60 + picker.minute
-            onSettingsChange { repository ->
-                when (selection) {
-                    HealthTime.MORNING_SUPPLEMENTS_START ->
-                        repository.setMorningSupplementsStartMinuteOfDay(selectedMinute)
-                    HealthTime.MORNING_SUPPLEMENTS_END ->
-                        repository.setMorningSupplementsEndMinuteOfDay(selectedMinute)
-                    HealthTime.PROTEIN_START -> repository.setProteinStartMinuteOfDay(selectedMinute)
-                    HealthTime.PROTEIN_END -> repository.setProteinEndMinuteOfDay(selectedMinute)
-                    HealthTime.WALK_START -> repository.setWalkSearchStartMinuteOfDay(selectedMinute)
-                    HealthTime.WALK_END -> repository.setWalkSearchEndMinuteOfDay(selectedMinute)
-                }
+            when (selection) {
+                HealthTime.MORNING_SUPPLEMENTS_START ->
+                    onSettingsChange { repository -> repository.setMorningSupplementsStartMinuteOfDay(selectedMinute) }
+                HealthTime.MORNING_SUPPLEMENTS_END ->
+                    onSettingsChange { repository -> repository.setMorningSupplementsEndMinuteOfDay(selectedMinute) }
+                HealthTime.PROTEIN_START ->
+                    onSettingsChange { repository -> repository.setProteinStartMinuteOfDay(selectedMinute) }
+                HealthTime.PROTEIN_END ->
+                    onSettingsChange { repository -> repository.setProteinEndMinuteOfDay(selectedMinute) }
+                HealthTime.WALK_START ->
+                    onSettingsChange { repository -> repository.setWalkSearchStartMinuteOfDay(selectedMinute) }
+                HealthTime.WALK_END ->
+                    onSettingsChange { repository -> repository.setWalkSearchEndMinuteOfDay(selectedMinute) }
+                HealthTime.WATER_WINDOW_START ->
+                    onWaterPlanSettingsChange { repository -> repository.setWaterWindowStartMinuteOfDay(selectedMinute) }
+                HealthTime.WATER_WINDOW_END ->
+                    onWaterPlanSettingsChange { repository -> repository.setWaterWindowEndMinuteOfDay(selectedMinute) }
             }
             onDismiss()
         }
@@ -256,6 +320,7 @@ private fun HealthNumberDialog(
     selection: HealthNumber?,
     settings: AppSettings,
     onSettingsChange: (suspend (SettingsRepository) -> Unit) -> Unit,
+    onWaterPlanSettingsChange: (suspend (SettingsRepository) -> Unit) -> Unit,
     onDismiss: () -> Unit,
 ) {
     selection ?: return
@@ -276,11 +341,11 @@ private fun HealthNumberDialog(
         HealthNumber.STEP_GOAL -> 20_000
     }
     NumberDialog(initial, title, min, max, onDismiss) { value ->
-        onSettingsChange { repository ->
-            when (selection) {
-                HealthNumber.WATER_REMINDERS -> repository.setWaterRemindersPerDay(value)
-                HealthNumber.STEP_GOAL -> repository.setStepGoal(value)
-            }
+        when (selection) {
+            HealthNumber.WATER_REMINDERS ->
+                onWaterPlanSettingsChange { repository -> repository.setWaterRemindersPerDay(value) }
+            HealthNumber.STEP_GOAL ->
+                onSettingsChange { repository -> repository.setStepGoal(value) }
         }
         onDismiss()
     }

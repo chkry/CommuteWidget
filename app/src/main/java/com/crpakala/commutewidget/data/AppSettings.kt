@@ -56,6 +56,9 @@ data class AppSettings(
     val caffeineCutoffLineEnabled: Boolean = false,
     val stepGoal: Int = 8000,
     val waterRemindersPerDay: Int = 5,
+    /** Owner-configurable water anchor window (default 07:30-19:30, matching the prior hardcoded anchors). */
+    val waterWindowStartMinuteOfDay: Int = 450,
+    val waterWindowEndMinuteOfDay: Int = 1170,
     val morningSupplementsStartMinuteOfDay: Int = 420,
     val morningSupplementsEndMinuteOfDay: Int = 600,
     val proteinStartMinuteOfDay: Int = 1080,

@@ -78,7 +78,11 @@ class HealthMorningWorker(
             waterRemindersPerDay = settings.waterRemindersPerDay,
             nowEpochMillis = nowEpochMillis,
             zone = zone,
-            params = HealthParams(),
+            params = HealthParams(
+                waterFirstAnchorMinuteOfDay = settings.waterWindowStartMinuteOfDay,
+                waterLastAnchorMinuteOfDay = settings.waterWindowEndMinuteOfDay,
+                waterCutoffMinuteOfDay = settings.waterWindowEndMinuteOfDay + HealthParams().waterActiveWindowMinutes,
+            ),
         )
 
         CommuteWidget().updateAll(context)
