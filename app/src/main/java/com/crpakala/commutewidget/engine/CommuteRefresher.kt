@@ -143,6 +143,19 @@ internal fun eventNearFlipEpochMillis(eventStartEpochMillis: Long, takeoverMinut
     eventStartEpochMillis - takeoverMinutes * 60_000L
 
 /**
+ * Origin for a located event's route: the device fix when one was obtained, otherwise the saved
+ * Home place. Owner decision 2026-09-05: with device Location switched off, [currentDeviceLocation]
+ * fails and used to drop a routable event to the plain card through [failureSnapshot]'s
+ * first-attempt fallback, so the owner would rather see the route from Home than no map at all.
+ * [home] is always present when a refresh runs ([CommuteRefresher.performRefresh] returns early
+ * without it), so a failed fix is never a routing failure any more.
+ */
+internal fun eventRouteOrigin(deviceLocation: ApiResult<LatLng>, home: Place): LatLng = when (deviceLocation) {
+    is ApiResult.Success -> deviceLocation.value
+    is ApiResult.Failure -> LatLng(home.lat, home.lng)
+}
+
+/**
  * v4 event advisor: leaveBy = eventStart - buffer - route duration, in epoch millis. The same
  * arithmetic applies whether [durationSeconds] came from a PREDICTED or real-time route (the
  * traffic model used to obtain it is [eventDepartureProbe]'s concern, not this one's).
@@ -508,8 +521,9 @@ object CommuteRefresher {
      * located-event success path re-schedules the tick, each only when its own condition holds;
      * the commute leave-by alarm and event leave-by are never re-scheduled from this function.
      *
-     * A failure anywhere in the routed pipeline below (geocode, device location, Routes, Static
-     * Maps) goes through [saveFailure] with `modeOverride = SnapshotMode.CALENDAR_EVENT`. See
+     * A failure anywhere in the routed pipeline below (geocode, Routes, Static Maps) goes through
+     * [saveFailure] with `modeOverride = SnapshotMode.CALENDAR_EVENT`; a failed device fix is not
+     * a failure here, it routes from the saved Home place instead (see [eventRouteOrigin]). See
      * [failureSnapshot]'s doc for the resulting split: a first attempt at this event falls back to
      * the plain card, while a same-target failure (this event routed successfully before) keeps
      * showing the stale route/map with the warning glyph.
@@ -626,20 +640,9 @@ object CommuteRefresher {
                 return
             }
         }
-        val origin = when (originResult) {
-            is ApiResult.Success -> originResult.value
-            is ApiResult.Failure -> {
-                saveFailure(
-                    repo,
-                    direction,
-                    originResult.message,
-                    SnapshotMode.CALENDAR_EVENT,
-                    event.title,
-                    event.startEpochMillis,
-                )
-                return
-            }
-        }
+        // A failed device fix (Location switched off, no fix within the timeout) falls back to the
+        // saved Home place as the origin instead of failing the event - see eventRouteOrigin.
+        val origin = eventRouteOrigin(originResult, settings.home!!)
 
         // v4: more than settings.eventRealtimeThresholdMinutes before the event, request PREDICTED
         // traffic around the event's arrival time instead of real-time (null keeps the existing

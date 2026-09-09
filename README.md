@@ -157,6 +157,7 @@ The widget selects its active display mode according to configured schedules and
 2. **Calendar Mode**: Default outside commute windows (midday, evenings, weekends, and unselected commute days).
    - Displays the next remaining non-all-day event scheduled for today from selected device calendars.
    - If a located event starts within the nearness threshold ("Event takes over within", default 120 minutes), the widget renders a clean route map from current device location with destination, start time, large traffic-colored ETA, and calculated leave-by departure time.
+   - If the device location is unavailable (Location switched off, or no fix arrives within 15 seconds), the route is drawn from the saved Home place instead of dropping to the plain card, so the ETA and leave-by then describe the trip from Home.
    - A routed calendar event displays a countdown caption until its start (for example, "in 1h 45m").
    - Tapping the map opens Google Maps turn-by-turn navigation to the event location.
    - Located events starting further out than the threshold render as a full-width plain card showing title, start time, and countdown at zero Google API cost, flipping to routed mode automatically via a background worker when within the window.
@@ -290,6 +291,7 @@ The 2x2 size shows no health UI.
 | Leave-by notification did not fire | Notification permission is missing or the Leave-by advisor toggle is disabled. | Grant notification permission in system settings and ensure the Leave-by advisor toggle is enabled. |
 | Leave-by time seems off for far-away events | Far-away events use Google predicted traffic rather than live road conditions, and located events further out than the nearness threshold show a plain card until entering the threshold window. | Predicted traffic is queried outside the live traffic threshold and automatically refines with real-time data on refreshes closer to event start; events beyond the nearness threshold route when within threshold. |
 | Weekend shows wrong origin | Background location permission is missing or restricted. | Grant "Allow all the time" location permission in system app settings. |
+| Event map routes from Home although you are elsewhere | Device Location is off, or no fix arrived within 15 seconds, so the saved Home place was used as the origin. | Turn on Location in system settings and tap the widget to refresh. |
 | Tomorrow event line missing on wind-down card | Calendar feature is disabled or calendars are not selected in settings. | Verify calendar integration is enabled and relevant calendars are selected in app settings. |
 | Alarm line missing on wind-down or empty card | No alarm is currently set on the device. | Set an upcoming alarm in the system clock application. |
 
