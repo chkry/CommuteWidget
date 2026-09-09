@@ -18,6 +18,16 @@ data class CustomPillOccurrence(
     val active: Boolean,
 )
 
+/**
+ * One upcoming calendar event for the wind-down card's "Next up" section: the next events from
+ * tomorrow's midnight onward, selected with the same rules as the today lookups.
+ */
+@Serializable
+data class UpcomingEvent(
+    val title: String,
+    val startEpochMillis: Long,
+)
+
 @Serializable
 data class CommuteSnapshot(
     val direction: Direction,
@@ -43,15 +53,9 @@ data class CommuteSnapshot(
      * event when [destinationLat] and [destinationLng] are null.
      */
     val eventStartEpochMillis: Long? = null,
-    /**
-     * Label of the next commute window (for example "To Work") when [mode] is
-     * [SnapshotMode.CALENDAR_EMPTY] and no calendar event is available.
-     */
+    /** Decode-only legacy field, never populated since 2026-09-09. See the AGENTS.md invariant on upcomingEvents. */
     val nextWindowLabel: String? = null,
-    /**
-     * Start minute-of-day of the next commute window when [mode] is [SnapshotMode.CALENDAR_EMPTY]
-     * and no calendar event is available.
-     */
+    /** Decode-only legacy field, never populated since 2026-09-09. See the AGENTS.md invariant on upcomingEvents. */
     val nextWindowStartMinuteOfDay: Int? = null,
     /**
      * v5 FIX-9: mirrors [com.crpakala.commutewidget.calendar.TodayEvent.preferredOverEarlierEvent]
@@ -59,15 +63,9 @@ data class CommuteSnapshot(
      * pre-FIX-9 stored snapshot JSON decodes as `false` rather than failing.
      */
     val routedOverEarlier: Boolean = false,
-    /**
-     * Title of the first event tomorrow. Populated only on no-events-remaining-today
-     * [SnapshotMode.CALENDAR_EMPTY] snapshots, for the wind-down card.
-     */
+    /** Decode-only legacy field, never populated since 2026-09-09. See the AGENTS.md invariant on upcomingEvents. */
     val tomorrowEventTitle: String? = null,
-    /**
-     * Start time of [tomorrowEventTitle] in epoch millis. Populated only on no-events-remaining-
-     * today [SnapshotMode.CALENDAR_EMPTY] snapshots, for the wind-down card.
-     */
+    /** Decode-only legacy field, never populated since 2026-09-09. See the AGENTS.md invariant on upcomingEvents. */
     val tomorrowEventStartEpochMillis: Long? = null,
     /**
      * Count of events remaining today. Populated only on [SnapshotMode.COMMUTE] snapshots, for
@@ -90,4 +88,10 @@ data class CommuteSnapshot(
      * instead of stranding a stale overflow count.
      */
     val customPillOccurrences: List<CustomPillOccurrence> = emptyList(),
+    /**
+     * The next calendar events from tomorrow onward (at most two, within seven days) for the
+     * wind-down card. Populated only on out-of-window [SnapshotMode.CALENDAR_EMPTY] snapshots
+     * with no event remaining today. Additive with a default so older stored JSON still decodes.
+     */
+    val upcomingEvents: List<UpcomingEvent> = emptyList(),
 )

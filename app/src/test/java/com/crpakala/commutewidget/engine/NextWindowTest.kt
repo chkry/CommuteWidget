@@ -56,26 +56,10 @@ class NextWindowTest {
     }
 
     @Test
-    fun windowLaterToday_isWithinCardHorizon() {
-        assertEquals(true, next(1, morningStart - 30)!!.withinCardHorizon())
-    }
-
-    @Test
-    fun windowTomorrow_isWithinCardHorizon() {
-        assertEquals(true, next(1, eveningEnd + 1)!!.withinCardHorizon())
-    }
-
-    @Test
-    fun fridayEveningToMondayWindow_isBeyondCardHorizon() {
-        assertEquals(false, next(5, eveningEnd + 1)!!.withinCardHorizon())
-    }
-
-    @Test
-    fun sundayNightWithMondayNotACommuteDay_isBeyondCardHorizon() {
+    fun sundayNightWithMondayNotACommuteDay_looksAheadTwoDays() {
         val mondayExcluded = setOf(2, 3, 4, 5)
         val result = next(7, 1200, commuteDays = mondayExcluded)!!
         assertEquals(2, result.daysAhead)
-        assertEquals(false, result.withinCardHorizon())
     }
 
     @Test

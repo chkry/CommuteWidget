@@ -14,9 +14,9 @@ The audit and design rulings driving these changes are documented in `UX-AUDIT.m
 - Multiple widget sizes (2x2 compact card, 4x2 split card, and 4x4 expanded map layout) with automatic size snapping.
 - Theme-aware surfaces following system light and dark modes with Material dynamic colors.
 - Non-text status signals: semi-transparent ETA during in-flight refreshes and cooldown taps, grey ETA for data older than 10 minutes, and error warning glyphs without loading text.
-- Clean calendar-empty fallback cards without map areas: large title and start time for unlocated events, "Next up - To Work at 7:00 am" when no events remain, and quiet message cards when no schedule exists.
+- Clean calendar-empty fallback cards without map areas: large title and start time for unlocated events, a "Next up" section listing the next two upcoming calendar events when no events remain today, and quiet message cards when no schedule exists.
 - Small "Routed" caption when the widget prioritizes a located calendar event over a chronologically earlier unlocated event.
-- Wind-down card displaying tomorrow's first calendar event and next device alarm when no events remain today.
+- Wind-down card displaying the next two upcoming calendar events, each with a day-and-time label, and the next device alarm when no events remain today; the card no longer advertises an upcoming commute window.
 - Contextual countdown captions showing time until routed event start or available free time before unlocated events.
 - Morning brief caption during the morning commute view summarizing total meetings and first event start time.
 - Next scheduled system alarm readout on the bare no-events card.
@@ -169,7 +169,7 @@ The widget selects its active display mode according to configured schedules and
    - Tapping a far located event remains a plain refresh and consumes zero Google API calls.
    - An unlocated event displays a card showing its event title, start time, and a free-time countdown caption (for example, "Free for 2h 10m").
    - An event whose location is a virtual-meeting link or platform name (Microsoft Teams, Zoom, Google Meet, Webex) is treated as unlocated and shows the same normal event card with no map, instead of attempting to route it.
-   - When no events remain today, the wind-down card displays "Next up - To Work at 7:00 am" (or the next upcoming window), tomorrow's first calendar event (for example, "Standup at 9:00 am"), and the next scheduled device alarm (for example, "Alarm 6:45 am").
+   - When no events remain today, the wind-down card displays a "Next up" section listing the next two calendar events from tomorrow onward within the next seven days, each as its title plus a day-and-time line (for example, "Tomorrow 9:32 pm" or "Thu 10:00 am"), followed by the next scheduled device alarm (for example, "Alarm 6:45 am"); the card no longer advertises an upcoming commute window.
    - When no schedule exists, the bare no-events card displays a quiet empty message along with the next scheduled device alarm line.
    - A small "Routed" caption appears when the widget prioritizes a located event over a chronologically earlier unlocated event.
 
@@ -301,7 +301,8 @@ The 2x2 size shows no health UI.
 | Leave-by time seems off for far-away events | Far-away events use Google predicted traffic rather than live road conditions, and located events further out than the nearness threshold show a plain card until entering the threshold window. | Predicted traffic is queried outside the live traffic threshold and automatically refines with real-time data on refreshes closer to event start; events beyond the nearness threshold route when within threshold. |
 | Weekend shows wrong origin | Background location permission is missing or restricted. | Grant "Allow all the time" location permission in system app settings. |
 | Event map routes from Home although you are elsewhere | Device Location is off, or no fix arrived within 15 seconds, so the saved Home place was used as the origin. | Turn on Location in system settings and tap the widget to refresh. |
-| Tomorrow event line missing on wind-down card | Calendar feature is disabled or calendars are not selected in settings. | Verify calendar integration is enabled and relevant calendars are selected in app settings. |
+| Next up section missing on wind-down card | Calendar feature is disabled or calendars are not selected in settings. | Verify calendar integration is enabled and relevant calendars are selected in app settings. |
+| Next up shows fewer than two events | Fewer than two eligible events fall in the next seven days, or all-day, cancelled, or declined events were filtered out. | Add more events to a selected calendar, or check that the upcoming events are not all-day, cancelled, or declined. |
 | Alarm line missing on wind-down or empty card | No alarm is currently set on the device. | Set an upcoming alarm in the system clock application. |
 
 ## Testing

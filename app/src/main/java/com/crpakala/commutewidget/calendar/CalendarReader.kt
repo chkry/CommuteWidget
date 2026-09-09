@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.CalendarContract
+import com.crpakala.commutewidget.data.UpcomingEvent as SnapshotUpcomingEvent
 import java.time.Instant
 import java.time.ZoneId
 
@@ -136,35 +137,29 @@ class CalendarReader(private val context: Context) {
         return selectTodayEvent(rows, selectedCalendarIds, nowEpochMillis)
     }
 
-    fun firstEventTomorrow(
+    /**
+     * The wind-down card's "Next up" section: the next [limit] events from tomorrow's local
+     * midnight onward, within [lookaheadDays] days. Permission and empty-selection guard as the
+     * sibling functions.
+     */
+    fun upcomingEvents(
         selectedCalendarIds: Set<Long>,
         nowEpochMillis: Long,
         zone: ZoneId,
-    ): TomorrowEvent? {
+        limit: Int = UPCOMING_EVENT_LIMIT,
+        lookaheadDays: Long = UPCOMING_LOOKAHEAD_DAYS,
+    ): List<SnapshotUpcomingEvent> {
         if (!hasPermission() || selectedCalendarIds.isEmpty()) {
-            return null
+            return emptyList()
         }
 
-        val tomorrowStart = Instant.ofEpochMilli(nowEpochMillis)
-            .atZone(zone)
-            .toLocalDate()
-            .plusDays(1)
-            .atStartOfDay(zone)
-            .toInstant()
-            .toEpochMilli()
-        val dayAfterTomorrowStart = Instant.ofEpochMilli(tomorrowStart)
-            .atZone(zone)
-            .toLocalDate()
-            .plusDays(1)
-            .atStartOfDay(zone)
-            .toInstant()
-            .toEpochMilli()
+        val queryRange = upcomingQueryRange(nowEpochMillis, zone, lookaheadDays)
         val instancesUri = CalendarContract.Instances.CONTENT_URI.buildUpon()
-            .appendPath(tomorrowStart.toString())
-            .appendPath(dayAfterTomorrowStart.toString())
+            .appendPath(queryRange.first.toString())
+            .appendPath((queryRange.last + 1).toString())
             .build()
 
-        return selectFirstEventTomorrow(queryInstances(instancesUri), selectedCalendarIds)
+        return selectUpcomingEvents(queryInstances(instancesUri), selectedCalendarIds, limit, fromEpochMillis = queryRange.first)
     }
 
     fun todaySummary(
@@ -268,6 +263,34 @@ internal data class RawInstance(
 )
 
 private const val LOCATION_PREFERENCE_WINDOW_MILLIS = 30 * 60_000L
+
+/** Defaults for [CalendarReader.upcomingEvents]: at most two events, within the next seven days. */
+internal const val UPCOMING_EVENT_LIMIT = 2
+internal const val UPCOMING_LOOKAHEAD_DAYS = 7L
+
+/**
+ * Query window for [CalendarReader.upcomingEvents]: start is tomorrow's local midnight, end
+ * (exclusive, as `last + 1`) is that same local date plus [lookaheadDays] at local midnight.
+ * Computed from local dates rather than elapsed millis, so a daylight-saving transition inside the
+ * window changes its wall-clock span but never its calendar-day length.
+ */
+internal fun upcomingQueryRange(nowEpochMillis: Long, zone: ZoneId, lookaheadDays: Long): LongRange {
+    val start = Instant.ofEpochMilli(nowEpochMillis)
+        .atZone(zone)
+        .toLocalDate()
+        .plusDays(1)
+        .atStartOfDay(zone)
+        .toInstant()
+        .toEpochMilli()
+    val end = Instant.ofEpochMilli(start)
+        .atZone(zone)
+        .toLocalDate()
+        .plusDays(lookaheadDays)
+        .atStartOfDay(zone)
+        .toInstant()
+        .toEpochMilli()
+    return start until end
+}
 
 /**
  * Junk-location markers office-email invites carry instead of a real address: virtual-meeting
@@ -424,22 +447,27 @@ internal fun selectEvent(
             )
         }
 
-internal fun selectFirstEventTomorrow(
+internal fun selectUpcomingEvents(
     rows: List<RawInstance>,
     selectedCalendarIds: Set<Long>,
-): TomorrowEvent? =
+    limit: Int,
+    fromEpochMillis: Long,
+): List<SnapshotUpcomingEvent> =
     rows.asSequence()
         .filter { it.calendarId in selectedCalendarIds }
         .filter { !it.allDay }
         .filter { it.status != CalendarContract.Events.STATUS_CANCELED }
         .filter { it.selfAttendeeStatus != CalendarContract.Attendees.ATTENDEE_STATUS_DECLINED }
-        .minWithOrNull(compareBy<RawInstance>({ it.beginEpochMillis }, { it.endEpochMillis }))
-        ?.let { row ->
-            TomorrowEvent(
+        .filter { it.beginEpochMillis >= fromEpochMillis }
+        .sortedWith(compareBy({ it.beginEpochMillis }, { it.endEpochMillis }))
+        .take(limit)
+        .map { row ->
+            SnapshotUpcomingEvent(
                 title = row.title?.trim().takeUnless { it.isNullOrEmpty() } ?: "Event",
                 startEpochMillis = row.beginEpochMillis,
             )
         }
+        .toList()
 
 internal fun selectTodaySummary(
     rows: List<RawInstance>,

@@ -3,6 +3,7 @@ package com.crpakala.commutewidget
 import com.crpakala.commutewidget.data.CommuteSnapshot
 import com.crpakala.commutewidget.data.Direction
 import com.crpakala.commutewidget.data.SnapshotMode
+import com.crpakala.commutewidget.data.UpcomingEvent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -201,34 +202,15 @@ class CommuteWidgetDisplayTest {
     }
 
     @Test
-    fun calendarEmptyCase_prefersUnlocatedEventOverNextWindow() {
-        val snapshot = emptySnapshot(
-            destinationLabel = "Dentist",
-            eventStartEpochMillis = 1L,
-            nextWindowLabel = "To Work",
-            nextWindowStartMinuteOfDay = 420,
-        )
+    fun calendarEmptyCase_unlocatedEventWhenDestinationAndStartPresent() {
+        val snapshot = emptySnapshot(destinationLabel = "Dentist", eventStartEpochMillis = 1L)
         assertEquals(CalendarEmptyCase.UNLOCATED_EVENT, calendarEmptyCase(snapshot))
     }
 
     @Test
-    fun calendarEmptyCase_nextWindowWhenEventFieldsIncomplete() {
-        val snapshot = emptySnapshot(
-            destinationLabel = "Dentist",
-            eventStartEpochMillis = null,
-            nextWindowLabel = "To Work",
-            nextWindowStartMinuteOfDay = 420,
-        )
-        assertEquals(CalendarEmptyCase.NEXT_WINDOW, calendarEmptyCase(snapshot))
-    }
-
-    @Test
-    fun calendarEmptyCase_nextWindowWhenNoEvent() {
-        val snapshot = emptySnapshot(
-            nextWindowLabel = "To Home",
-            nextWindowStartMinuteOfDay = 17 * 60,
-        )
-        assertEquals(CalendarEmptyCase.NEXT_WINDOW, calendarEmptyCase(snapshot))
+    fun calendarEmptyCase_noneWhenEventFieldsIncomplete() {
+        val snapshot = emptySnapshot(destinationLabel = "Dentist", eventStartEpochMillis = null)
+        assertEquals(CalendarEmptyCase.NONE, calendarEmptyCase(snapshot))
     }
 
     @Test
@@ -237,12 +219,18 @@ class CommuteWidgetDisplayTest {
     }
 
     @Test
-    fun calendarEmptyCase_noneWhenWindowFieldsIncomplete() {
-        val snapshot = emptySnapshot(
-            nextWindowLabel = "To Work",
-            nextWindowStartMinuteOfDay = null,
-        )
-        assertEquals(CalendarEmptyCase.NONE, calendarEmptyCase(snapshot))
+    fun showsCalendarNoneText_trueWhenNotWindDownAndCaseIsNone() {
+        assertTrue(showsCalendarNoneText(windDown = false, case = CalendarEmptyCase.NONE))
+    }
+
+    @Test
+    fun showsCalendarNoneText_falseDuringWindDownEvenWhenCaseIsNone() {
+        assertFalse(showsCalendarNoneText(windDown = true, case = CalendarEmptyCase.NONE))
+    }
+
+    @Test
+    fun showsCalendarNoneText_falseWhenCaseIsNotNone() {
+        assertFalse(showsCalendarNoneText(windDown = false, case = CalendarEmptyCase.UNLOCATED_EVENT))
     }
 
     @Test
@@ -292,15 +280,6 @@ class CommuteWidgetDisplayTest {
             eventStartEpochMillis = start,
         )
         assertEquals(emptyList<String>(), mapAreaPlaceholderLines(snapshot, zone))
-    }
-
-    @Test
-    fun mapAreaPlaceholderLines_emptyForNextWindow() {
-        val snapshot = emptySnapshot(
-            nextWindowLabel = "To Work",
-            nextWindowStartMinuteOfDay = 7 * 60,
-        )
-        assertEquals(emptyList<String>(), mapAreaPlaceholderLines(snapshot))
     }
 
     @Test
@@ -400,29 +379,54 @@ class CommuteWidgetDisplayTest {
     }
 
     @Test
-    fun isWindDown_trueWhenTitleAndStartPresent() {
-        val snapshot = emptySnapshot().copy(
-            tomorrowEventTitle = "Standup",
-            tomorrowEventStartEpochMillis = 1L,
-        )
+    fun isWindDown_trueWhenUpcomingEventsPresent() {
+        val snapshot = emptySnapshot(upcomingEvents = listOf(UpcomingEvent("Standup", 1L)))
         assertTrue(isWindDown(snapshot))
     }
 
     @Test
-    fun isWindDown_falseWhenTitleMissing() {
-        val snapshot = emptySnapshot().copy(tomorrowEventStartEpochMillis = 1L)
-        assertFalse(isWindDown(snapshot))
-    }
-
-    @Test
-    fun isWindDown_falseWhenStartMissing() {
-        val snapshot = emptySnapshot().copy(tomorrowEventTitle = "Standup")
-        assertFalse(isWindDown(snapshot))
-    }
-
-    @Test
-    fun isWindDown_falseWhenBothMissing() {
+    fun isWindDown_falseWhenUpcomingEventsEmpty() {
         assertFalse(isWindDown(emptySnapshot()))
+    }
+
+    @Test
+    fun formatUpcomingEventLine_tomorrowUsesTomorrowPrefix() {
+        val zone = ZoneId.of("Asia/Kolkata")
+        val now = ZonedDateTime.of(2026, 9, 9, 20, 0, 0, 0, zone).toInstant().toEpochMilli()
+        val start = ZonedDateTime.of(2026, 9, 10, 21, 32, 0, 0, zone).toInstant().toEpochMilli()
+        assertEquals("Tomorrow 9:32 pm", formatUpcomingEventLine(start, now, zone))
+    }
+
+    @Test
+    fun formatUpcomingEventLine_twoDaysAheadUsesShortWeekday() {
+        val zone = ZoneId.of("Asia/Kolkata")
+        val now = ZonedDateTime.of(2026, 9, 9, 20, 0, 0, 0, zone).toInstant().toEpochMilli()
+        val start = ZonedDateTime.of(2026, 9, 11, 10, 0, 0, 0, zone).toInstant().toEpochMilli()
+        assertEquals("Fri 10:00 am", formatUpcomingEventLine(start, now, zone))
+    }
+
+    @Test
+    fun formatUpcomingEventLine_sixDaysAheadUsesShortWeekday() {
+        val zone = ZoneId.of("Asia/Kolkata")
+        val now = ZonedDateTime.of(2026, 9, 9, 20, 0, 0, 0, zone).toInstant().toEpochMilli()
+        val start = ZonedDateTime.of(2026, 9, 15, 10, 0, 0, 0, zone).toInstant().toEpochMilli()
+        assertEquals("Tue 10:00 am", formatUpcomingEventLine(start, now, zone))
+    }
+
+    @Test
+    fun formatUpcomingEventLine_justAfterMidnightCrossingIsStillTomorrow() {
+        val zone = ZoneId.of("Asia/Kolkata")
+        val now = ZonedDateTime.of(2026, 9, 9, 23, 58, 0, 0, zone).toInstant().toEpochMilli()
+        val start = ZonedDateTime.of(2026, 9, 10, 0, 3, 0, 0, zone).toInstant().toEpochMilli()
+        assertEquals("Tomorrow 12:03 am", formatUpcomingEventLine(start, now, zone))
+    }
+
+    @Test
+    fun formatUpcomingEventLine_justAfterMidnightTwoDaysAheadIsNotTomorrow() {
+        val zone = ZoneId.of("Asia/Kolkata")
+        val now = ZonedDateTime.of(2026, 9, 9, 0, 1, 0, 0, zone).toInstant().toEpochMilli()
+        val start = ZonedDateTime.of(2026, 9, 11, 0, 1, 0, 0, zone).toInstant().toEpochMilli()
+        assertEquals("Fri 12:01 am", formatUpcomingEventLine(start, now, zone))
     }
 
     @Test
@@ -628,15 +632,13 @@ class CommuteWidgetDisplayTest {
     }
 
     @Test
-    fun showsCommuteWindowBody_nextWindowAndNoneBecomeTheCommuteBodyInWindow() {
-        assertTrue(showsCommuteWindowBody(inWindow = true, case = CalendarEmptyCase.NEXT_WINDOW))
+    fun showsCommuteWindowBody_noneBecomesTheCommuteBodyInWindow() {
         assertTrue(showsCommuteWindowBody(inWindow = true, case = CalendarEmptyCase.NONE))
     }
 
     @Test
     fun showsCommuteWindowBody_nothingChangesOutOfWindow() {
         assertFalse(showsCommuteWindowBody(inWindow = false, case = CalendarEmptyCase.UNLOCATED_EVENT))
-        assertFalse(showsCommuteWindowBody(inWindow = false, case = CalendarEmptyCase.NEXT_WINDOW))
         assertFalse(showsCommuteWindowBody(inWindow = false, case = CalendarEmptyCase.NONE))
     }
 
@@ -681,8 +683,7 @@ class CommuteWidgetDisplayTest {
     private fun emptySnapshot(
         destinationLabel: String? = null,
         eventStartEpochMillis: Long? = null,
-        nextWindowLabel: String? = null,
-        nextWindowStartMinuteOfDay: Int? = null,
+        upcomingEvents: List<UpcomingEvent> = emptyList(),
     ): CommuteSnapshot {
         return CommuteSnapshot(
             direction = Direction.TO_WORK,
@@ -696,8 +697,7 @@ class CommuteWidgetDisplayTest {
             destinationLabel = destinationLabel,
             mode = SnapshotMode.CALENDAR_EMPTY,
             eventStartEpochMillis = eventStartEpochMillis,
-            nextWindowLabel = nextWindowLabel,
-            nextWindowStartMinuteOfDay = nextWindowStartMinuteOfDay,
+            upcomingEvents = upcomingEvents,
         )
     }
 }

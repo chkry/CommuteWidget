@@ -536,6 +536,61 @@ class StoredValueCodecTest {
         assertEquals(snapshot, decodeCommuteSnapshot(encodeCommuteSnapshot(snapshot)))
     }
 
+    /**
+     * The wind-down card's "Next up" section adds `upcomingEvents` to [CommuteSnapshot]. A
+     * pre-upcoming-events stored snapshot JSON (predating the field) must still decode, with the
+     * field defaulting to an empty list rather than failing to parse.
+     */
+    @Test
+    fun commuteSnapshotJson_preUpcomingEventsFormatDecodesWithEmptyList() {
+        val preUpcomingEventsJson = """
+            {
+              "direction": "TO_WORK",
+              "durationSeconds": 0,
+              "durationNoTrafficSeconds": 0,
+              "distanceMeters": 0,
+              "mapImagePath": null,
+              "fetchedAtEpochMillis": 1700000000000,
+              "lastFetchFailed": false,
+              "lastErrorMessage": null,
+              "mode": "CALENDAR_EMPTY",
+              "eventStartEpochMillis": null,
+              "nextWindowLabel": "To Work",
+              "nextWindowStartMinuteOfDay": 420,
+              "routedOverEarlier": false,
+              "healthNudges": [],
+              "sleepEstimateMinutes": 390,
+              "shortSleepDay": false,
+              "customPillOccurrences": []
+            }
+        """.trimIndent()
+
+        val decoded = decodeCommuteSnapshot(preUpcomingEventsJson)
+        requireNotNull(decoded)
+        assertEquals(emptyList<UpcomingEvent>(), decoded.upcomingEvents)
+    }
+
+    @Test
+    fun commuteSnapshotJson_upcomingEventsRoundTrip() {
+        val snapshot = CommuteSnapshot(
+            direction = Direction.TO_WORK,
+            durationSeconds = 0L,
+            durationNoTrafficSeconds = 0L,
+            distanceMeters = 0L,
+            mapImagePath = null,
+            fetchedAtEpochMillis = 1_700_000_000_000L,
+            lastFetchFailed = false,
+            lastErrorMessage = null,
+            mode = SnapshotMode.CALENDAR_EMPTY,
+            upcomingEvents = listOf(
+                UpcomingEvent(title = "Dentist", startEpochMillis = 1_700_100_000_000L),
+                UpcomingEvent(title = "Team offsite", startEpochMillis = 1_700_300_000_000L),
+            ),
+        )
+
+        assertEquals(snapshot, decodeCommuteSnapshot(encodeCommuteSnapshot(snapshot)))
+    }
+
     @Test
     fun commuteSnapshotJson_healthNudgesRoundTrip() {
         val snapshot = CommuteSnapshot(

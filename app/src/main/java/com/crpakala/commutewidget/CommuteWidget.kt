@@ -56,6 +56,7 @@ import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
+import com.crpakala.commutewidget.calendar.UPCOMING_EVENT_LIMIT
 import com.crpakala.commutewidget.data.CommuteSnapshot
 import com.crpakala.commutewidget.data.CustomPillOccurrence
 import com.crpakala.commutewidget.data.Direction
@@ -786,7 +787,7 @@ private fun CalendarEmptyCardBody(snapshot: CommuteSnapshot, extras: WidgetExtra
     } else {
         if (windDown) {
             Text(
-                text = "Tomorrow",
+                text = "Next up",
                 style = TextStyle(
                     color = GlanceTheme.colors.onSurfaceVariant,
                     fontSize = scaledSp(11, textScale),
@@ -794,26 +795,31 @@ private fun CalendarEmptyCardBody(snapshot: CommuteSnapshot, extras: WidgetExtra
                 ),
                 maxLines = 1,
             )
-            // Title wraps to two lines and the start time gets its own line, so a long meeting
-            // title can never ellipsize the time away.
-            Text(
-                text = snapshot.tomorrowEventTitle!!,
-                style = TextStyle(
-                    color = GlanceTheme.colors.onSurface,
-                    fontSize = scaledSp(16, textScale),
-                    fontWeight = FontWeight.Medium,
-                ),
-                maxLines = 2,
-            )
-            Text(
-                text = formatEventClockTime(snapshot.tomorrowEventStartEpochMillis!!),
-                style = TextStyle(
-                    color = GlanceTheme.colors.onSurface,
-                    fontSize = scaledSp(14, textScale),
-                    fontWeight = FontWeight.Medium,
-                ),
-                maxLines = 1,
-            )
+            snapshot.upcomingEvents.take(UPCOMING_EVENT_LIMIT).forEachIndexed { index, event ->
+                if (index > 0) {
+                    Spacer(modifier = GlanceModifier.height(4.dp))
+                }
+                // Title wraps to two lines and the day-and-time line gets its own line, so a
+                // long meeting title can never ellipsize the time away.
+                Text(
+                    text = event.title,
+                    style = TextStyle(
+                        color = GlanceTheme.colors.onSurface,
+                        fontSize = scaledSp(16, textScale),
+                        fontWeight = FontWeight.Medium,
+                    ),
+                    maxLines = 2,
+                )
+                Text(
+                    text = formatUpcomingEventLine(event.startEpochMillis, extras.nowEpochMillis),
+                    style = TextStyle(
+                        color = GlanceTheme.colors.onSurface,
+                        fontSize = scaledSp(14, textScale),
+                        fontWeight = FontWeight.Medium,
+                    ),
+                    maxLines = 1,
+                )
+            }
             if (extras.nextAlarmLine != null) {
                 AlarmLine(extras.nextAlarmLine, textScale)
             }
@@ -854,45 +860,18 @@ private fun CalendarEmptyCardBody(snapshot: CommuteSnapshot, extras: WidgetExtra
                     )
                 }
             }
-            CalendarEmptyCase.NEXT_WINDOW -> {
-                Text(
-                    text = "Next up",
-                    style = TextStyle(
-                        color = GlanceTheme.colors.onSurfaceVariant,
-                        fontSize = scaledSp(11, textScale),
-                        fontWeight = FontWeight.Medium,
-                    ),
-                    maxLines = 1,
-                )
-                Text(
-                    text = snapshot.nextWindowLabel!!,
-                    style = TextStyle(
-                        color = GlanceTheme.colors.onSurface,
-                        fontSize = scaledSp(18, textScale),
-                        fontWeight = FontWeight.Medium,
-                    ),
-                    maxLines = 1,
-                )
-                Text(
-                    text = formatClockTime(snapshot.nextWindowStartMinuteOfDay!!),
-                    style = TextStyle(
-                        color = GlanceTheme.colors.onSurface,
-                        fontSize = if (windDown) scaledSp(18, textScale) else scaledSp(28, textScale),
-                        fontWeight = FontWeight.Bold,
-                    ),
-                    maxLines = 1,
-                )
-            }
             CalendarEmptyCase.NONE -> {
-                Text(
-                    text = calendarNoneText(extras.rideDirection),
-                    style = TextStyle(
-                        color = GlanceTheme.colors.onSurface,
-                        fontSize = scaledSp(14, textScale),
-                        fontWeight = FontWeight.Medium,
-                    ),
-                    maxLines = 3,
-                )
+                if (showsCalendarNoneText(windDown, case)) {
+                    Text(
+                        text = calendarNoneText(extras.rideDirection),
+                        style = TextStyle(
+                            color = GlanceTheme.colors.onSurface,
+                            fontSize = scaledSp(14, textScale),
+                            fontWeight = FontWeight.Medium,
+                        ),
+                        maxLines = 3,
+                    )
+                }
                 if (!windDown && extras.nextAlarmLine != null) {
                     AlarmLine(extras.nextAlarmLine, textScale)
                 }
@@ -1677,9 +1656,30 @@ internal fun shouldShowTodayBrief(
         (hasMeetings || hasSleep)
 }
 
-/** True when both tomorrow-event fields are present on a calendar-empty snapshot. */
+/** True when the calendar-empty snapshot carries at least one upcoming event for the "Next up" section. */
 internal fun isWindDown(snapshot: CommuteSnapshot): Boolean {
-    return snapshot.tomorrowEventTitle != null && snapshot.tomorrowEventStartEpochMillis != null
+    return snapshot.upcomingEvents.isNotEmpty()
+}
+
+/**
+ * Day-and-time line for one "Next up" entry: "Tomorrow" plus the clock time when [startEpochMillis]
+ * falls on [nowEpochMillis]'s local date plus one day, otherwise the short weekday (Locale.US) plus
+ * the clock time, e.g. "Thu 10:00 am". Compares local dates, not elapsed duration, so an event just
+ * after midnight still reads "Tomorrow" even though it is minutes rather than a full day away.
+ */
+internal fun formatUpcomingEventLine(
+    startEpochMillis: Long,
+    nowEpochMillis: Long,
+    zone: ZoneId = ZoneId.systemDefault(),
+): String {
+    val startDate = Instant.ofEpochMilli(startEpochMillis).atZone(zone).toLocalDate()
+    val tomorrow = Instant.ofEpochMilli(nowEpochMillis).atZone(zone).toLocalDate().plusDays(1)
+    val time = formatEventClockTime(startEpochMillis, zone)
+    return if (startDate == tomorrow) {
+        "Tomorrow $time"
+    } else {
+        "${startDate.dayOfWeek.getDisplayName(java.time.format.TextStyle.SHORT, Locale.US)} $time"
+    }
 }
 
 /**
@@ -1730,7 +1730,6 @@ internal fun calendarEventTitle(destinationLabel: String?): String {
 
 internal enum class CalendarEmptyCase {
     UNLOCATED_EVENT,
-    NEXT_WINDOW,
     NONE,
 }
 
@@ -1738,15 +1737,16 @@ internal fun calendarEmptyCase(snapshot: CommuteSnapshot): CalendarEmptyCase {
     if (!snapshot.destinationLabel.isNullOrBlank() && snapshot.eventStartEpochMillis != null) {
         return CalendarEmptyCase.UNLOCATED_EVENT
     }
-    if (!snapshot.nextWindowLabel.isNullOrBlank() && snapshot.nextWindowStartMinuteOfDay != null) {
-        return CalendarEmptyCase.NEXT_WINDOW
-    }
     return CalendarEmptyCase.NONE
 }
 
+/** True when the NONE branch's empty-day text should render: never during wind-down, whose "Next up" section already fills that space. */
+internal fun showsCalendarNoneText(windDown: Boolean, case: CalendarEmptyCase): Boolean =
+    !windDown && case == CalendarEmptyCase.NONE
+
 /**
- * Owner decision 1: inside a commute window the commute body replaces the wind-down block, the
- * NEXT_WINDOW block, and the NONE text, but an unlocated event still wins and keeps the plain card.
+ * Owner decision 1: inside a commute window the commute body replaces the wind-down block and
+ * the NONE text, but an unlocated event still wins and keeps the plain card.
  */
 internal fun showsCommuteWindowBody(inWindow: Boolean, case: CalendarEmptyCase): Boolean {
     return inWindow && case != CalendarEmptyCase.UNLOCATED_EVENT
@@ -1881,7 +1881,7 @@ internal fun ridePillLabel(direction: Direction): String = when (direction) {
     Direction.TO_HOME -> "Ride Home"
 }
 
-/** In-window commute body label, reusing [com.crpakala.commutewidget.engine.NextWindow.label]'s text. */
+/** In-window commute body label: the same "To Work" / "To Home" text the window model uses. */
 internal fun commuteWindowLabel(direction: Direction): String = when (direction) {
     Direction.TO_WORK -> "To Work"
     Direction.TO_HOME -> "To Home"

@@ -29,6 +29,7 @@ import com.crpakala.commutewidget.data.RidePhase
 import com.crpakala.commutewidget.data.SettingsRepository
 import com.crpakala.commutewidget.data.SnapshotMode
 import com.crpakala.commutewidget.data.TravelMode
+import com.crpakala.commutewidget.data.UpcomingEvent
 import com.crpakala.commutewidget.schedule.CalendarTickScheduler
 import com.crpakala.commutewidget.schedule.CommuteLeaveByScheduler
 import com.crpakala.commutewidget.schedule.EventLeaveByScheduler
@@ -413,20 +414,20 @@ object CommuteRefresher {
                         }
                         // The probe gates itself on phase OFFERED, so an interrupted ride runs nothing.
                         maybeRunCommuteProbe(context, repo, settings, widgetMode, postInterruptPhase, today, now, nowEpochMillis)
-                        performCalendarRefresh(context, repo, settings, trigger, direction, nextWindowResult, now, nowEpochMillis, inWindow = true, cancelCommuteLeaveBy = false)
+                        performCalendarRefresh(context, repo, settings, trigger, direction, now, nowEpochMillis, inWindow = true, cancelCommuteLeaveBy = false)
                     }
                     InWindowBranch.RIDE -> {
                         val fromCurrentLocation = rideFromCurrentLocation(rideState, today, widgetMode.direction)
-                        performCommuteRefresh(context, repo, settings, trigger, widgetMode.direction, nextWindowResult, today, now, nowEpochMillis, fromCurrentLocation)
+                        performCommuteRefresh(context, repo, settings, trigger, widgetMode.direction, today, now, nowEpochMillis, fromCurrentLocation)
                     }
                     InWindowBranch.PROBE_AND_CALENDAR -> {
                         maybeRunCommuteProbe(context, repo, settings, widgetMode, phase, today, now, nowEpochMillis)
-                        performCalendarRefresh(context, repo, settings, trigger, direction, nextWindowResult, now, nowEpochMillis, inWindow = true, cancelCommuteLeaveBy = false)
+                        performCalendarRefresh(context, repo, settings, trigger, direction, now, nowEpochMillis, inWindow = true, cancelCommuteLeaveBy = false)
                     }
                 }
             }
             WidgetMode.Calendar -> {
-                performCalendarRefresh(context, repo, settings, trigger, direction, nextWindowResult, now, nowEpochMillis, inWindow = false, cancelCommuteLeaveBy = true)
+                performCalendarRefresh(context, repo, settings, trigger, direction, now, nowEpochMillis, inWindow = false, cancelCommuteLeaveBy = true)
             }
         }
     }
@@ -528,7 +529,6 @@ object CommuteRefresher {
         settings: AppSettings,
         trigger: RefreshTrigger,
         direction: Direction,
-        nextWindowResult: NextWindow?,
         today: String,
         now: ZonedDateTime,
         nowEpochMillis: Long,
@@ -566,7 +566,6 @@ object CommuteRefresher {
                     settings = settings,
                     trigger = trigger,
                     direction = direction,
-                    nextWindowResult = nextWindowResult,
                     destinationLabel = trip.destinationLabel,
                     message = result.message,
                     today = today,
@@ -588,7 +587,6 @@ object CommuteRefresher {
                     settings = settings,
                     trigger = trigger,
                     direction = direction,
-                    nextWindowResult = nextWindowResult,
                     destinationLabel = trip.destinationLabel,
                     message = mapResult.message,
                     today = today,
@@ -663,7 +661,6 @@ object CommuteRefresher {
         settings: AppSettings,
         trigger: RefreshTrigger,
         direction: Direction,
-        nextWindowResult: NextWindow?,
         destinationLabel: String,
         message: String,
         today: String,
@@ -675,7 +672,7 @@ object CommuteRefresher {
             return
         }
         repo.updateRideState { applyRideFailed(it, today, direction) }
-        performCalendarRefresh(context, repo, settings, trigger, direction, nextWindowResult, now, nowEpochMillis, inWindow = true, cancelCommuteLeaveBy = false)
+        performCalendarRefresh(context, repo, settings, trigger, direction, now, nowEpochMillis, inWindow = true, cancelCommuteLeaveBy = false)
     }
 
     /**
@@ -713,9 +710,11 @@ object CommuteRefresher {
      * [inWindow] marks the two in-window callers (the pre-ride render and the event takeover).
      * When it is set and no event remains today, the CALENDAR_EMPTY snapshot is built for the
      * commute body instead of the calendar body: no next-window line, no wind-down fields and no
-     * tomorrow lookup, and the today counts the morning brief needs are read the same way the ride
-     * pipeline reads them. Event selection, the plain card, the routed event, the near-flip arming
-     * and the tick are identical either way.
+     * upcoming-events lookup, and the today counts the morning brief needs are read the same way
+     * the ride pipeline reads them. Out of window with no event remaining today, the wind-down
+     * card's "Next up" section is populated instead: the next two events from tomorrow's local
+     * midnight onward, within seven days (see [CalendarReader.upcomingEvents]). Event selection,
+     * the plain card, the routed event, the near-flip arming and the tick are identical either way.
      */
     private suspend fun performCalendarRefresh(
         context: Context,
@@ -723,7 +722,6 @@ object CommuteRefresher {
         settings: AppSettings,
         trigger: RefreshTrigger,
         direction: Direction,
-        nextWindowResult: NextWindow?,
         now: ZonedDateTime,
         nowEpochMillis: Long,
         inWindow: Boolean,
@@ -768,7 +766,6 @@ object CommuteRefresher {
                     calendarEmptySnapshot(
                         direction = direction,
                         nowEpochMillis = nowEpochMillis,
-                        nextWindowResult = null,
                         healthComputation = healthComputation,
                         todayEventCount = todaySummary?.remainingCount,
                         todayFirstEventStartEpochMillis = todaySummary?.firstStartEpochMillis,
@@ -776,18 +773,16 @@ object CommuteRefresher {
                 )
                 return
             }
-            val tomorrowEvent = if (canReadCalendar) {
-                calendarReader.firstEventTomorrow(settings.selectedCalendarIds, nowEpochMillis, now.zone)
+            val upcomingEvents = if (canReadCalendar) {
+                calendarReader.upcomingEvents(settings.selectedCalendarIds, nowEpochMillis, now.zone)
             } else {
-                null
+                emptyList()
             }
             repo.saveSnapshot(
                 calendarEmptySnapshot(
                     direction = direction,
                     nowEpochMillis = nowEpochMillis,
-                    nextWindowResult = nextWindowResult,
-                    tomorrowEventTitle = tomorrowEvent?.title,
-                    tomorrowEventStartEpochMillis = tomorrowEvent?.startEpochMillis,
+                    upcomingEvents = upcomingEvents,
                     healthComputation = healthComputation,
                 ),
             )
@@ -959,12 +954,21 @@ object CommuteRefresher {
         }
     }
 
+    /**
+     * Builds a [SnapshotMode.CALENDAR_EMPTY] snapshot for no event remaining today.
+     * The commute window (`nextWindowLabel` / `nextWindowStartMinuteOfDay`) is never advertised on
+     * this card any more, so both fields are always null here.
+     * They stay on [CommuteSnapshot] only so previously stored JSON still decodes.
+     * [upcomingEvents] is the wind-down card's "Next up" section (see
+     * [CalendarReader.upcomingEvents]), populated only when the caller is out of window with no
+     * event remaining today.
+     * [CommuteSnapshot.tomorrowEventTitle] and [CommuteSnapshot.tomorrowEventStartEpochMillis] are
+     * likewise no longer populated by any caller and stay only for old stored snapshots.
+     */
     private fun calendarEmptySnapshot(
         direction: Direction,
         nowEpochMillis: Long,
-        nextWindowResult: NextWindow?,
-        tomorrowEventTitle: String? = null,
-        tomorrowEventStartEpochMillis: Long? = null,
+        upcomingEvents: List<UpcomingEvent> = emptyList(),
         healthComputation: HealthComputation = HealthComputation(),
         todayEventCount: Int? = null,
         todayFirstEventStartEpochMillis: Long? = null,
@@ -983,18 +987,17 @@ object CommuteRefresher {
         leaveByMinuteOfDay = null,
         mode = SnapshotMode.CALENDAR_EMPTY,
         eventStartEpochMillis = null,
-        // Only advertise a window starting today or tomorrow; a farther window (non-commute day
-        // tomorrow, weekend gap) must not render as an imminent "Next up" commute.
-        nextWindowLabel = nextWindowResult?.takeIf { it.withinCardHorizon() }?.label,
-        nextWindowStartMinuteOfDay = nextWindowResult?.takeIf { it.withinCardHorizon() }?.startMinuteOfDay,
-        tomorrowEventTitle = tomorrowEventTitle,
-        tomorrowEventStartEpochMillis = tomorrowEventStartEpochMillis,
+        nextWindowLabel = null,
+        nextWindowStartMinuteOfDay = null,
+        tomorrowEventTitle = null,
+        tomorrowEventStartEpochMillis = null,
         todayEventCount = todayEventCount,
         todayFirstEventStartEpochMillis = todayFirstEventStartEpochMillis,
         healthNudges = healthComputation.healthNudges,
         sleepEstimateMinutes = healthComputation.sleepEstimateMinutes,
         shortSleepDay = healthComputation.shortSleepDay,
         customPillOccurrences = healthComputation.customPillOccurrences,
+        upcomingEvents = upcomingEvents,
     )
 
     private fun commuteLeaveByPlanFor(
