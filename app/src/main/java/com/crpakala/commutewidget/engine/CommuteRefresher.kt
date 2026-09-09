@@ -21,9 +21,11 @@ import com.crpakala.commutewidget.api.StaticMapUrl
 import com.crpakala.commutewidget.calendar.CalendarReader
 import com.crpakala.commutewidget.calendar.TodayEvent
 import com.crpakala.commutewidget.data.AppSettings
+import com.crpakala.commutewidget.data.CommuteProbe
 import com.crpakala.commutewidget.data.CommuteSnapshot
 import com.crpakala.commutewidget.data.Direction
 import com.crpakala.commutewidget.data.Place
+import com.crpakala.commutewidget.data.RidePhase
 import com.crpakala.commutewidget.data.SettingsRepository
 import com.crpakala.commutewidget.data.SnapshotMode
 import com.crpakala.commutewidget.data.TravelMode
@@ -71,6 +73,10 @@ private const val MAP_FETCH_HEIGHT_PX = 600
 private const val MAP_MAX_LONG_EDGE_PX = 1200
 private const val LOCATION_TIMEOUT_MS = 15_000L
 private const val LOCATION_WARM_UP_TIMEOUT_MS = 10_000L
+// A resumed ride re-fixes the device location on a tap, so the fix gets a tighter budget than
+// LOCATION_TIMEOUT_MS: the whole Glance action is cancelled after roughly 10 seconds and the
+// Routes and Static Maps calls still have to fit after it.
+private const val RESUMED_RIDE_FIX_TIMEOUT_MS = 5_000L
 private const val MIN_REFRESH_GAP_MS = 5_000L
 private const val TAP_COOLDOWN_PENDING_FRAME_MS = 250L
 private const val MAP_FILE_A = "map_a.png"
@@ -262,14 +268,23 @@ object CommuteRefresher {
     // never delay or fail the main pipeline. Mirrors CommuteScheduler's own fire-and-forget scope.
     private val warmUpScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    suspend fun refreshNow(context: Context, trigger: RefreshTrigger) {
+    /**
+     * [bypassCooldown] is for the Ride and Reached pill taps: they write ride state first and the
+     * fetch that follows must run even inside the debounce gap, or the pill would vanish with no
+     * map ever loading until the next refresh.
+     */
+    suspend fun refreshNow(context: Context, trigger: RefreshTrigger, bypassCooldown: Boolean = false) {
         val appContext = context.applicationContext
         mutex.withLock {
             val repo = SettingsRepository.get(appContext)
             val nowElapsed = SystemClock.elapsedRealtime()
-            if (lastCompletedElapsedRealtime != 0L &&
-                nowElapsed - lastCompletedElapsedRealtime < MIN_REFRESH_GAP_MS
-            ) {
+            val skipForCooldown = shouldSkipForCooldown(
+                elapsedSinceLastCompletedMillis = nowElapsed - lastCompletedElapsedRealtime,
+                lastCompletedSet = lastCompletedElapsedRealtime != 0L,
+                bypassCooldown = bypassCooldown,
+                minGapMillis = MIN_REFRESH_GAP_MS,
+            )
+            if (skipForCooldown) {
                 if (shouldPlayCooldownPendingFrame(trigger)) {
                     repo.setRefreshing(true)
                     CommuteWidget().updateAll(appContext)
@@ -339,6 +354,15 @@ object CommuteRefresher {
     /** Compatibility overload for existing callers (widget RefreshAction): treated as a manual tap. */
     suspend fun refreshNow(context: Context) = refreshNow(context, RefreshTrigger.TAP)
 
+    /**
+     * Resolves the window model and runs exactly one pipeline. Outside a window the calendar
+     * pipeline runs in true calendar mode. Inside a window [resolveInWindowBranch] picks the
+     * branch: an event takeover interrupts a ride in progress and hands over to the calendar
+     * pipeline, a RIDING ride fetches the route and map, and otherwise the one-call leave-by probe
+     * runs and the calendar pipeline renders the in-window card carrying the Ride pill. Both
+     * in-window branches pass `inWindow = true`, so the card body drops the next-window and
+     * wind-down fields and keeps the probe's alarm alive.
+     */
     private suspend fun performRefresh(context: Context, trigger: RefreshTrigger) {
         val repo = SettingsRepository.get(context)
         val settings = repo.settingsSnapshot()
@@ -366,20 +390,43 @@ object CommuteRefresher {
         val nextWindowResult = nextWindowFor(settings, dayOfWeekIso, minuteOfDay)
         val direction = resolveDirectionForSnapshot(widgetMode, nextWindowResult?.direction)
 
+        // Tap-to-ride state is keyed by local date and direction, so a value left over from
+        // another day or from the other window is inert and resolves to OFFERED.
+        val today = now.toLocalDate().toString()
+        val rideState = repo.rideState()
+
         when (widgetMode) {
             is WidgetMode.Commute -> {
-                // Event takeover: a located event starting within eventTakeoverMinutes outranks
-                // the window commute (owner decision after the v5 audit). The calendar pipeline
-                // re-selects the same event deterministically and handles routing, leave-by,
-                // tick scheduling, and commute-alarm cancellation.
-                if (eventTakeoverCandidate(context, settings, nowEpochMillis) != null) {
-                    performCalendarRefresh(context, repo, settings, trigger, direction, nextWindowResult, now, nowEpochMillis)
-                } else {
-                    performCommuteRefresh(context, repo, settings, trigger, widgetMode.direction, now, nowEpochMillis)
+                val phase = resolveRidePhase(rideState, today, widgetMode.direction)
+                val takeoverApplies = eventTakeoverCandidate(context, settings, nowEpochMillis) != null
+                when (resolveInWindowBranch(takeoverApplies, phase)) {
+                    InWindowBranch.EVENT_TAKEOVER -> {
+                        // A located event starting within eventTakeoverMinutes outranks the window
+                        // commute (owner decision after the v5 audit). The calendar pipeline re-selects
+                        // the same event deterministically and handles routing, leave-by, and tick
+                        // scheduling, and it must keep the window probe's alarm alive.
+                        val postInterruptPhase = if (phase == RidePhase.RIDING) {
+                            repo.updateRideState { applyRideInterrupted(it, today, widgetMode.direction) }
+                            RidePhase.INTERRUPTED
+                        } else {
+                            phase
+                        }
+                        // The probe gates itself on phase OFFERED, so an interrupted ride runs nothing.
+                        maybeRunCommuteProbe(context, repo, settings, widgetMode, postInterruptPhase, today, now, nowEpochMillis)
+                        performCalendarRefresh(context, repo, settings, trigger, direction, nextWindowResult, now, nowEpochMillis, inWindow = true, cancelCommuteLeaveBy = false)
+                    }
+                    InWindowBranch.RIDE -> {
+                        val fromCurrentLocation = rideFromCurrentLocation(rideState, today, widgetMode.direction)
+                        performCommuteRefresh(context, repo, settings, trigger, widgetMode.direction, nextWindowResult, today, now, nowEpochMillis, fromCurrentLocation)
+                    }
+                    InWindowBranch.PROBE_AND_CALENDAR -> {
+                        maybeRunCommuteProbe(context, repo, settings, widgetMode, phase, today, now, nowEpochMillis)
+                        performCalendarRefresh(context, repo, settings, trigger, direction, nextWindowResult, now, nowEpochMillis, inWindow = true, cancelCommuteLeaveBy = false)
+                    }
                 }
             }
             WidgetMode.Calendar -> {
-                performCalendarRefresh(context, repo, settings, trigger, direction, nextWindowResult, now, nowEpochMillis)
+                performCalendarRefresh(context, repo, settings, trigger, direction, nextWindowResult, now, nowEpochMillis, inWindow = false, cancelCommuteLeaveBy = true)
             }
         }
     }
@@ -414,42 +461,140 @@ object CommuteRefresher {
             eveningEnd = settings.eveningSlotEndMinuteOfDay,
         )
 
+    /**
+     * Once-per-window leave-by probe: one Routes call for the FIXED window trip, no Static Maps
+     * and no snapshot write, so the Leave pill and the precise alarm exist before the owner taps
+     * Ride. [shouldRunCommuteProbe] keeps it to the first OFFERED refresh of this window on this
+     * local date, and a failure stores nothing so the next in-window refresh retries.
+     * A probe must never fail the calendar refresh that follows it, so it degrades to doing
+     * nothing on any exception, exactly like [computeHealthFieldsSafely] does for health.
+     */
+    private suspend fun maybeRunCommuteProbe(
+        context: Context,
+        repo: SettingsRepository,
+        settings: AppSettings,
+        widgetMode: WidgetMode.Commute,
+        phase: RidePhase,
+        today: String,
+        now: ZonedDateTime,
+        nowEpochMillis: Long,
+    ) {
+        try {
+            val existing = repo.commuteProbe()
+            if (!shouldRunCommuteProbe(widgetMode, phase, settings.leaveByEnabled, existing, today)) {
+                return
+            }
+
+            val direction = widgetMode.direction
+            val trip = commuteTrip(settings.home!!, settings.work!!, direction)
+
+            val route = when (
+                val result = RoutesClient(settings.apiKey).computeRoute(trip.origin, trip.destination, travelModeFor(settings.travelMode))
+            ) {
+                is ApiResult.Success -> result.value
+                is ApiResult.Failure -> return
+            }
+
+            val plan = commuteLeaveByPlanFor(settings, direction, route.durationSeconds)
+            repo.setCommuteProbe(
+                CommuteProbe(
+                    localDate = today,
+                    direction = direction,
+                    durationSeconds = route.durationSeconds,
+                    leaveByMinuteOfDay = plan?.leaveByMinuteOfDay,
+                    probedAtEpochMillis = nowEpochMillis,
+                ),
+            )
+
+            if (plan != null) {
+                maybeNotifyLeaveBy(context, repo, settings, direction, plan, trip.destinationLabel, now)
+                scheduleCommuteLeaveByAlarm(context, repo, direction, plan, trip.destinationLabel, now, nowEpochMillis)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+        }
+    }
+
+    /**
+     * The ride pipeline: reached only while the ride phase is RIDING (see
+     * [shouldRunCommutePipeline]), so an open commute window no longer fetches a route or a map on
+     * its own. [fromCurrentLocation] is set for a resumed ride and routes from the device fix,
+     * falling back to the fixed window origin when no fix arrives.
+     */
     private suspend fun performCommuteRefresh(
         context: Context,
         repo: SettingsRepository,
         settings: AppSettings,
         trigger: RefreshTrigger,
         direction: Direction,
+        nextWindowResult: NextWindow?,
+        today: String,
         now: ZonedDateTime,
         nowEpochMillis: Long,
+        fromCurrentLocation: Boolean,
     ) {
         // v5: a commute-mode refresh of any outcome (success or failure) is "anything else" per
         // the calendar tick's schedule/cancel contract - see CalendarTickScheduler's doc.
         CalendarTickScheduler.cancel(context)
 
-        val home = settings.home!!
-        val work = settings.work!!
-        val destinationLabel = if (direction == Direction.TO_WORK) "Work" else "Home"
-        val destination = if (direction == Direction.TO_WORK) LatLng(work.lat, work.lng) else LatLng(home.lat, home.lng)
-        val origin = if (direction == Direction.TO_WORK) LatLng(home.lat, home.lng) else LatLng(work.lat, work.lng)
+        val trip = commuteTrip(settings.home!!, settings.work!!, direction)
+        val destination = trip.destination
+        // A resumed ride routes from the device fix, bounded so a slow fix cannot eat the whole
+        // Glance action budget. A failed or timed-out fix is not a routing failure here, it falls
+        // back to the fixed window origin the way eventRouteOrigin falls back to Home.
+        val origin = if (fromCurrentLocation) {
+            val fix = withTimeoutOrNull(RESUMED_RIDE_FIX_TIMEOUT_MS) { currentDeviceLocation(context) }
+                ?: ApiResult.Failure("Location timeout")
+            commuteRouteOrigin(fix, trip.origin)
+        } else {
+            trip.origin
+        }
+
+        // Read before the Routes call, because resolveMapImagePath's reuse decision needs the
+        // snapshot as it stood before this attempt.
+        val previousSnapshot = repo.snapshot()
 
         val route = when (
             val result = RoutesClient(settings.apiKey).computeRoute(origin, destination, travelModeFor(settings.travelMode))
         ) {
             is ApiResult.Success -> result.value
             is ApiResult.Failure -> {
-                saveFailure(repo, direction, result.message, SnapshotMode.COMMUTE, destinationLabel)
+                saveRideFetchFailure(
+                    context = context,
+                    repo = repo,
+                    settings = settings,
+                    trigger = trigger,
+                    direction = direction,
+                    nextWindowResult = nextWindowResult,
+                    destinationLabel = trip.destinationLabel,
+                    message = result.message,
+                    today = today,
+                    now = now,
+                    nowEpochMillis = nowEpochMillis,
+                )
                 return
             }
         }
 
-        val previousSnapshot = repo.snapshot()
         val mapImagePath = when (
             val mapResult = resolveMapImagePath(context, repo, trigger, previousSnapshot, direction, destination, origin, route, settings.apiKey)
         ) {
             is ApiResult.Success -> mapResult.value
             is ApiResult.Failure -> {
-                saveFailure(repo, direction, mapResult.message, SnapshotMode.COMMUTE, destinationLabel)
+                saveRideFetchFailure(
+                    context = context,
+                    repo = repo,
+                    settings = settings,
+                    trigger = trigger,
+                    direction = direction,
+                    nextWindowResult = nextWindowResult,
+                    destinationLabel = trip.destinationLabel,
+                    message = mapResult.message,
+                    today = today,
+                    now = now,
+                    nowEpochMillis = nowEpochMillis,
+                )
                 return
             }
         }
@@ -475,7 +620,7 @@ object CommuteRefresher {
                 fetchedAtEpochMillis = nowEpochMillis,
                 lastFetchFailed = false,
                 lastErrorMessage = null,
-                destinationLabel = destinationLabel,
+                destinationLabel = trip.destinationLabel,
                 destinationLat = destination.lat,
                 destinationLng = destination.lng,
                 leaveByMinuteOfDay = leaveByPlan?.leaveByMinuteOfDay,
@@ -492,10 +637,45 @@ object CommuteRefresher {
             ),
         )
 
+        // The ride now owns a routed snapshot, so a later failure in this same ride counts as a
+        // same-target failure and keeps the stale map instead of reverting the phase.
+        repo.updateRideState { applyRideRouted(it, today, direction) }
+
         if (leaveByPlan != null) {
-            maybeNotifyLeaveBy(context, repo, settings, direction, leaveByPlan, destinationLabel, now)
-            scheduleCommuteLeaveByAlarm(context, repo, direction, leaveByPlan, destinationLabel, now, nowEpochMillis)
+            maybeNotifyLeaveBy(context, repo, settings, direction, leaveByPlan, trip.destinationLabel, now)
+            scheduleCommuteLeaveByAlarm(context, repo, direction, leaveByPlan, trip.destinationLabel, now, nowEpochMillis)
         }
+    }
+
+    /**
+     * Ride fetch failure split, decided by ride identity rather than by the stored snapshot.
+     * On the ride's FIRST attempt ([isRideFirstAttempt], so this ride has not stored a routed
+     * snapshot yet) the phase reverts through [applyRideFailed] and the calendar pipeline
+     * re-renders the in-window card, so the owner gets the Ride pill tinted late instead of a
+     * broken routed shell. Once the ride has routed, a later failure keeps today's behavior and
+     * [saveFailure] preserves the stale route and map with the warning glyph while the phase stays
+     * RIDING. The ride state is re-read here because the success path may have flagged it since
+     * this refresh started.
+     */
+    private suspend fun saveRideFetchFailure(
+        context: Context,
+        repo: SettingsRepository,
+        settings: AppSettings,
+        trigger: RefreshTrigger,
+        direction: Direction,
+        nextWindowResult: NextWindow?,
+        destinationLabel: String,
+        message: String,
+        today: String,
+        now: ZonedDateTime,
+        nowEpochMillis: Long,
+    ) {
+        if (!isRideFirstAttempt(repo.rideState(), today, direction)) {
+            saveFailure(repo, direction, message, SnapshotMode.COMMUTE, destinationLabel)
+            return
+        }
+        repo.updateRideState { applyRideFailed(it, today, direction) }
+        performCalendarRefresh(context, repo, settings, trigger, direction, nextWindowResult, now, nowEpochMillis, inWindow = true, cancelCommuteLeaveBy = false)
     }
 
     /**
@@ -511,22 +691,31 @@ object CommuteRefresher {
      * wake exactly when it crosses into that window - at which point a normal AUTO refresh
      * re-resolves calendar mode and routes it automatically.
      *
-     * Every branch cancels [CalendarTickScheduler], [EventLeaveByScheduler],
-     * [CommuteLeaveByScheduler], and [EventNearScheduler]'s pending work up front - the previously
-     * scheduled event/tick/alarm/flip may have moved, been cancelled, or resolved to a different
-     * mode, so a stale wake-up must not survive to fire. In particular, a FIX-16 commute leave-by
-     * alarm scheduled during an earlier commute window must not survive into calendar mode
-     * (mirrors [performCommuteRefresh] cancelling [CalendarTickScheduler] on every commute-mode
-     * outcome). Only the far-located branch re-arms [EventNearScheduler], and only the final
-     * located-event success path re-schedules the tick, each only when its own condition holds;
-     * the commute leave-by alarm and event leave-by are never re-scheduled from this function.
+     * Every branch cancels [CalendarTickScheduler], [EventLeaveByScheduler], and
+     * [EventNearScheduler]'s pending work up front - the previously scheduled event/tick/flip may
+     * have moved, been cancelled, or resolved to a different mode, so a stale wake-up must not
+     * survive to fire. The FIX-16 commute leave-by alarm is different now that the window probe
+     * owns it: it is cancelled only when [cancelCommuteLeaveBy] is set, which happens only when
+     * the caller resolved [WidgetMode.Calendar]. An alarm from an earlier commute window must not
+     * survive into calendar mode, but an in-window calendar refresh (the pre-ride render, or an
+     * event takeover) must keep the probe's alarm alive. Only the far-located branch re-arms
+     * [EventNearScheduler], and only the final located-event success path re-schedules the tick,
+     * each only when its own condition holds, and the event leave-by is never re-scheduled from
+     * this function.
      *
      * A failure anywhere in the routed pipeline below (geocode, Routes, Static Maps) goes through
-     * [saveFailure] with `modeOverride = SnapshotMode.CALENDAR_EVENT`; a failed device fix is not
+     * [saveFailure] with `modeOverride = SnapshotMode.CALENDAR_EVENT`. A failed device fix is not
      * a failure here, it routes from the saved Home place instead (see [eventRouteOrigin]). See
      * [failureSnapshot]'s doc for the resulting split: a first attempt at this event falls back to
      * the plain card, while a same-target failure (this event routed successfully before) keeps
      * showing the stale route/map with the warning glyph.
+     *
+     * [inWindow] marks the two in-window callers (the pre-ride render and the event takeover).
+     * When it is set and no event remains today, the CALENDAR_EMPTY snapshot is built for the
+     * commute body instead of the calendar body: no next-window line, no wind-down fields and no
+     * tomorrow lookup, and the today counts the morning brief needs are read the same way the ride
+     * pipeline reads them. Event selection, the plain card, the routed event, the near-flip arming
+     * and the tick are identical either way.
      */
     private suspend fun performCalendarRefresh(
         context: Context,
@@ -537,10 +726,14 @@ object CommuteRefresher {
         nextWindowResult: NextWindow?,
         now: ZonedDateTime,
         nowEpochMillis: Long,
+        inWindow: Boolean,
+        cancelCommuteLeaveBy: Boolean,
     ) {
         CalendarTickScheduler.cancel(context)
         EventLeaveByScheduler.cancel(context)
-        CommuteLeaveByScheduler.cancel(context)
+        if (cancelCommuteLeaveBy) {
+            CommuteLeaveByScheduler.cancel(context)
+        }
         EventNearScheduler.cancel(context)
 
         // Sprint 2: fetched once and reused for every branch below (no writes happen before any
@@ -566,6 +759,23 @@ object CommuteRefresher {
         }
 
         if (event == null) {
+            if (inWindow) {
+                // The in-window card body is the window label plus the morning brief, so nothing
+                // next-window or wind-down shaped is stored and tomorrow is never queried.
+                val todaySummary = calendarReader.takeIf { canReadCalendar }
+                    ?.todaySummary(settings.selectedCalendarIds, nowEpochMillis, now.zone)
+                repo.saveSnapshot(
+                    calendarEmptySnapshot(
+                        direction = direction,
+                        nowEpochMillis = nowEpochMillis,
+                        nextWindowResult = null,
+                        healthComputation = healthComputation,
+                        todayEventCount = todaySummary?.remainingCount,
+                        todayFirstEventStartEpochMillis = todaySummary?.firstStartEpochMillis,
+                    ),
+                )
+                return
+            }
             val tomorrowEvent = if (canReadCalendar) {
                 calendarReader.firstEventTomorrow(settings.selectedCalendarIds, nowEpochMillis, now.zone)
             } else {
@@ -756,6 +966,8 @@ object CommuteRefresher {
         tomorrowEventTitle: String? = null,
         tomorrowEventStartEpochMillis: Long? = null,
         healthComputation: HealthComputation = HealthComputation(),
+        todayEventCount: Int? = null,
+        todayFirstEventStartEpochMillis: Long? = null,
     ): CommuteSnapshot = CommuteSnapshot(
         direction = direction,
         durationSeconds = 0L,
@@ -777,6 +989,8 @@ object CommuteRefresher {
         nextWindowStartMinuteOfDay = nextWindowResult?.takeIf { it.withinCardHorizon() }?.startMinuteOfDay,
         tomorrowEventTitle = tomorrowEventTitle,
         tomorrowEventStartEpochMillis = tomorrowEventStartEpochMillis,
+        todayEventCount = todayEventCount,
+        todayFirstEventStartEpochMillis = todayFirstEventStartEpochMillis,
         healthNudges = healthComputation.healthNudges,
         sleepEstimateMinutes = healthComputation.sleepEstimateMinutes,
         shortSleepDay = healthComputation.shortSleepDay,
@@ -1153,8 +1367,8 @@ private fun previousHadUsableRoute(previous: CommuteSnapshot?): Boolean =
  * [previous] never actually routed, are both handled the same special way: instead of the generic
  * cleared-but-still-broken shell below (0-min ETA, warning glyph, calendar-emoji map placeholder -
  * alarming for what is usually just a junk location the calendar reader's marker list missed, or
- * a transient geocode/device-location/Static-Maps hiccup on an address that has never successfully
- * routed), it falls back to the exact zero-API plain card an unlocated or far-located event gets -
+ * a transient geocode/Static-Maps hiccup on an address that has never successfully routed), it
+ * falls back to the exact zero-API plain card an unlocated or far-located event gets -
  * see [calendarPlainEventSnapshot]: `mode = CALENDAR_EMPTY`, `lastFetchFailed = false`, title and
  * start carried, no route/map data. Health fields still carry forward from [previous] exactly as
  * every other branch here does. A SAME-target event failure whose [previous] DID route
@@ -1163,7 +1377,10 @@ private fun previousHadUsableRoute(previous: CommuteSnapshot?): Boolean =
  * after a previously successful render. No retry is armed for this fallback; recovery stays via
  * the next tap, window boundary, or calendar change, same as every other failure path in this
  * file. This only ever triggers when [modeOverride] resolves to [SnapshotMode.CALENDAR_EVENT] -
- * commute failures are untouched, in every case, byte-for-byte.
+ * commute failures are untouched, in every case, byte-for-byte. That still holds for the
+ * tap-to-ride pipeline: a ride's first-attempt revert happens in
+ * [CommuteRefresher.performCommuteRefresh] before [saveFailure] is ever reached, so this function
+ * never sees it.
  */
 internal fun failureSnapshot(
     previous: CommuteSnapshot?,

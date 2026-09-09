@@ -86,6 +86,8 @@ private object PreferenceKeys {
     val CUSTOM_PILL_ACTIVE_WINDOW_MINUTES = intPreferencesKey("custom_pill_active_window_minutes")
     val LAST_TO_BED_TAP_EPOCH_MILLIS = longPreferencesKey("last_to_bed_tap_epoch_millis")
     val LAST_WOKE_UP_TAP_EPOCH_MILLIS = longPreferencesKey("last_woke_up_tap_epoch_millis")
+    val RIDE_STATE_JSON = stringPreferencesKey("ride_state_json")
+    val COMMUTE_PROBE_JSON = stringPreferencesKey("commute_probe_json")
 }
 
 private fun Preferences.toAppSettings(): AppSettings {
@@ -163,6 +165,8 @@ data class WidgetRenderData(
     val refreshingSince: Long?,
     val bestDeparture: BestDeparture?,
     val healthDayState: HealthDayState?,
+    val rideState: RideState?,
+    val commuteProbe: CommuteProbe?,
 )
 
 class SettingsRepository private constructor(
@@ -187,6 +191,8 @@ class SettingsRepository private constructor(
             refreshingSince = preferences[PreferenceKeys.REFRESHING_SINCE_EPOCH_MILLIS],
             bestDeparture = decodeBestDeparture(preferences[PreferenceKeys.BEST_DEPARTURE_JSON]),
             healthDayState = decodeHealthDayState(preferences[PreferenceKeys.HEALTH_DAY_STATE_JSON]),
+            rideState = decodeRideState(preferences[PreferenceKeys.RIDE_STATE_JSON]),
+            commuteProbe = decodeCommuteProbe(preferences[PreferenceKeys.COMMUTE_PROBE_JSON]),
         )
     }
 
@@ -642,6 +648,44 @@ class SettingsRepository private constructor(
     suspend fun setLastWokeUpTapEpochMillis(epochMillis: Long) {
         dataStore.edit { preferences ->
             preferences[PreferenceKeys.LAST_WOKE_UP_TAP_EPOCH_MILLIS] = epochMillis
+        }
+    }
+
+    suspend fun rideState(): RideState? =
+        decodeRideState(dataStore.data.first()[PreferenceKeys.RIDE_STATE_JSON])
+
+    /**
+     * Atomically reads, transforms, and persists the ride state.
+     * Returning null removes the stored state.
+     * Returns true when the stored value actually changed, which is what the ride taps use to
+     * decide whether the follow-up refresh may bypass the cooldown.
+     */
+    suspend fun updateRideState(transform: (RideState?) -> RideState?): Boolean {
+        var changed = false
+        dataStore.edit { preferences ->
+            val current = decodeRideState(preferences[PreferenceKeys.RIDE_STATE_JSON])
+            val updated = transform(current)
+            val hadStoredValue = preferences[PreferenceKeys.RIDE_STATE_JSON] != null
+            changed = rideStateWriteChanged(current, updated, hadStoredValue)
+            if (updated == null) {
+                preferences.remove(PreferenceKeys.RIDE_STATE_JSON)
+            } else {
+                preferences[PreferenceKeys.RIDE_STATE_JSON] = encodeRideState(updated)
+            }
+        }
+        return changed
+    }
+
+    suspend fun commuteProbe(): CommuteProbe? =
+        decodeCommuteProbe(dataStore.data.first()[PreferenceKeys.COMMUTE_PROBE_JSON])
+
+    suspend fun setCommuteProbe(value: CommuteProbe?) {
+        dataStore.edit { preferences ->
+            if (value == null) {
+                preferences.remove(PreferenceKeys.COMMUTE_PROBE_JSON)
+            } else {
+                preferences[PreferenceKeys.COMMUTE_PROBE_JSON] = encodeCommuteProbe(value)
+            }
         }
     }
 

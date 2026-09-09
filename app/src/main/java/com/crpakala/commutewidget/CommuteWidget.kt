@@ -60,15 +60,24 @@ import com.crpakala.commutewidget.data.CommuteSnapshot
 import com.crpakala.commutewidget.data.CustomPillOccurrence
 import com.crpakala.commutewidget.data.Direction
 import com.crpakala.commutewidget.data.MapPillCorner
+import com.crpakala.commutewidget.data.RidePhase
 import com.crpakala.commutewidget.data.SettingsRepository
 import com.crpakala.commutewidget.data.SnapshotMode
 import com.crpakala.commutewidget.data.TravelMode
 import com.crpakala.commutewidget.data.isRefreshingActive
 import com.crpakala.commutewidget.engine.CommuteRefresher
+import com.crpakala.commutewidget.engine.WidgetMode
 import com.crpakala.commutewidget.engine.currentBestDepartureTarget
 import com.crpakala.commutewidget.engine.health.NudgeCandidate
 import com.crpakala.commutewidget.engine.mapInSampleSize
+import com.crpakala.commutewidget.engine.probeLeaveByMinute
+import com.crpakala.commutewidget.engine.resolveRidePhase
+import com.crpakala.commutewidget.engine.resolveWidgetMode
+import com.crpakala.commutewidget.engine.rideLastFailed
+import com.crpakala.commutewidget.engine.shouldOfferRide
+import com.crpakala.commutewidget.engine.shouldRunCommutePipeline
 import com.crpakala.commutewidget.engine.shouldShowBestDeparture
+import com.crpakala.commutewidget.engine.shouldShowReached
 import com.crpakala.commutewidget.health.CommuteAudioDetector
 import com.crpakala.commutewidget.schedule.CommuteScheduler
 import java.io.File
@@ -144,6 +153,27 @@ class CommuteWidget : GlanceAppWidget() {
             } else {
                 null
             }
+            val today = now.toLocalDate().toString()
+            val widgetMode = resolveWidgetMode(
+                dayOfWeekIso = now.dayOfWeek.value,
+                minuteOfDay = nowMinuteOfDay,
+                commuteDays = settings.commuteDays,
+                morningStart = settings.morningSlotStartMinuteOfDay,
+                morningEnd = settings.morningSlotEndMinuteOfDay,
+                eveningStart = settings.eveningSlotStartMinuteOfDay,
+                eveningEnd = settings.eveningSlotEndMinuteOfDay,
+            )
+            val windowDirection = (widgetMode as? WidgetMode.Commute)?.direction
+            val ridePhase = if (windowDirection != null) resolveRidePhase(data.rideState, today, windowDirection) else RidePhase.OFFERED
+            val rideActive = shouldRunCommutePipeline(widgetMode, ridePhase)
+            val showReached = shouldShowReached(widgetMode, ridePhase, snapshot?.mode)
+            val refreshingActive = isRefreshingActive(data.refreshingSince, nowEpochMillis)
+            val commutePillRow = CommutePillRowContent(
+                leaveByMinuteOfDay = probeLeaveByMinute(data.commuteProbe, widgetMode, settings.leaveByEnabled, today),
+                bestLine = bestDepartureLine,
+                rideDirection = windowDirection?.takeIf { shouldOfferRide(widgetMode, ridePhase, snapshot?.mode, refreshingActive) },
+                rideFailed = windowDirection != null && rideLastFailed(data.rideState, today, windowDirection),
+            )
             val nextAlarmLine = runCatching {
                 val info = (context.getSystemService(Context.ALARM_SERVICE) as AlarmManager).nextAlarmClock
                 // Only real clock-app alarms: Samsung Modes and Routines (and similar apps) register
@@ -202,6 +232,10 @@ class CommuteWidget : GlanceAppWidget() {
                         healthPills = healthChrome.pills,
                         healthLineLabel = healthChrome.line?.let(::healthLineCaption),
                         customPillRow = customPillRow,
+                        rideActive = rideActive,
+                        showReached = showReached,
+                        rideDirection = windowDirection,
+                        commutePillRow = commutePillRow,
                         healthColors = HealthChromeColors(
                             mapTextDemoted = dayNightColorProvider(
                                 day = lightScheme.onSurfaceVariant.copy(alpha = HEALTH_DEMOTION_ALPHA),
@@ -288,6 +322,11 @@ private data class WidgetExtras(
     val healthLineLabel: String? = null,
     val healthColors: HealthChromeColors? = null,
     val customPillRow: CustomPillRowContent = CustomPillRowContent(emptyList(), null),
+    val rideActive: Boolean = false,
+    val showReached: Boolean = false,
+    /** The window's direction, for the Reached action parameter. */
+    val rideDirection: Direction? = null,
+    val commutePillRow: CommutePillRowContent = CommutePillRowContent(null, null, null, false),
 )
 
 /** Owner-configurable text scaling applied to every user-visible size on the widget. */
@@ -482,8 +521,13 @@ private fun WideLayout(
             // Pills ride on the map; the panel is too narrow for their full strings. Deliberately
             // NOT gated on the bitmap so they can never vanish with a failed map fetch. Corner is
             // owner-configurable so the stack can dodge whatever the route usually covers.
-            val showLeaveByPill = shouldShowLeaveBy(snapshot, extras.leaveByEnabled)
-            if (showLeaveByPill || extras.bestDepartureLine != null) {
+            // Reached replaces Best while a ride is active: the map pill corner tracks the ride's
+            // end, not the pre-ride best-departure estimate.
+            val bestLine = extras.bestDepartureLine
+            val leaveByMinute = snapshot.leaveByMinuteOfDay
+            val showLeaveByPill = leaveByMinute != null && shouldShowLeaveBy(snapshot, extras.leaveByEnabled)
+            val showBestOnMap = showBestDepartureOnMap(extras.rideActive, bestLine)
+            if (showLeaveByPill || showBestOnMap || extras.showReached) {
                 Box(
                     modifier = GlanceModifier.fillMaxSize(),
                     contentAlignment = pillCornerAlignment(extras.pillCorner),
@@ -492,14 +536,20 @@ private fun WideLayout(
                         modifier = GlanceModifier.padding(6.dp),
                         verticalAlignment = Alignment.Vertical.CenterVertically,
                     ) {
-                        if (showLeaveByPill) {
-                            LeaveByPill(snapshot.leaveByMinuteOfDay!!, extras.nowMinuteOfDay, extras.textScale)
+                        if (leaveByMinute != null && showLeaveByPill) {
+                            LeaveByPill(leaveByMinute, extras.nowMinuteOfDay, extras.textScale)
                         }
-                        if (extras.bestDepartureLine != null) {
+                        val reachedDirection = extras.rideDirection?.takeIf { extras.showReached }
+                        if (reachedDirection != null) {
                             if (showLeaveByPill) {
                                 Spacer(modifier = GlanceModifier.width(4.dp))
                             }
-                            MapTextPill(extras.bestDepartureLine, extras.textScale)
+                            ReachedPill(reachedDirection, extras.textScale)
+                        } else if (showBestOnMap && bestLine != null) {
+                            if (showLeaveByPill) {
+                                Spacer(modifier = GlanceModifier.width(4.dp))
+                            }
+                            MapTextPill(bestLine, extras.textScale)
                         }
                     }
                 }
@@ -576,7 +626,7 @@ private fun LargeLayout(
                         leaveByFontSize = scaledSp(11, extras.textScale),
                         inlineEta = true,
                         showRoutedCaption = true,
-                        showBestDeparture = true,
+                        showBestDeparture = !extras.rideActive,
                         showExtendedCaptions = true,
                         fullMorningBrief = true,
                         showHealthLine = true,
@@ -591,12 +641,21 @@ private fun LargeLayout(
             )
         }
         val hasCustomPillRow = !extras.customPillRow.isEmpty
-        if (extras.healthPills.isNotEmpty() || hasCustomPillRow) {
+        if (extras.healthPills.isNotEmpty() || hasCustomPillRow || extras.showReached) {
             Box(
                 modifier = GlanceModifier.fillMaxSize(),
                 contentAlignment = pillCornerAlignment(oppositeCorner(extras.pillCorner)),
             ) {
+                // LARGE keeps leave-by and best inside the info card, so Reached stacks with the
+                // pills in the opposite corner rather than adding a third overlay.
                 Column {
+                    val reachedDirection = extras.rideDirection?.takeIf { extras.showReached }
+                    if (reachedDirection != null) {
+                        ReachedPill(reachedDirection, extras.textScale)
+                        if (extras.healthPills.isNotEmpty() || hasCustomPillRow) {
+                            Spacer(modifier = GlanceModifier.height(4.dp))
+                        }
+                    }
                     if (extras.healthPills.isNotEmpty()) {
                         HealthPillStack(
                             pills = extras.healthPills,
@@ -641,7 +700,7 @@ private fun CalendarEmptyCard(
                     modifier = GlanceModifier.defaultWeight().fillMaxWidth(),
                     verticalAlignment = Alignment.Vertical.CenterVertically,
                 ) {
-                    CalendarEmptyCardBody(snapshot, extras)
+                    CalendarEmptyCardBody(snapshot, extras, showHealth)
                 }
                 Spacer(modifier = GlanceModifier.height(8.dp))
                 if (lineLabel != null) {
@@ -668,16 +727,20 @@ private fun CalendarEmptyCard(
                     CustomPillChipRow(content = customPillContent, extras = extras)
                 }
             } else {
-                CalendarEmptyCardBody(snapshot, extras)
+                CalendarEmptyCardBody(snapshot, extras, showHealth)
             }
         }
     }
 }
 
 @Composable
-private fun CalendarEmptyCardBody(snapshot: CommuteSnapshot, extras: WidgetExtras) {
+private fun CalendarEmptyCardBody(snapshot: CommuteSnapshot, extras: WidgetExtras, showHealth: Boolean) {
     val textScale = extras.textScale
-    val windDown = isWindDown(snapshot)
+    val case = calendarEmptyCase(snapshot)
+    // showHealth mirrors the SMALL width gate (finding 5): below 220dp the card renders exactly
+    // as before this feature, with no commute body and no pill row.
+    val commuteBody = showHealth && showsCommuteWindowBody(extras.rideDirection != null, case)
+    val windDown = !commuteBody && isWindDown(snapshot)
     // Owner request 2026-08-31: the sleep estimate shows every day, so calendar-mode cards carry
     // the same brief segment commute mornings get ("Slept ~6h 40m" / "Short sleep").
     val sleepCaption = sleepBriefSegment(
@@ -696,79 +759,22 @@ private fun CalendarEmptyCardBody(snapshot: CommuteSnapshot, extras: WidgetExtra
             maxLines = 1,
         )
     }
-    if (windDown) {
+    if (commuteBody) {
+        // In-window commute body (owner decision 1): window label plus the morning brief when
+        // today still has events. No "Next up" line, no wind-down block, no alarm line here.
         Text(
-            text = "Tomorrow",
+            text = commuteWindowLabel(extras.rideDirection!!),
             style = TextStyle(
-                color = GlanceTheme.colors.onSurfaceVariant,
-                fontSize = scaledSp(11, textScale),
+                color = GlanceTheme.colors.onSurface,
+                fontSize = scaledSp(18, textScale),
                 fontWeight = FontWeight.Medium,
             ),
             maxLines = 1,
         )
-        // Title wraps to two lines and the start time gets its own line, so a long meeting
-        // title can never ellipsize the time away.
-        Text(
-            text = snapshot.tomorrowEventTitle!!,
-            style = TextStyle(
-                color = GlanceTheme.colors.onSurface,
-                fontSize = scaledSp(16, textScale),
-                fontWeight = FontWeight.Medium,
-            ),
-            maxLines = 2,
-        )
-        Text(
-            text = formatEventClockTime(snapshot.tomorrowEventStartEpochMillis!!),
-            style = TextStyle(
-                color = GlanceTheme.colors.onSurface,
-                fontSize = scaledSp(14, textScale),
-                fontWeight = FontWeight.Medium,
-            ),
-            maxLines = 1,
-        )
-        if (extras.nextAlarmLine != null) {
-            AlarmLine(extras.nextAlarmLine, textScale)
-        }
-        Spacer(modifier = GlanceModifier.height(4.dp))
-    }
-    when (calendarEmptyCase(snapshot)) {
-        CalendarEmptyCase.UNLOCATED_EVENT -> {
+        val todayCount = snapshot.todayEventCount
+        if (todayCount != null && todayCount > 0) {
             Text(
-                text = calendarEventTitle(snapshot.destinationLabel),
-                style = TextStyle(
-                    color = GlanceTheme.colors.onSurface,
-                    fontSize = scaledSp(14, textScale),
-                    fontWeight = FontWeight.Medium,
-                ),
-                maxLines = 1,
-            )
-            Text(
-                text = formatEventClockTime(snapshot.eventStartEpochMillis!!),
-                style = TextStyle(
-                    color = GlanceTheme.colors.onSurface,
-                    fontSize = scaledSp(28, textScale),
-                    fontWeight = FontWeight.Bold,
-                ),
-                maxLines = 1,
-            )
-            val freeMinutes = eventCountdownMinutes(
-                snapshot.eventStartEpochMillis,
-                extras.nowEpochMillis,
-            )
-            if (freeMinutes != null) {
-                Text(
-                    text = formatFreeFor(freeMinutes),
-                    style = TextStyle(
-                        color = GlanceTheme.colors.onSurfaceVariant,
-                        fontSize = scaledSp(11, textScale),
-                    ),
-                    maxLines = 1,
-                )
-            }
-        }
-        CalendarEmptyCase.NEXT_WINDOW -> {
-            Text(
-                text = "Next up",
+                text = formatTodayBrief(todayCount, snapshot.todayFirstEventStartEpochMillis),
                 style = TextStyle(
                     color = GlanceTheme.colors.onSurfaceVariant,
                     fontSize = scaledSp(11, textScale),
@@ -776,44 +782,129 @@ private fun CalendarEmptyCardBody(snapshot: CommuteSnapshot, extras: WidgetExtra
                 ),
                 maxLines = 1,
             )
+        }
+    } else {
+        if (windDown) {
             Text(
-                text = snapshot.nextWindowLabel!!,
+                text = "Tomorrow",
                 style = TextStyle(
-                    color = GlanceTheme.colors.onSurface,
-                    fontSize = scaledSp(18, textScale),
+                    color = GlanceTheme.colors.onSurfaceVariant,
+                    fontSize = scaledSp(11, textScale),
                     fontWeight = FontWeight.Medium,
                 ),
                 maxLines = 1,
             )
+            // Title wraps to two lines and the start time gets its own line, so a long meeting
+            // title can never ellipsize the time away.
             Text(
-                text = formatClockTime(snapshot.nextWindowStartMinuteOfDay!!),
+                text = snapshot.tomorrowEventTitle!!,
                 style = TextStyle(
                     color = GlanceTheme.colors.onSurface,
-                    fontSize = if (windDown) scaledSp(18, textScale) else scaledSp(28, textScale),
-                    fontWeight = FontWeight.Bold,
+                    fontSize = scaledSp(16, textScale),
+                    fontWeight = FontWeight.Medium,
                 ),
-                maxLines = 1,
+                maxLines = 2,
             )
-        }
-        CalendarEmptyCase.NONE -> {
             Text(
-                text = "No commute or events scheduled",
+                text = formatEventClockTime(snapshot.tomorrowEventStartEpochMillis!!),
                 style = TextStyle(
                     color = GlanceTheme.colors.onSurface,
                     fontSize = scaledSp(14, textScale),
                     fontWeight = FontWeight.Medium,
                 ),
-                maxLines = 3,
+                maxLines = 1,
             )
-            if (!windDown && extras.nextAlarmLine != null) {
+            if (extras.nextAlarmLine != null) {
                 AlarmLine(extras.nextAlarmLine, textScale)
+            }
+            Spacer(modifier = GlanceModifier.height(4.dp))
+        }
+        when (case) {
+            CalendarEmptyCase.UNLOCATED_EVENT -> {
+                Text(
+                    text = calendarEventTitle(snapshot.destinationLabel),
+                    style = TextStyle(
+                        color = GlanceTheme.colors.onSurface,
+                        fontSize = scaledSp(14, textScale),
+                        fontWeight = FontWeight.Medium,
+                    ),
+                    maxLines = 1,
+                )
+                Text(
+                    text = formatEventClockTime(snapshot.eventStartEpochMillis!!),
+                    style = TextStyle(
+                        color = GlanceTheme.colors.onSurface,
+                        fontSize = scaledSp(28, textScale),
+                        fontWeight = FontWeight.Bold,
+                    ),
+                    maxLines = 1,
+                )
+                val freeMinutes = eventCountdownMinutes(
+                    snapshot.eventStartEpochMillis,
+                    extras.nowEpochMillis,
+                )
+                if (freeMinutes != null) {
+                    Text(
+                        text = formatFreeFor(freeMinutes),
+                        style = TextStyle(
+                            color = GlanceTheme.colors.onSurfaceVariant,
+                            fontSize = scaledSp(11, textScale),
+                        ),
+                        maxLines = 1,
+                    )
+                }
+            }
+            CalendarEmptyCase.NEXT_WINDOW -> {
+                Text(
+                    text = "Next up",
+                    style = TextStyle(
+                        color = GlanceTheme.colors.onSurfaceVariant,
+                        fontSize = scaledSp(11, textScale),
+                        fontWeight = FontWeight.Medium,
+                    ),
+                    maxLines = 1,
+                )
+                Text(
+                    text = snapshot.nextWindowLabel!!,
+                    style = TextStyle(
+                        color = GlanceTheme.colors.onSurface,
+                        fontSize = scaledSp(18, textScale),
+                        fontWeight = FontWeight.Medium,
+                    ),
+                    maxLines = 1,
+                )
+                Text(
+                    text = formatClockTime(snapshot.nextWindowStartMinuteOfDay!!),
+                    style = TextStyle(
+                        color = GlanceTheme.colors.onSurface,
+                        fontSize = if (windDown) scaledSp(18, textScale) else scaledSp(28, textScale),
+                        fontWeight = FontWeight.Bold,
+                    ),
+                    maxLines = 1,
+                )
+            }
+            CalendarEmptyCase.NONE -> {
+                Text(
+                    text = calendarNoneText(extras.rideDirection),
+                    style = TextStyle(
+                        color = GlanceTheme.colors.onSurface,
+                        fontSize = scaledSp(14, textScale),
+                        fontWeight = FontWeight.Medium,
+                    ),
+                    maxLines = 3,
+                )
+                if (!windDown && extras.nextAlarmLine != null) {
+                    AlarmLine(extras.nextAlarmLine, textScale)
+                }
             }
         }
     }
-    if (extras.bestDepartureLine != null) {
+    // Sub-220dp gates the pill row off (showHealth), but a window can still be open, so the old
+    // plain best-departure line keeps rendering here exactly as it did before the pill row shipped.
+    if (!showHealth && extras.commutePillRow.bestLine != null) {
         Spacer(modifier = GlanceModifier.height(4.dp))
         Text(
-            text = extras.bestDepartureLine,
+            text = extras.commutePillRow.bestLine,
             style = TextStyle(
                 color = GlanceTheme.colors.onSurfaceVariant,
                 fontSize = scaledSp(11, textScale),
@@ -821,6 +912,55 @@ private fun CalendarEmptyCardBody(snapshot: CommuteSnapshot, extras: WidgetExtra
             ),
             maxLines = 1,
         )
+    }
+    if (showHealth && !extras.commutePillRow.isEmpty) {
+        Spacer(modifier = GlanceModifier.height(4.dp))
+        CommutePillRow(extras)
+    }
+}
+
+/**
+ * Card-surface pill row inside a commute window: Leave by, Best, and Ride, in that order,
+ * flowing left to right and wrapping onto further rows when the available width fills up
+ * (owner decision 2). Glance has no flow layout, so the wrap is computed deterministically by
+ * [commutePillRows] from an estimated pill width rather than real measurement.
+ */
+@Composable
+private fun CommutePillRow(extras: WidgetExtras) {
+    val row = extras.commutePillRow
+    val pills = buildList {
+        row.leaveByMinuteOfDay?.let { add(CommutePill(formatLeaveByLine(it), CommutePillKind.LEAVE_BY)) }
+        row.bestLine?.let { add(CommutePill(it, CommutePillKind.BEST)) }
+        row.rideDirection?.let { add(CommutePill(ridePillLabel(it), CommutePillKind.RIDE)) }
+    }
+    val rows = commutePillRows(pills, CARD_PILL_ROW_WIDTH_DP, extras.textScale)
+    Column {
+        rows.forEachIndexed { rowIndex, rowPills ->
+            if (rowIndex > 0) {
+                Spacer(modifier = GlanceModifier.height(4.dp))
+            }
+            Row(verticalAlignment = Alignment.Vertical.CenterVertically) {
+                rowPills.forEachIndexed { pillIndex, pill ->
+                    if (pillIndex > 0) {
+                        Spacer(modifier = GlanceModifier.width(6.dp))
+                    }
+                    CommutePillChrome(pill.kind, row, extras)
+                }
+            }
+        }
+    }
+}
+
+/** Renders one packed pill's real chrome by kind, reading back from [row]. Only Ride is clickable. */
+@Composable
+private fun CommutePillChrome(kind: CommutePillKind, row: CommutePillRowContent, extras: WidgetExtras) {
+    when (kind) {
+        CommutePillKind.LEAVE_BY ->
+            LeaveByPill(row.leaveByMinuteOfDay!!, extras.nowMinuteOfDay, extras.textScale, cardStyle = true)
+        CommutePillKind.BEST ->
+            MapTextPill(row.bestLine!!, extras.textScale, cardStyle = true)
+        CommutePillKind.RIDE ->
+            RidePill(row.rideDirection!!, row.rideFailed, extras.textScale, cardStyle = true)
     }
 }
 
@@ -1031,15 +1171,28 @@ private fun LeaveByLine(minuteOfDay: Int, nowMinuteOfDay: Int, fontSize: TextUni
     )
 }
 
-/** Opaque leave-by pill for the WIDE map overlay; legible over map tiles. */
+/** Opaque leave-by pill for the WIDE map overlay, legible over map tiles. */
 @Composable
-private fun LeaveByPill(minuteOfDay: Int, nowMinuteOfDay: Int, textScale: Float = 1f) {
+private fun LeaveByPill(
+    minuteOfDay: Int,
+    nowMinuteOfDay: Int,
+    textScale: Float = 1f,
+    cardStyle: Boolean = false,
+) {
     val late = isLeaveByPast(minuteOfDay, nowMinuteOfDay)
+    // Card pills keep a taller box for the tap target, map pills stay compact over tiles.
     Box(
         modifier = GlanceModifier
             .background(GlanceTheme.colors.surfaceVariant)
             .cornerRadius(10.dp)
-            .padding(horizontal = 8.dp, vertical = 3.dp),
+            .let { base ->
+                if (cardStyle) {
+                    base.height(36.dp).padding(horizontal = 10.dp)
+                } else {
+                    base.padding(horizontal = 8.dp, vertical = 3.dp)
+                }
+            },
+        contentAlignment = if (cardStyle) Alignment.Center else Alignment.TopStart,
     ) {
         Text(
             text = formatLeaveByLine(minuteOfDay),
@@ -1055,15 +1208,81 @@ private fun LeaveByPill(minuteOfDay: Int, nowMinuteOfDay: Int, textScale: Float 
 
 /** Opaque generic text pill for the map overlay stack (e.g. "Best: 3:30 pm"). */
 @Composable
-private fun MapTextPill(text: String, textScale: Float = 1f) {
+private fun MapTextPill(text: String, textScale: Float = 1f, cardStyle: Boolean = false) {
+    // Card pills keep a taller box for the tap target, map pills stay compact over tiles.
     Box(
         modifier = GlanceModifier
             .background(GlanceTheme.colors.surfaceVariant)
             .cornerRadius(10.dp)
-            .padding(horizontal = 8.dp, vertical = 3.dp),
+            .let { base ->
+                if (cardStyle) {
+                    base.height(36.dp).padding(horizontal = 10.dp)
+                } else {
+                    base.padding(horizontal = 8.dp, vertical = 3.dp)
+                }
+            },
+        contentAlignment = if (cardStyle) Alignment.Center else Alignment.TopStart,
     ) {
         Text(
             text = text,
+            style = TextStyle(
+                color = GlanceTheme.colors.onSurfaceVariant,
+                fontSize = scaledSp(12, textScale),
+                fontWeight = FontWeight.Medium,
+            ),
+            maxLines = 1,
+        )
+    }
+}
+
+/** Opaque ride pill, same chrome as [MapTextPill]. The tap writes ride state and the refresh fetches the route. Red means the last attempt failed. */
+@Composable
+private fun RidePill(
+    direction: Direction,
+    failed: Boolean,
+    textScale: Float = 1f,
+    cardStyle: Boolean,
+) {
+    // Card pills keep a taller box for the tap target, map pills stay compact over tiles.
+    Box(
+        modifier = GlanceModifier
+            .background(GlanceTheme.colors.surfaceVariant)
+            .cornerRadius(10.dp)
+            .let { base ->
+                if (cardStyle) {
+                    base.height(36.dp).padding(horizontal = 10.dp)
+                } else {
+                    base.padding(horizontal = 8.dp, vertical = 3.dp)
+                }
+            }
+            .clickable(rideTapAction(direction)),
+        contentAlignment = if (cardStyle) Alignment.Center else Alignment.TopStart,
+    ) {
+        Text(
+            text = ridePillLabel(direction),
+            style = TextStyle(
+                color = if (failed) ColorProvider(LEAVE_BY_LATE_COLOR) else GlanceTheme.colors.onSurfaceVariant,
+                fontSize = scaledSp(12, textScale),
+                fontWeight = FontWeight.Medium,
+            ),
+            maxLines = 1,
+        )
+    }
+}
+
+/** Opaque reached pill, same chrome as [MapTextPill]. Map-only surface: Reached never renders on a card. The tap writes ride state and the refresh returns the calendar card. */
+@Composable
+private fun ReachedPill(direction: Direction, textScale: Float = 1f) {
+    Box(
+        modifier = GlanceModifier
+            .background(GlanceTheme.colors.surfaceVariant)
+            .cornerRadius(10.dp)
+            .padding(horizontal = 8.dp, vertical = 3.dp)
+            .clickable(reachedTapAction(direction)),
+        contentAlignment = Alignment.TopStart,
+    ) {
+        Text(
+            text = REACHED_PILL_LABEL,
             style = TextStyle(
                 color = GlanceTheme.colors.onSurfaceVariant,
                 fontSize = scaledSp(12, textScale),
@@ -1526,6 +1745,14 @@ internal fun calendarEmptyCase(snapshot: CommuteSnapshot): CalendarEmptyCase {
 }
 
 /**
+ * Owner decision 1: inside a commute window the commute body replaces the wind-down block, the
+ * NEXT_WINDOW block, and the NONE text, but an unlocated event still wins and keeps the plain card.
+ */
+internal fun showsCommuteWindowBody(inWindow: Boolean, case: CalendarEmptyCase): Boolean {
+    return inWindow && case != CalendarEmptyCase.UNLOCATED_EVENT
+}
+
+/**
  * Text lines shown in the map pane when a COMMUTE or CALENDAR_EVENT snapshot
  * has no bitmap. First line is a title, the rest are captions.
  *
@@ -1644,3 +1871,86 @@ private fun trafficAccentColor(durationSeconds: Long, durationNoTrafficSeconds: 
         else -> Color(0xFF34A853)
     }
 }
+
+/** Map pill label that ends a tap-to-ride commute. */
+internal const val REACHED_PILL_LABEL = "Reached"
+
+/** Card pill label that starts a tap-to-ride commute for the current window. */
+internal fun ridePillLabel(direction: Direction): String = when (direction) {
+    Direction.TO_WORK -> "Ride Work"
+    Direction.TO_HOME -> "Ride Home"
+}
+
+/** In-window commute body label, reusing [com.crpakala.commutewidget.engine.NextWindow.label]'s text. */
+internal fun commuteWindowLabel(direction: Direction): String = when (direction) {
+    Direction.TO_WORK -> "To Work"
+    Direction.TO_HOME -> "To Home"
+}
+
+/** NONE-case card text: the window label while a commute window is open, else the true empty-day text. */
+internal fun calendarNoneText(rideDirection: Direction?): String {
+    return if (rideDirection != null) commuteWindowLabel(rideDirection) else "No commute or events scheduled"
+}
+
+/**
+ * Commute pill row content for card surfaces: probe leave-by, best departure, and the Ride pill.
+ * Built in provideGlance from the engine gates, rendered only when not empty.
+ */
+internal data class CommutePillRowContent(
+    val leaveByMinuteOfDay: Int?,
+    val bestLine: String?,
+    val rideDirection: Direction?,
+    val rideFailed: Boolean,
+) {
+    val isEmpty: Boolean get() = leaveByMinuteOfDay == null && bestLine == null && rideDirection == null
+}
+
+/** A card commute pill's kind, used to read the right value back off [CommutePillRowContent] when rendering. */
+internal enum class CommutePillKind { LEAVE_BY, BEST, RIDE }
+
+/** One card commute pill's rendered text and kind, the unit [commutePillRows] packs into rows. */
+internal data class CommutePill(val text: String, val kind: CommutePillKind)
+
+/** Per-character estimated pill width in dp, standing in for real text measurement (Glance has none). */
+internal const val CARD_PILL_CHAR_WIDTH_DP = 6f
+
+/** Estimated horizontal padding plus corner chrome added to every pill's estimated width, in dp. */
+internal const val CARD_PILL_HORIZONTAL_PADDING_DP = 20f
+
+/** Gap between two pills on the same row, in dp. */
+internal const val CARD_PILL_GAP_DP = 6f
+
+/** Under SizeMode.Responsive, LocalSize reports the matched breakpoint (220dp), not the physical card width, so the pill row packs against this calibrated width instead - about 300dp usable on the 4x2/4x4 card after its own 12dp padding each side. */
+internal const val CARD_PILL_ROW_WIDTH_DP = 300f
+
+/**
+ * Deterministic left-to-right packing of [pills] into rows that fit within [availableWidthDp],
+ * estimating each pill's width from its text length rather than real measurement (owner decision
+ * 2: Glance has no flow layout). A pill wider than the whole row still gets its own row rather
+ * than being dropped or clipped.
+ */
+internal fun commutePillRows(
+    pills: List<CommutePill>,
+    availableWidthDp: Float,
+    textScale: Float,
+): List<List<CommutePill>> {
+    if (pills.isEmpty()) return emptyList()
+    val rows = mutableListOf<MutableList<CommutePill>>()
+    var rowWidthDp = 0f
+    for (pill in pills) {
+        val pillWidthDp = pill.text.length * CARD_PILL_CHAR_WIDTH_DP * textScale + CARD_PILL_HORIZONTAL_PADDING_DP
+        val currentRow = rows.lastOrNull()
+        if (currentRow != null && rowWidthDp + CARD_PILL_GAP_DP + pillWidthDp <= availableWidthDp) {
+            currentRow.add(pill)
+            rowWidthDp += CARD_PILL_GAP_DP + pillWidthDp
+        } else {
+            rows.add(mutableListOf(pill))
+            rowWidthDp = pillWidthDp
+        }
+    }
+    return rows
+}
+
+/** Best departure leaves the map while a ride is active because the Reached pill takes its slot. */
+internal fun showBestDepartureOnMap(rideActive: Boolean, bestLine: String?): Boolean =
+    !rideActive && bestLine != null

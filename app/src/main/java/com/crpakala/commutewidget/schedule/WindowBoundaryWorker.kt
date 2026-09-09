@@ -12,10 +12,11 @@ import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * v3 auto-refresh: fires an [RefreshTrigger.AUTO] refresh at every morning/evening window START
- * and END boundary on an enabled day - a start boundary warms the commute data ahead of the
- * window, an end boundary auto-flips the widget into calendar mode (see
- * `com.crpakala.commutewidget.engine.resolveWidgetMode`). Always self-reschedules to the next
- * boundary after running, unless nothing remains enabled.
+ * and END boundary on an enabled day - a start boundary no longer warms the commute route or map,
+ * it renders the in-window calendar view carrying the Ride pill and runs the one-call commute
+ * probe when leave-by is enabled, and an end boundary auto-flips the widget into calendar mode
+ * (see `com.crpakala.commutewidget.engine.resolveWidgetMode`). Always self-reschedules to the
+ * next boundary after running, unless nothing remains enabled.
  */
 class WindowBoundaryWorker(
     context: Context,

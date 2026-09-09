@@ -779,4 +779,155 @@ class StoredValueCodecTest {
         assertEquals("2026-08-15", updated.days.last().date)
         assertEquals(15_000, updated.days.last().steps)
     }
+
+    @Test
+    fun rideStateJson_roundTrip() {
+        for (phase in RidePhase.entries) {
+            val state = RideState(
+                localDate = "2026-09-09",
+                direction = Direction.TO_WORK,
+                phase = phase,
+                fromCurrentLocation = true,
+                lastRideFailed = true,
+                routed = true,
+            )
+            assertEquals(state, decodeRideState(encodeRideState(state)))
+        }
+    }
+
+    @Test
+    fun rideStateJson_preRoutedFormatDecodesWithRoutedFalse() {
+        val oldFormatJson = """
+            {
+              "localDate": "2026-09-09",
+              "direction": "TO_HOME",
+              "phase": "RIDING",
+              "fromCurrentLocation": true,
+              "lastRideFailed": true
+            }
+        """.trimIndent()
+
+        val decoded = decodeRideState(oldFormatJson)
+        requireNotNull(decoded)
+        assertEquals(Direction.TO_HOME, decoded.direction)
+        assertEquals(RidePhase.RIDING, decoded.phase)
+        assertTrue(decoded.fromCurrentLocation)
+        assertTrue(decoded.lastRideFailed)
+        assertFalse(decoded.routed)
+    }
+
+    @Test
+    fun rideStateJson_minimalFormatDecodesWithFlagDefaults() {
+        val minimalJson = """
+            {
+              "localDate": "2026-09-09",
+              "direction": "TO_WORK",
+              "phase": "OFFERED"
+            }
+        """.trimIndent()
+
+        val decoded = decodeRideState(minimalJson)
+        requireNotNull(decoded)
+        assertEquals("2026-09-09", decoded.localDate)
+        assertEquals(Direction.TO_WORK, decoded.direction)
+        assertEquals(RidePhase.OFFERED, decoded.phase)
+        assertFalse(decoded.fromCurrentLocation)
+        assertFalse(decoded.lastRideFailed)
+        assertFalse(decoded.routed)
+    }
+
+    @Test
+    fun rideStateJson_unknownPhaseDecodesAsOffered() {
+        val bogusPhaseJson = """
+            {
+              "localDate": "2026-09-09",
+              "direction": "TO_WORK",
+              "phase": "BOGUS"
+            }
+        """.trimIndent()
+
+        val decoded = decodeRideState(bogusPhaseJson)
+        requireNotNull(decoded)
+        assertEquals(RidePhase.OFFERED, decoded.phase)
+    }
+
+    @Test
+    fun rideStateJson_garbageAndBlankDecodeToNull() {
+        assertNull(decodeRideState("{not json}"))
+        assertNull(decodeRideState(""))
+        assertNull(decodeRideState(null))
+    }
+
+    @Test
+    fun parseRidePhase_unknownAndBlankFallBackToDefault() {
+        assertEquals(RidePhase.OFFERED, parseRidePhase("BOGUS"))
+        assertEquals(RidePhase.OFFERED, parseRidePhase(null))
+        assertEquals(RidePhase.OFFERED, parseRidePhase(""))
+        assertEquals(RidePhase.RIDING, parseRidePhase("BOGUS", RidePhase.RIDING))
+    }
+
+    @Test
+    fun rideStateWriteChanged_tableDriven() {
+        val offered = RideState(localDate = "2026-09-09", direction = Direction.TO_WORK, phase = RidePhase.OFFERED)
+        val riding = RideState(localDate = "2026-09-09", direction = Direction.TO_WORK, phase = RidePhase.RIDING)
+        data class RideStateWriteChangedCase(
+            val current: RideState?,
+            val updated: RideState?,
+            val hadStoredValue: Boolean,
+            val expected: Boolean,
+        )
+        val cases = listOf(
+            RideStateWriteChangedCase(null, offered, hadStoredValue = false, expected = true),
+            RideStateWriteChangedCase(offered, offered, hadStoredValue = true, expected = false),
+            RideStateWriteChangedCase(offered, riding, hadStoredValue = true, expected = true),
+            RideStateWriteChangedCase(offered, null, hadStoredValue = true, expected = true),
+            RideStateWriteChangedCase(null, null, hadStoredValue = false, expected = false),
+        )
+        for (case in cases) {
+            assertEquals(
+                "current=${case.current} updated=${case.updated} hadStoredValue=${case.hadStoredValue}",
+                case.expected,
+                rideStateWriteChanged(case.current, case.updated, case.hadStoredValue),
+            )
+        }
+    }
+
+    @Test
+    fun commuteProbeJson_roundTrip() {
+        val probe = CommuteProbe(
+            localDate = "2026-09-09",
+            direction = Direction.TO_HOME,
+            durationSeconds = 1800L,
+            leaveByMinuteOfDay = 1020,
+            probedAtEpochMillis = 1_700_000_000_000L,
+        )
+        assertEquals(probe, decodeCommuteProbe(encodeCommuteProbe(probe)))
+    }
+
+    @Test
+    fun commuteProbeJson_missingLeaveByDecodesAsNull() {
+        val noLeaveByJson = """
+            {
+              "localDate": "2026-09-09",
+              "direction": "TO_WORK",
+              "durationSeconds": 1800,
+              "probedAtEpochMillis": 1700000000000
+            }
+        """.trimIndent()
+
+        val decoded = decodeCommuteProbe(noLeaveByJson)
+        requireNotNull(decoded)
+        assertEquals("2026-09-09", decoded.localDate)
+        assertEquals(Direction.TO_WORK, decoded.direction)
+        assertEquals(1800L, decoded.durationSeconds)
+        assertNull(decoded.leaveByMinuteOfDay)
+        assertEquals(1_700_000_000_000L, decoded.probedAtEpochMillis)
+    }
+
+    @Test
+    fun commuteProbeJson_garbageAndBlankDecodeToNull() {
+        assertNull(decodeCommuteProbe("{not json}"))
+        assertNull(decodeCommuteProbe(""))
+        assertNull(decodeCommuteProbe(null))
+    }
 }

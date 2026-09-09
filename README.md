@@ -9,6 +9,7 @@ The audit and design rulings driving these changes are documented in `UX-AUDIT.m
 ## Features
 
 - Glanceable widget layout with destination, one large traffic-colored ETA, and leave-by time (rendered in red when past) in commute and routed-event modes.
+- Tap-to-ride commute: inside a commute window the card shows Leave, Best, and a Ride pill (wrapping onto a further row when the row would otherwise clip) instead of auto-fetching the route; tapping Ride loads the live traffic-colored route map on demand, and a Reached pill ends the ride and returns the card.
 - Congestion-colored static route polyline maps with compact leave-by, best-departure, health, and custom-reminder pill overlays when applicable.
 - Multiple widget sizes (2x2 compact card, 4x2 split card, and 4x4 expanded map layout) with automatic size snapping.
 - Theme-aware surfaces following system light and dark modes with Material dynamic colors.
@@ -54,7 +55,8 @@ Treat your API key as sensitive credentials and do not share it.
 
 The application operates comfortably within Google Maps Platform free tier allowances.
 Background call volume dropped substantially in v5 with the complete removal of the 36-38 daily in-window history sampling calls.
-Remaining background calls consist of window-boundary refreshes (4 background calls per enabled day) and the 20-minute event freshness tick only while a routed calendar event is displayed.
+Remaining background calls consist of window-boundary refreshes (4 background calls per enabled day, none of which fetch a route or map since tap-to-ride moved that on demand) and the 20-minute event freshness tick only while a routed calendar event is displayed.
+Inside a commute window, the widget spends one Routes API request per window per day on the leave-by probe (no Maps Static API request), and the commute route and map are fetched only after you tap the Ride pill.
 Manual tap refreshes and routed calendar mode refreshes execute one Routes API request and one Maps Static API request.
 Event leave-by traffic predictions ride on the same single Routes API request by supplying a future departure timestamp when outside the live traffic threshold.
 Local leave-by notifications are scheduled entirely on-device via precise alarms and consume zero extra API calls.
@@ -134,9 +136,9 @@ The settings home menu has eight Android-Settings-style categories with current-
 3. Locate and tap **CommuteWidget**.
 4. Touch and hold the widget preview, then drag it onto your home screen.
 5. Use the resize handles to set your preferred size:
-   - **2x2**: Compact card showing destination, large traffic-colored ETA, and leave-by status without a map.
-   - **4x2**: Split layout showing destination, large traffic-colored ETA, leave-by indicator, and clean congestion map.
-   - **4x4**: Full-size view showing destination, large traffic-colored ETA, leave-by indicator, and expanded congestion map.
+   - **2x2**: Compact card showing destination, large traffic-colored ETA, and leave-by status without a map; never offers a Ride pill regardless of commute window.
+   - **4x2**: Split layout showing destination, large traffic-colored ETA, leave-by indicator, and clean congestion map; shows the Ride pill on the in-window card and the Reached pill on the map corner while riding.
+   - **4x4**: Full-size view showing destination, large traffic-colored ETA, leave-by indicator, and expanded congestion map; shows the Ride pill on the in-window card and the Reached pill stacked with the health pill corner while riding.
    Intermediate dimensions automatically snap to the nearest standard layout.
    The primary commute and routed-event information is destination, large traffic-colored ETA, and leave-by time (red when past).
    Map overlays can add compact leave-by, best-departure, health, and custom-reminder pills when applicable.
@@ -149,11 +151,14 @@ The settings home menu has eight Android-Settings-style categories with current-
 
 The widget selects its active display mode according to configured schedules and calendar state:
 
-1. **Commute Windows**: Active during configured To Work and To Home hours on enabled Commute days.
-   - **To Work window** (default 7:00 AM - 10:00 AM): Displays route from Home to Work with large traffic-colored ETA and leave-by departure time.
-   - During the morning commute view, a morning brief caption summarizes the day (for example, "3 meetings - first 10:00 am") using selected calendar events.
-   - **To Home window** (default 5:00 PM - 8:00 PM): Displays route from Work to Home with large traffic-colored ETA and leave-by departure time.
-   - Inside windows, widget refreshes are pure commute updates and do not check calendar events for routing.
+1. **Commute Windows**: Active during configured To Work (default 7:00 AM - 10:00 AM) and To Home (default 5:00 PM - 8:00 PM) hours on enabled Commute days.
+   - Inside a window, the widget still does not auto-fetch the commute route or map on its own; an unlocated or far calendar event still renders its plain name-and-time card instead of the commute body below.
+   - When no calendar event pre-empts it, the card body shows the window label (**To Work** or **To Home**) and, whenever events remain today, a brief line summarizing them (for example, "3 meetings - first 10:00 am"); it no longer shows the calendar view's "Next up" line or the evening wind-down block while inside a window.
+   - The card also carries a commute pill row: **Leave by h:mm** (from a once-per-window probe call, red once past), **Best: h:mm** (the existing best-departure estimate), and a **Ride Work** (To Work window) or **Ride Home** (To Home window) pill; the row wraps onto a further row when it would otherwise clip at larger text scales.
+   - Tapping **Ride Work** or **Ride Home** loads the live traffic-colored route map on demand: the Ride pill disappears immediately, then the route and map fetch and render with large traffic-colored ETA and leave-by departure time. A red Ride pill means the last fetch failed - tap it again to retry. Tapping Ride or Reached twice in quick succession only fetches once: a tap that does not change the ride state runs as a normal debounced refresh rather than a second network call.
+   - While riding, the map shows a **Reached** pill in the pill corner in place of Best; tapping **Reached** ends the ride and returns the card to Leave and Best only. One ride is offered per window per day, and only Reached consumes it.
+   - A located calendar event starting within the nearness threshold still takes over the widget even inside a window, exactly as in calendar mode below; if it takes over mid-ride, the ride is interrupted (no Ride pill shows on the event map), and when the event view ends inside the window, Ride is offered again as a resumed ride that routes from your current device location rather than the fixed Home/Work trip, re-checking your location on every refresh so the ETA tracks your progress.
+   - When the window ends, the widget returns to calendar mode automatically, whether or not a ride was in progress.
 2. **Calendar Mode**: Default outside commute windows (midday, evenings, weekends, and unselected commute days).
    - Displays the next remaining non-all-day event scheduled for today from selected device calendars.
    - If a located event starts within the nearness threshold ("Event takes over within", default 120 minutes), the widget renders a clean route map from current device location with destination, start time, large traffic-colored ETA, and calculated leave-by departure time.
@@ -187,7 +192,7 @@ The widget selects its active display mode according to configured schedules and
 ### Leave-By Advisor and Departure Notifications
 
 - The Leave-By Advisor calculates dynamic departure times for commute windows and located calendar events.
-- In commute windows, departure times are computed by subtracting current live travel ETA from configured target arrival times (work default 9:30 AM, home default 7:30 PM).
+- In commute windows, the departure time comes from a single probe call taken once per window per day (subtracting its travel duration from configured target arrival times: work default 9:30 AM, home default 7:30 PM) rather than from an ongoing route fetch; it shows as a Leave pill in the card's commute pill row before you tap Ride, and as a pill on the map corner while you are riding.
 - In calendar mode, when displaying an event with a location, the advisor computes and shows a departure target (for example, "Leave by 2:40 pm") to arrive early by the configured buffer.
 - The leave-by time renders across all widget sizes in commute and routed-event modes.
 - The indicator turns red once the calculated departure moment has passed.
@@ -201,7 +206,7 @@ The widget selects its active display mode according to configured schedules and
 
 ### Calendar Freshness and Background Updates
 
-- Scheduled window boundary auto-refreshes run automatically at the start and end of every configured To Work and To Home window (4 background runs per day).
+- Scheduled window boundary auto-refreshes run automatically at the start and end of every configured To Work and To Home window (4 background runs per day); these boundary runs no longer fetch the commute route or map themselves, they run the same calendar refresh as any other in-window update.
 - While the widget displays a routed calendar event outside commute windows, it refreshes the event ETA every 20 minutes.
 - The 20-minute event refresh loop is controlled by the "Keep event ETA fresh" toggle in settings (enabled by default).
 - Background jobs are orchestrated through Android WorkManager, ensuring resilience across device reboots.
@@ -285,6 +290,10 @@ The 2x2 size shows no health UI.
 | Stale data with warning glyph | Network request failed or timed out. | Tap the widget to retry, and verify internet connectivity. |
 | Widget shows calendar or next-up card during commute time | Current day is unchecked in Commute days or current time is outside configured windows. | Check in settings that the current day of the week is enabled and the time falls inside the window. |
 | Unchecked day shows calendar mode all day | Commute days toggle disables commute windows for that day. | Enable the day in Commute days settings if commute mode is desired. |
+| Commute map not showing inside a window | Tap-to-ride: the commute route and map load only after you tap the Ride pill, they no longer fetch automatically inside a window. | Tap the **Ride Work** or **Ride Home** pill on the card. |
+| Ride pill is red | The last route fetch for this ride failed. | Tap the pill again to retry; a successful fetch clears the red tint. |
+| Ride pill still visible after tapping | The route fetch has not finished yet, for example a slow location fix on a resumed ride. | Wait a few seconds and tap again if the pill is still showing. |
+| Ride pill missing | You are outside a commute window, a near located calendar event is showing instead, you already tapped Reached for this window today, or the widget is 2x2 size (which never offers Ride). | Wait for the next commute window, wait for the event to pass, or resize the widget to 4x2 or 4x4. |
 | No calendar event shown outside windows | Calendar feature disabled, permission missing, calendars unselected, or event is all-day or not today. | Verify calendar integration is enabled, grant calendar permission, select synced calendars in settings, and ensure the event is scheduled for today and is not an all-day event. |
 | Commute leave-by not appearing | Feature is disabled or current time is outside active commute windows. | Enable the Leave-by advisor toggle in settings, check active window schedules, and ensure arrival targets are set. |
 | Event leave-by missing | Advisor toggle is disabled, calendar event lacks a location, or widget needs a refresh. | Enable the Leave-by advisor in settings, ensure the calendar event contains a routable address, and tap the widget to refresh. |

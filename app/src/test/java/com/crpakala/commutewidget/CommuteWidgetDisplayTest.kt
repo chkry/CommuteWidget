@@ -577,6 +577,107 @@ class CommuteWidgetDisplayTest {
         assertFalse(shouldShowTodayBrief(calendarEvent, captionAllowedForSize = true))
     }
 
+    @Test
+    fun ridePillLabel_namesTheWindowDestination() {
+        assertEquals("Ride Work", ridePillLabel(Direction.TO_WORK))
+        assertEquals("Ride Home", ridePillLabel(Direction.TO_HOME))
+    }
+
+    @Test
+    fun reachedPillLabel_isReached() {
+        assertEquals("Reached", REACHED_PILL_LABEL)
+    }
+
+    @Test
+    fun commutePillRowContent_isEmptyOnlyWhenEveryPillIsAbsent() {
+        assertTrue(CommutePillRowContent(null, null, null, rideFailed = false).isEmpty)
+        assertTrue(CommutePillRowContent(null, null, null, rideFailed = true).isEmpty)
+        assertFalse(CommutePillRowContent(8 * 60 + 42, null, null, rideFailed = false).isEmpty)
+        assertFalse(CommutePillRowContent(null, "Best: 3:30 pm", null, rideFailed = false).isEmpty)
+        assertFalse(CommutePillRowContent(null, null, Direction.TO_WORK, rideFailed = false).isEmpty)
+    }
+
+    @Test
+    fun showBestDepartureOnMap_hiddenWhileRidingOrWhenNoLine() {
+        assertTrue(showBestDepartureOnMap(rideActive = false, bestLine = "Best: 3:30 pm"))
+        assertFalse(showBestDepartureOnMap(rideActive = true, bestLine = "Best: 3:30 pm"))
+        assertFalse(showBestDepartureOnMap(rideActive = false, bestLine = null))
+        assertFalse(showBestDepartureOnMap(rideActive = true, bestLine = null))
+    }
+
+    @Test
+    fun commuteWindowLabel_namesTheWindowDirection() {
+        assertEquals("To Work", commuteWindowLabel(Direction.TO_WORK))
+        assertEquals("To Home", commuteWindowLabel(Direction.TO_HOME))
+    }
+
+    @Test
+    fun calendarNoneText_windowLabelWhenInsideAWindow() {
+        assertEquals("To Work", calendarNoneText(Direction.TO_WORK))
+        assertEquals("To Home", calendarNoneText(Direction.TO_HOME))
+    }
+
+    @Test
+    fun calendarNoneText_emptyDayTextOutsideAWindow() {
+        assertEquals("No commute or events scheduled", calendarNoneText(null))
+    }
+
+    @Test
+    fun showsCommuteWindowBody_unlocatedEventKeepsThePlainCardInWindow() {
+        assertFalse(showsCommuteWindowBody(inWindow = true, case = CalendarEmptyCase.UNLOCATED_EVENT))
+    }
+
+    @Test
+    fun showsCommuteWindowBody_nextWindowAndNoneBecomeTheCommuteBodyInWindow() {
+        assertTrue(showsCommuteWindowBody(inWindow = true, case = CalendarEmptyCase.NEXT_WINDOW))
+        assertTrue(showsCommuteWindowBody(inWindow = true, case = CalendarEmptyCase.NONE))
+    }
+
+    @Test
+    fun showsCommuteWindowBody_nothingChangesOutOfWindow() {
+        assertFalse(showsCommuteWindowBody(inWindow = false, case = CalendarEmptyCase.UNLOCATED_EVENT))
+        assertFalse(showsCommuteWindowBody(inWindow = false, case = CalendarEmptyCase.NEXT_WINDOW))
+        assertFalse(showsCommuteWindowBody(inWindow = false, case = CalendarEmptyCase.NONE))
+    }
+
+    @Test
+    fun commutePillRows_emptyInputGivesEmptyList() {
+        val rows = commutePillRows(emptyList(), availableWidthDp = 300f, textScale = 1f)
+        assertEquals(emptyList<List<CommutePill>>(), rows)
+    }
+
+    @Test
+    fun commutePillRows_singlePillAlwaysGetsItsOwnRow() {
+        val pill = CommutePill("Ride Work", CommutePillKind.RIDE)
+        // Deliberately narrower than the pill's own estimated width: it still gets a row rather
+        // than being dropped or clipped.
+        val rows = commutePillRows(listOf(pill), availableWidthDp = 1f, textScale = 1f)
+        assertEquals(listOf(listOf(pill)), rows)
+    }
+
+    @Test
+    fun commutePillRows_allThreeFitOnOneRowAtDefaultScale() {
+        val pills = listOf(
+            CommutePill("Leave by 8:42 am", CommutePillKind.LEAVE_BY),
+            CommutePill("Best: 3:30 pm", CommutePillKind.BEST),
+            CommutePill("Ride Work", CommutePillKind.RIDE),
+        )
+        // CARD_PILL_ROW_WIDTH_DP is calibrated to the physical 4x2/4x4 card width, not LocalSize.
+        val rows = commutePillRows(pills, availableWidthDp = CARD_PILL_ROW_WIDTH_DP, textScale = 1f)
+        assertEquals(listOf(pills), rows)
+    }
+
+    @Test
+    fun commutePillRows_wrapsToTwoRowsAtLargerTextScale() {
+        val pills = listOf(
+            CommutePill("Leave by 8:42 am", CommutePillKind.LEAVE_BY),
+            CommutePill("Best: 3:30 pm", CommutePillKind.BEST),
+            CommutePill("Ride Work", CommutePillKind.RIDE),
+        )
+        val rows = commutePillRows(pills, availableWidthDp = CARD_PILL_ROW_WIDTH_DP, textScale = 1.5f)
+        assertEquals(listOf(listOf(pills[0]), listOf(pills[1], pills[2])), rows)
+    }
+
     private fun emptySnapshot(
         destinationLabel: String? = null,
         eventStartEpochMillis: Long? = null,
