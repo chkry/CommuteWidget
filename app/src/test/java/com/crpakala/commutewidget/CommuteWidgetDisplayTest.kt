@@ -106,7 +106,7 @@ class CommuteWidgetDisplayTest {
             mode = SnapshotMode.COMMUTE,
             leaveByMinuteOfDay = 14 * 60 + 40,
         )
-        assertTrue(shouldShowLeaveBy(snapshot, leaveByEnabled = true))
+        assertTrue(shouldShowLeaveBy(snapshot, leaveByEnabled = true, rideReached = false))
     }
 
     @Test
@@ -115,13 +115,13 @@ class CommuteWidgetDisplayTest {
             mode = SnapshotMode.CALENDAR_EVENT,
             leaveByMinuteOfDay = 14 * 60 + 40,
         )
-        assertTrue(shouldShowLeaveBy(snapshot, leaveByEnabled = true))
+        assertTrue(shouldShowLeaveBy(snapshot, leaveByEnabled = true, rideReached = false))
     }
 
     @Test
     fun shouldShowLeaveBy_calendarEmptyNeverShown() {
         val snapshot = emptySnapshot().copy(leaveByMinuteOfDay = 14 * 60 + 40)
-        assertFalse(shouldShowLeaveBy(snapshot, leaveByEnabled = true))
+        assertFalse(shouldShowLeaveBy(snapshot, leaveByEnabled = true, rideReached = false))
     }
 
     @Test
@@ -134,16 +134,24 @@ class CommuteWidgetDisplayTest {
             mode = SnapshotMode.CALENDAR_EVENT,
             leaveByMinuteOfDay = 14 * 60 + 40,
         )
-        assertFalse(shouldShowLeaveBy(commute, leaveByEnabled = false))
-        assertFalse(shouldShowLeaveBy(event, leaveByEnabled = false))
+        assertFalse(shouldShowLeaveBy(commute, leaveByEnabled = false, rideReached = false))
+        assertFalse(shouldShowLeaveBy(event, leaveByEnabled = false, rideReached = false))
     }
 
     @Test
     fun shouldShowLeaveBy_nullFieldHidesEvenWhenEnabled() {
         val commute = emptySnapshot().copy(mode = SnapshotMode.COMMUTE, leaveByMinuteOfDay = null)
         val event = emptySnapshot().copy(mode = SnapshotMode.CALENDAR_EVENT, leaveByMinuteOfDay = null)
-        assertFalse(shouldShowLeaveBy(commute, leaveByEnabled = true))
-        assertFalse(shouldShowLeaveBy(event, leaveByEnabled = true))
+        assertFalse(shouldShowLeaveBy(commute, leaveByEnabled = true, rideReached = false))
+        assertFalse(shouldShowLeaveBy(event, leaveByEnabled = true, rideReached = false))
+    }
+
+    @Test
+    fun shouldShowLeaveBy_reachedHidesCommuteButNotEvent() {
+        val commute = emptySnapshot().copy(mode = SnapshotMode.COMMUTE, leaveByMinuteOfDay = 14 * 60 + 40)
+        val event = emptySnapshot().copy(mode = SnapshotMode.CALENDAR_EVENT, leaveByMinuteOfDay = 14 * 60 + 40)
+        assertFalse(shouldShowLeaveBy(commute, leaveByEnabled = true, rideReached = true))
+        assertTrue(shouldShowLeaveBy(event, leaveByEnabled = true, rideReached = true))
     }
 
     @Test

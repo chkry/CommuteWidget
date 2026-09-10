@@ -106,9 +106,9 @@ internal fun shouldRunCommuteProbe(
     return !existingMatches
 }
 
-/** The stored probe's leave-by minute when leave-by is enabled, the mode is Commute, and the probe matches this date and direction, else null. */
-internal fun probeLeaveByMinute(probe: CommuteProbe?, widgetMode: WidgetMode, leaveByEnabled: Boolean, localDate: String): Int? {
-    if (!leaveByEnabled || widgetMode !is WidgetMode.Commute || probe == null) {
+/** The stored probe's leave-by minute when leave-by is enabled, the mode is Commute, the ride is not consumed (REACHED), and the probe matches this date and direction, else null. */
+internal fun probeLeaveByMinute(probe: CommuteProbe?, widgetMode: WidgetMode, phase: RidePhase, leaveByEnabled: Boolean, localDate: String): Int? {
+    if (!leaveByEnabled || widgetMode !is WidgetMode.Commute || phase == RidePhase.REACHED || probe == null) {
         return null
     }
     if (probe.localDate != localDate || probe.direction != widgetMode.direction) {

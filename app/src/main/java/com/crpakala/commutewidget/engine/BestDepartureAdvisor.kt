@@ -190,7 +190,9 @@ internal fun departureSampleInstants(
  * Whether the stored result should render: it must describe the CURRENT target window (same date
  * and direction), the window end must not have passed, today must be a commute day, and the
  * widget must not be showing a calendar event - the Best pill describes the commute, and next to
- * an event's own leave-by it reads as (wrong) advice about the event.
+ * an event's own leave-by it reads as (wrong) advice about the event. A ride consumed by a
+ * Reached tap ([rideReached]) also hides it - advice about a commute already completed - until
+ * the next slot's window, whose date+direction no longer match the REACHED state.
  */
 internal fun shouldShowBestDeparture(
     result: BestDeparture?,
@@ -199,10 +201,12 @@ internal fun shouldShowBestDeparture(
     today: String,
     target: BestDepartureTarget?,
     showingCalendarEvent: Boolean,
+    rideReached: Boolean,
 ): Boolean {
     return enabled &&
         todayIsCommuteDay &&
         !showingCalendarEvent &&
+        !rideReached &&
         target != null &&
         result != null &&
         result.localDate == today &&

@@ -339,43 +339,55 @@ class RideLogicTest {
     @Test
     fun probeLeaveByMinute_enabledCommuteMatching_returnsMinute() {
         val probe = CommuteProbe(DATE, Direction.TO_WORK, durationSeconds = 900L, leaveByMinuteOfDay = 420, probedAtEpochMillis = 1L)
-        val result = probeLeaveByMinute(probe, WidgetMode.Commute(Direction.TO_WORK), leaveByEnabled = true, localDate = DATE)
+        val result = probeLeaveByMinute(probe, WidgetMode.Commute(Direction.TO_WORK), RidePhase.OFFERED, leaveByEnabled = true, localDate = DATE)
         assertEquals(420, result)
     }
 
     @Test
     fun probeLeaveByMinute_disabled_null() {
         val probe = CommuteProbe(DATE, Direction.TO_WORK, durationSeconds = 900L, leaveByMinuteOfDay = 420, probedAtEpochMillis = 1L)
-        assertNull(probeLeaveByMinute(probe, WidgetMode.Commute(Direction.TO_WORK), leaveByEnabled = false, localDate = DATE))
+        assertNull(probeLeaveByMinute(probe, WidgetMode.Commute(Direction.TO_WORK), RidePhase.OFFERED, leaveByEnabled = false, localDate = DATE))
     }
 
     @Test
     fun probeLeaveByMinute_calendarMode_null() {
         val probe = CommuteProbe(DATE, Direction.TO_WORK, durationSeconds = 900L, leaveByMinuteOfDay = 420, probedAtEpochMillis = 1L)
-        assertNull(probeLeaveByMinute(probe, WidgetMode.Calendar, leaveByEnabled = true, localDate = DATE))
+        assertNull(probeLeaveByMinute(probe, WidgetMode.Calendar, RidePhase.OFFERED, leaveByEnabled = true, localDate = DATE))
     }
 
     @Test
     fun probeLeaveByMinute_otherDate_null() {
         val probe = CommuteProbe(OTHER_DATE, Direction.TO_WORK, durationSeconds = 900L, leaveByMinuteOfDay = 420, probedAtEpochMillis = 1L)
-        assertNull(probeLeaveByMinute(probe, WidgetMode.Commute(Direction.TO_WORK), leaveByEnabled = true, localDate = DATE))
+        assertNull(probeLeaveByMinute(probe, WidgetMode.Commute(Direction.TO_WORK), RidePhase.OFFERED, leaveByEnabled = true, localDate = DATE))
     }
 
     @Test
     fun probeLeaveByMinute_otherDirection_null() {
         val probe = CommuteProbe(DATE, Direction.TO_HOME, durationSeconds = 900L, leaveByMinuteOfDay = 420, probedAtEpochMillis = 1L)
-        assertNull(probeLeaveByMinute(probe, WidgetMode.Commute(Direction.TO_WORK), leaveByEnabled = true, localDate = DATE))
+        assertNull(probeLeaveByMinute(probe, WidgetMode.Commute(Direction.TO_WORK), RidePhase.OFFERED, leaveByEnabled = true, localDate = DATE))
     }
 
     @Test
     fun probeLeaveByMinute_nullProbe_null() {
-        assertNull(probeLeaveByMinute(null, WidgetMode.Commute(Direction.TO_WORK), leaveByEnabled = true, localDate = DATE))
+        assertNull(probeLeaveByMinute(null, WidgetMode.Commute(Direction.TO_WORK), RidePhase.OFFERED, leaveByEnabled = true, localDate = DATE))
     }
 
     @Test
     fun probeLeaveByMinute_matchingProbeWithNullMinute_null() {
         val probe = CommuteProbe(DATE, Direction.TO_WORK, durationSeconds = 900L, leaveByMinuteOfDay = null, probedAtEpochMillis = 1L)
-        assertNull(probeLeaveByMinute(probe, WidgetMode.Commute(Direction.TO_WORK), leaveByEnabled = true, localDate = DATE))
+        assertNull(probeLeaveByMinute(probe, WidgetMode.Commute(Direction.TO_WORK), RidePhase.OFFERED, leaveByEnabled = true, localDate = DATE))
+    }
+
+    @Test
+    fun probeLeaveByMinute_reachedPhase_null() {
+        val probe = CommuteProbe(DATE, Direction.TO_WORK, durationSeconds = 900L, leaveByMinuteOfDay = 420, probedAtEpochMillis = 1L)
+        assertNull(probeLeaveByMinute(probe, WidgetMode.Commute(Direction.TO_WORK), RidePhase.REACHED, leaveByEnabled = true, localDate = DATE))
+    }
+
+    @Test
+    fun probeLeaveByMinute_ridingPhase_returnsMinute() {
+        val probe = CommuteProbe(DATE, Direction.TO_WORK, durationSeconds = 900L, leaveByMinuteOfDay = 420, probedAtEpochMillis = 1L)
+        assertEquals(420, probeLeaveByMinute(probe, WidgetMode.Commute(Direction.TO_WORK), RidePhase.RIDING, leaveByEnabled = true, localDate = DATE))
     }
 
     // ---- applyRideTap ----

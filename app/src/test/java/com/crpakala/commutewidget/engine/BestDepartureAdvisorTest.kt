@@ -103,21 +103,29 @@ class BestDepartureAdvisorTest {
         val morningResult = BestDeparture(today, Direction.TO_WORK, 8 * 60, 2280L)
         val morningTarget = target(morningStart)!!
         val eveningTarget = target(eveningStart)!!
-        assertTrue(shouldShowBestDeparture(morningResult, true, true, today, morningTarget, showingCalendarEvent = false))
+        assertTrue(shouldShowBestDeparture(morningResult, true, true, today, morningTarget, showingCalendarEvent = false, rideReached = false))
         // The morning result must not render against the evening window.
-        assertFalse(shouldShowBestDeparture(morningResult, true, true, today, eveningTarget, showingCalendarEvent = false))
-        assertFalse(shouldShowBestDeparture(morningResult, true, true, "2026-08-27", morningTarget, showingCalendarEvent = false))
-        assertFalse(shouldShowBestDeparture(morningResult, true, true, today, null, showingCalendarEvent = false))
-        assertFalse(shouldShowBestDeparture(morningResult, false, true, today, morningTarget, showingCalendarEvent = false))
-        assertFalse(shouldShowBestDeparture(morningResult, true, false, today, morningTarget, showingCalendarEvent = false))
-        assertFalse(shouldShowBestDeparture(null, true, true, today, morningTarget, showingCalendarEvent = false))
+        assertFalse(shouldShowBestDeparture(morningResult, true, true, today, eveningTarget, showingCalendarEvent = false, rideReached = false))
+        assertFalse(shouldShowBestDeparture(morningResult, true, true, "2026-08-27", morningTarget, showingCalendarEvent = false, rideReached = false))
+        assertFalse(shouldShowBestDeparture(morningResult, true, true, today, null, showingCalendarEvent = false, rideReached = false))
+        assertFalse(shouldShowBestDeparture(morningResult, false, true, today, morningTarget, showingCalendarEvent = false, rideReached = false))
+        assertFalse(shouldShowBestDeparture(morningResult, true, false, today, morningTarget, showingCalendarEvent = false, rideReached = false))
+        assertFalse(shouldShowBestDeparture(null, true, true, today, morningTarget, showingCalendarEvent = false, rideReached = false))
     }
 
     @Test
     fun show_hiddenWhileCalendarEventDisplayed() {
         val morningResult = BestDeparture(today, Direction.TO_WORK, 8 * 60, 2280L)
         assertFalse(
-            shouldShowBestDeparture(morningResult, true, true, today, target(morningStart), showingCalendarEvent = true),
+            shouldShowBestDeparture(morningResult, true, true, today, target(morningStart), showingCalendarEvent = true, rideReached = false),
+        )
+    }
+
+    @Test
+    fun show_hiddenAfterRideReached() {
+        val morningResult = BestDeparture(today, Direction.TO_WORK, 8 * 60, 2280L)
+        assertFalse(
+            shouldShowBestDeparture(morningResult, true, true, today, target(morningStart), showingCalendarEvent = false, rideReached = true),
         )
     }
 }

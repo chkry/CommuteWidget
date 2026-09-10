@@ -133,27 +133,6 @@ class CommuteWidget : GlanceAppWidget() {
             val now = ZonedDateTime.now()
             val nowMinuteOfDay = now.hour * 60 + now.minute
             val configured = settings.apiKey.isNotBlank() && settings.home != null && settings.work != null
-            val bestDepartureTarget = currentBestDepartureTarget(
-                nowMinuteOfDay = nowMinuteOfDay,
-                morningStart = settings.morningSlotStartMinuteOfDay,
-                morningEnd = settings.morningSlotEndMinuteOfDay,
-                eveningStart = settings.eveningSlotStartMinuteOfDay,
-                eveningEnd = settings.eveningSlotEndMinuteOfDay,
-            )
-            val bestDepartureLine = if (
-                shouldShowBestDeparture(
-                    result = data.bestDeparture,
-                    enabled = settings.bestDepartureEnabled,
-                    todayIsCommuteDay = now.dayOfWeek.value in settings.commuteDays,
-                    today = now.toLocalDate().toString(),
-                    target = bestDepartureTarget,
-                    showingCalendarEvent = snapshot?.mode == SnapshotMode.CALENDAR_EVENT,
-                )
-            ) {
-                bestDepartureLineText(data.bestDeparture!!.bestMinuteOfDay)
-            } else {
-                null
-            }
             val today = now.toLocalDate().toString()
             val widgetMode = resolveWidgetMode(
                 dayOfWeekIso = now.dayOfWeek.value,
@@ -166,11 +145,34 @@ class CommuteWidget : GlanceAppWidget() {
             )
             val windowDirection = (widgetMode as? WidgetMode.Commute)?.direction
             val ridePhase = if (windowDirection != null) resolveRidePhase(data.rideState, today, windowDirection) else RidePhase.OFFERED
+            val rideReached = ridePhase == RidePhase.REACHED
+            val bestDepartureTarget = currentBestDepartureTarget(
+                nowMinuteOfDay = nowMinuteOfDay,
+                morningStart = settings.morningSlotStartMinuteOfDay,
+                morningEnd = settings.morningSlotEndMinuteOfDay,
+                eveningStart = settings.eveningSlotStartMinuteOfDay,
+                eveningEnd = settings.eveningSlotEndMinuteOfDay,
+            )
+            val bestDepartureLine = if (
+                shouldShowBestDeparture(
+                    result = data.bestDeparture,
+                    enabled = settings.bestDepartureEnabled,
+                    todayIsCommuteDay = now.dayOfWeek.value in settings.commuteDays,
+                    today = today,
+                    target = bestDepartureTarget,
+                    showingCalendarEvent = snapshot?.mode == SnapshotMode.CALENDAR_EVENT,
+                    rideReached = rideReached,
+                )
+            ) {
+                bestDepartureLineText(data.bestDeparture!!.bestMinuteOfDay)
+            } else {
+                null
+            }
             val rideActive = shouldRunCommutePipeline(widgetMode, ridePhase)
             val showReached = shouldShowReached(widgetMode, ridePhase, snapshot?.mode)
             val refreshingActive = isRefreshingActive(data.refreshingSince, nowEpochMillis)
             val commutePillRow = CommutePillRowContent(
-                leaveByMinuteOfDay = probeLeaveByMinute(data.commuteProbe, widgetMode, settings.leaveByEnabled, today),
+                leaveByMinuteOfDay = probeLeaveByMinute(data.commuteProbe, widgetMode, ridePhase, settings.leaveByEnabled, today),
                 bestLine = bestDepartureLine,
                 rideDirection = windowDirection?.takeIf { shouldOfferRide(widgetMode, ridePhase, snapshot?.mode, refreshingActive) },
                 rideFailed = windowDirection != null && rideLastFailed(data.rideState, today, windowDirection),
@@ -235,6 +237,7 @@ class CommuteWidget : GlanceAppWidget() {
                         customPillRow = customPillRow,
                         rideActive = rideActive,
                         showReached = showReached,
+                        rideReached = rideReached,
                         rideDirection = windowDirection,
                         commutePillRow = commutePillRow,
                         healthColors = HealthChromeColors(
@@ -325,6 +328,8 @@ private data class WidgetExtras(
     val customPillRow: CustomPillRowContent = CustomPillRowContent(emptyList(), null),
     val rideActive: Boolean = false,
     val showReached: Boolean = false,
+    /** True when the window's ride was consumed by a Reached tap, hiding Leave by and Best until the next slot. */
+    val rideReached: Boolean = false,
     /** The window's direction, for the Reached action parameter. */
     val rideDirection: Direction? = null,
     val commutePillRow: CommutePillRowContent = CommutePillRowContent(null, null, null, false),
@@ -526,7 +531,7 @@ private fun WideLayout(
             // end, not the pre-ride best-departure estimate.
             val bestLine = extras.bestDepartureLine
             val leaveByMinute = snapshot.leaveByMinuteOfDay
-            val showLeaveByPill = leaveByMinute != null && shouldShowLeaveBy(snapshot, extras.leaveByEnabled)
+            val showLeaveByPill = leaveByMinute != null && shouldShowLeaveBy(snapshot, extras.leaveByEnabled, extras.rideReached)
             val showBestOnMap = showBestDepartureOnMap(extras.rideActive, bestLine)
             if (showLeaveByPill || showBestOnMap || extras.showReached) {
                 Box(
@@ -1023,7 +1028,7 @@ private fun RoutedInfo(
     if (shouldShowRoutedCaption(snapshot, style.showRoutedCaption)) {
         RoutedCaption(extras.textScale)
     }
-    if (style.showLeaveBy && shouldShowLeaveBy(snapshot, extras.leaveByEnabled)) {
+    if (style.showLeaveBy && shouldShowLeaveBy(snapshot, extras.leaveByEnabled, extras.rideReached)) {
         LeaveByLine(snapshot.leaveByMinuteOfDay!!, extras.nowMinuteOfDay, style.leaveByFontSize)
     }
     if (style.showBestDeparture && extras.bestDepartureLine != null) {
@@ -1618,7 +1623,11 @@ private fun launchNavigation(context: Context, lat: Double, lng: Double, modeCha
     }
 }
 
-internal fun shouldShowLeaveBy(snapshot: CommuteSnapshot, leaveByEnabled: Boolean): Boolean {
+/** [rideReached] hides the COMMUTE surface's leave-by after a Reached tap; an event snapshot's leave-by describes the event, not the consumed commute, so it survives. */
+internal fun shouldShowLeaveBy(snapshot: CommuteSnapshot, leaveByEnabled: Boolean, rideReached: Boolean): Boolean {
+    if (snapshot.mode == SnapshotMode.COMMUTE && rideReached) {
+        return false
+    }
     return (snapshot.mode == SnapshotMode.COMMUTE || snapshot.mode == SnapshotMode.CALENDAR_EVENT) &&
         leaveByEnabled &&
         snapshot.leaveByMinuteOfDay != null
