@@ -16,6 +16,17 @@ android {
         versionName = "1.0"
     }
 
+    // The repo-committed debug keystore, so every machine signs with the same key and
+    // installDebug always updates the installed app instead of failing the signature check.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = rootProject.file("keystore/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildFeatures {
         compose = true
     }
