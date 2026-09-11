@@ -1,0 +1,35 @@
+{
+ "response": [
+  {
+   "airline_iata": "QF",
+   "airline_icao": "QFA",
+   "flight_iata": "QF401",
+   "flight_icao": "QFA401",
+   "flight_number": "401",
+   "dep_iata": "SYD",
+   "dep_icao": "YSSY",
+   "dep_terminal": "3",
+   "dep_gate": "1",
+   "dep_time": "2026-09-11 06:00",
+   "dep_time_utc": "2026-09-10 20:00",
+   "arr_iata": "MEL",
+   "arr_icao": "YMML",
+   "arr_terminal": "1",
+   "arr_gate": "8",
+   "arr_baggage": null,
+   "arr_time": "2026-09-11 07:35",
+   "arr_time_utc": "2026-09-10 21:35",
+   "cs_airline_iata": null,
+   "cs_flight_number": null,
+   "cs_flight_iata": null,
+   "status": "scheduled",
+   "duration": 95,
+   "delayed": null,
+   "dep_delayed": null,
+   "arr_delayed": null,
+   "aircraft_icao": null,
+   "arr_time_ts": 1789076100,
+   "dep_time_ts": 1789070400
+  }
+ ]
+}

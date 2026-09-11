@@ -44,6 +44,7 @@ internal fun nudgeSurfaceFor(mode: SnapshotMode): NudgeSurface = when (mode) {
     SnapshotMode.COMMUTE -> NudgeSurface.MAP_COMMUTE
     SnapshotMode.CALENDAR_EVENT -> NudgeSurface.MAP_EVENT
     SnapshotMode.CALENDAR_EMPTY -> NudgeSurface.CARD
+    SnapshotMode.AIRPORT -> NudgeSurface.MAP_EVENT
 }
 
 internal fun showsHealthChrome(widthDp: Int): Boolean = widthDp >= HEALTH_WIDE_MIN_WIDTH_DP
@@ -65,7 +66,7 @@ internal fun healthPillCapFor(surface: NudgeSurface): Int = when (surface) {
  */
 internal fun customPillCapFor(mode: SnapshotMode): Int = when (mode) {
     SnapshotMode.CALENDAR_EMPTY -> 4
-    SnapshotMode.COMMUTE, SnapshotMode.CALENDAR_EVENT -> CUSTOM_PILL_MAX_VISIBLE
+    SnapshotMode.COMMUTE, SnapshotMode.CALENDAR_EVENT, SnapshotMode.AIRPORT -> CUSTOM_PILL_MAX_VISIBLE
 }
 
 internal fun toEngineNudgeKind(kind: HealthNudgeKind): NudgeKind = when (kind) {

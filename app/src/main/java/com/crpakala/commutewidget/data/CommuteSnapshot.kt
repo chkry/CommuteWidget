@@ -94,4 +94,16 @@ data class CommuteSnapshot(
      * with no event remaining today. Additive with a default so older stored JSON still decodes.
      */
     val upcomingEvents: List<UpcomingEvent> = emptyList(),
+    /**
+     * Airport-mode routing and flight-status data for [SnapshotMode.AIRPORT] snapshots. Additive
+     * with a null default so a pre-airport-mode stored snapshot JSON still decodes.
+     */
+    val airport: AirportSnapshot? = null,
+    /**
+     * The nearest upcoming flight and its last-fetched status, for the calendar card's flight row
+     * before airport mode opens. Populated only on the calendar snapshots
+     * ([SnapshotMode.CALENDAR_EMPTY] and [SnapshotMode.CALENDAR_EVENT]). Additive with a null
+     * default so a pre-preview stored snapshot JSON still decodes.
+     */
+    val flightPreview: FlightPreview? = null,
 )

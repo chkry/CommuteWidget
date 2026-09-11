@@ -1,0 +1,43 @@
+{
+ "response": [
+  {
+   "airline_iata": "SQ",
+   "airline_icao": "SIA",
+   "flight_number": "509",
+   "flight_iata": "SQ509",
+   "flight_icao": "SIA509",
+   "cs_airline_iata": null,
+   "cs_flight_iata": null,
+   "cs_flight_number": null,
+   "dep_iata": "BLR",
+   "dep_icao": "VOBL",
+   "dep_terminals": [
+    "2"
+   ],
+   "dep_time": "11:35",
+   "dep_time_utc": "06:05",
+   "arr_iata": "SIN",
+   "arr_icao": "WSSS",
+   "arr_terminals": [
+    "2",
+    "3",
+    "1"
+   ],
+   "arr_time": "19:00",
+   "arr_time_utc": "11:00",
+   "duration": 295,
+   "aircraft_icao": null,
+   "counter": 192838,
+   "updated": "2026-09-10T12:58:44.000Z",
+   "days": [
+    "fri",
+    "mon",
+    "sat",
+    "sun",
+    "thu",
+    "tue",
+    "wed"
+   ]
+  }
+ ]
+}

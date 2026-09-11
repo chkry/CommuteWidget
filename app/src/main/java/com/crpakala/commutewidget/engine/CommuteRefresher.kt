@@ -9,8 +9,11 @@ import android.graphics.BitmapFactory
 import android.os.SystemClock
 import androidx.core.graphics.scale
 import androidx.glance.appwidget.updateAll
+import androidx.work.ExistingWorkPolicy
 import com.crpakala.commutewidget.CommuteWidget
 import com.crpakala.commutewidget.api.ApiResult
+import com.crpakala.commutewidget.api.FlightStatusClient
+import com.crpakala.commutewidget.api.FlightStatusResult
 import com.crpakala.commutewidget.api.GeocodingClient
 import com.crpakala.commutewidget.api.LatLng
 import com.crpakala.commutewidget.api.MapImageFetcher
@@ -19,17 +22,24 @@ import com.crpakala.commutewidget.api.RouteTravelMode
 import com.crpakala.commutewidget.api.RoutesClient
 import com.crpakala.commutewidget.api.StaticMapUrl
 import com.crpakala.commutewidget.calendar.CalendarReader
+import com.crpakala.commutewidget.calendar.FlightEvent
 import com.crpakala.commutewidget.calendar.TodayEvent
+import com.crpakala.commutewidget.data.AirportLocation
+import com.crpakala.commutewidget.data.AirportState
 import com.crpakala.commutewidget.data.AppSettings
 import com.crpakala.commutewidget.data.CommuteProbe
 import com.crpakala.commutewidget.data.CommuteSnapshot
 import com.crpakala.commutewidget.data.Direction
+import com.crpakala.commutewidget.data.FlightPreview
+import com.crpakala.commutewidget.data.FlightStatus
 import com.crpakala.commutewidget.data.Place
 import com.crpakala.commutewidget.data.RidePhase
 import com.crpakala.commutewidget.data.SettingsRepository
 import com.crpakala.commutewidget.data.SnapshotMode
 import com.crpakala.commutewidget.data.TravelMode
 import com.crpakala.commutewidget.data.UpcomingEvent
+import com.crpakala.commutewidget.data.pruneClosedEventKeys
+import com.crpakala.commutewidget.schedule.AirportBoundaryScheduler
 import com.crpakala.commutewidget.schedule.CalendarTickScheduler
 import com.crpakala.commutewidget.schedule.CommuteLeaveByScheduler
 import com.crpakala.commutewidget.schedule.EventLeaveByScheduler
@@ -273,8 +283,18 @@ object CommuteRefresher {
      * [bypassCooldown] is for the Ride and Reached pill taps: they write ride state first and the
      * fetch that follows must run even inside the debounce gap, or the pill would vanish with no
      * map ever loading until the next refresh.
+     *
+     * [airportBoundaryPolicy] is the [ExistingWorkPolicy] this refresh uses to re-arm the airport
+     * boundary chain at the end of [performRefresh]. It only ever differs for
+     * [com.crpakala.commutewidget.schedule.AirportBoundaryWorker], which is itself the running
+     * holder of that unique work name and would be cancelled mid-run by the default REPLACE.
      */
-    suspend fun refreshNow(context: Context, trigger: RefreshTrigger, bypassCooldown: Boolean = false) {
+    suspend fun refreshNow(
+        context: Context,
+        trigger: RefreshTrigger,
+        bypassCooldown: Boolean = false,
+        airportBoundaryPolicy: ExistingWorkPolicy = ExistingWorkPolicy.REPLACE,
+    ) {
         val appContext = context.applicationContext
         mutex.withLock {
             val repo = SettingsRepository.get(appContext)
@@ -329,7 +349,7 @@ object CommuteRefresher {
                 CommuteWidget().updateAll(appContext)
             }
             try {
-                performRefresh(appContext, trigger)
+                performRefresh(appContext, trigger, airportBoundaryPolicy)
                 // Fire-and-forget: at most one sampling run per day, never on the pixel path.
                 BestDepartureAdvisor.maybeComputeAsync(appContext)
             } catch (e: CancellationException) {
@@ -363,8 +383,18 @@ object CommuteRefresher {
      * runs and the calendar pipeline renders the in-window card carrying the Ride pill. Both
      * in-window branches pass `inWindow = true`, so the card body drops the next-window and
      * wind-down fields and keeps the probe's alarm alive.
+     *
+     * Airport mode outranks all of that. When a Gmail-added flight's window is open (see
+     * [airportTakeoverApplies]) [performAirportRefresh] runs instead and the commute window, the
+     * ride state machine, the once-per-window probe and the calendar pipeline are all skipped -
+     * a stored [com.crpakala.commutewidget.data.RideState] is not even read. Every path, airport
+     * or not, ends by re-arming the airport boundary chain.
      */
-    private suspend fun performRefresh(context: Context, trigger: RefreshTrigger) {
+    private suspend fun performRefresh(
+        context: Context,
+        trigger: RefreshTrigger,
+        airportBoundaryPolicy: ExistingWorkPolicy,
+    ) {
         val repo = SettingsRepository.get(context)
         val settings = repo.settingsSnapshot()
         if (settings.apiKey.isBlank() || settings.home == null || settings.work == null) {
@@ -391,6 +421,75 @@ object CommuteRefresher {
         val nextWindowResult = nextWindowFor(settings, dayOfWeekIso, minuteOfDay)
         val direction = resolveDirectionForSnapshot(widgetMode, nextWindowResult?.direction)
 
+        val calendarReader = CalendarReader(context)
+        val hasCalendarPermission = calendarReader.hasPermission()
+        val calendarReadable = settings.calendarEnabled && hasCalendarPermission && settings.selectedCalendarIds.isNotEmpty()
+        // Read once at FLIGHT_PREVIEW_LOOKAHEAD_DAYS and shared by both consumers: airport mode's
+        // takeover check and the calendar card's flight-preview row. selectActiveFlight only ever
+        // considers flights whose window has already opened, so the wider list cannot change which
+        // flight (if any) takes the widget over - it only lets the preview see further ahead.
+        val flights = if (calendarReadable) {
+            calendarReader.upcomingFlights(settings.selectedCalendarIds, nowEpochMillis, FLIGHT_PREVIEW_LOOKAHEAD_DAYS)
+        } else {
+            emptyList()
+        }
+        // The dismissed set only has to outlive the flights the calendar still returns, so it is
+        // pruned to them on every read the calendar actually served - a read the calendar gates
+        // out returns nothing and must not be mistaken for "these flights are gone".
+        val storedDismissed = repo.airportDismissedEventIds()
+        val dismissedEventIds = if (calendarReadable) {
+            val flightIds = flights.mapTo(mutableSetOf()) { it.eventId }
+            val pruned = storedDismissed intersect flightIds
+            if (pruned != storedDismissed) {
+                repo.updateAirportDismissedEventIds { it intersect flightIds }
+            }
+            pruned
+        } else {
+            storedDismissed
+        }
+        // Closed calendar events: the key embeds the start, so the 48-hour prune is a pure
+        // function of the stored set and needs no calendar read to decide what is still live.
+        val storedClosedKeys = repo.closedEventKeys()
+        val closedEventKeys = pruneClosedEventKeys(storedClosedKeys, nowEpochMillis)
+        if (closedEventKeys != storedClosedKeys) {
+            repo.updateClosedEventKeys { pruneClosedEventKeys(it, nowEpochMillis) }
+        }
+        val airportState = repo.airportState()
+        val airportWindow = selectActiveFlight(
+            flights = flights,
+            state = airportState,
+            nowEpochMillis = nowEpochMillis,
+            pillLeadMinutes = settings.airportPillLeadMinutes,
+            arriveAheadMinutes = settings.airportArriveAheadMinutes,
+            dismissedEventIds = dismissedEventIds,
+        )
+        if (airportWindow != null &&
+            airportTakeoverApplies(settings.calendarEnabled, hasCalendarPermission, settings.selectedCalendarIds, airportWindow)
+        ) {
+            val leaveByMillis = performAirportRefresh(
+                context = context,
+                repo = repo,
+                settings = settings,
+                trigger = trigger,
+                direction = direction,
+                window = airportWindow,
+                storedState = airportState,
+                now = now,
+                nowEpochMillis = nowEpochMillis,
+            )
+            AirportBoundaryScheduler.schedule(
+                context = context,
+                flights = flights,
+                state = repo.airportState(),
+                dismissedEventIds = repo.airportDismissedEventIds(),
+                settings = settings,
+                leaveByMillis = leaveByMillis,
+                nowEpochMillis = nowEpochMillis,
+                existingWorkPolicy = airportBoundaryPolicy,
+            )
+            return
+        }
+
         // Tap-to-ride state is keyed by local date and direction, so a value left over from
         // another day or from the other window is inert and resolves to OFFERED.
         val today = now.toLocalDate().toString()
@@ -399,7 +498,7 @@ object CommuteRefresher {
         when (widgetMode) {
             is WidgetMode.Commute -> {
                 val phase = resolveRidePhase(rideState, today, widgetMode.direction)
-                val takeoverApplies = eventTakeoverCandidate(context, settings, nowEpochMillis) != null
+                val takeoverApplies = eventTakeoverCandidate(context, settings, nowEpochMillis, closedEventKeys) != null
                 when (resolveInWindowBranch(takeoverApplies, phase)) {
                     InWindowBranch.EVENT_TAKEOVER -> {
                         // A located event starting within eventTakeoverMinutes outranks the window
@@ -414,28 +513,42 @@ object CommuteRefresher {
                         }
                         // The probe gates itself on phase OFFERED, so an interrupted ride runs nothing.
                         maybeRunCommuteProbe(context, repo, settings, widgetMode, postInterruptPhase, today, now, nowEpochMillis)
-                        performCalendarRefresh(context, repo, settings, trigger, direction, now, nowEpochMillis, inWindow = true, cancelCommuteLeaveBy = false)
+                        performCalendarRefresh(context, repo, settings, trigger, direction, now, nowEpochMillis, inWindow = true, cancelCommuteLeaveBy = false, flights = flights, dismissedEventIds = dismissedEventIds, closedEventKeys = closedEventKeys)
                     }
                     InWindowBranch.RIDE -> {
                         val fromCurrentLocation = rideFromCurrentLocation(rideState, today, widgetMode.direction)
-                        performCommuteRefresh(context, repo, settings, trigger, widgetMode.direction, today, now, nowEpochMillis, fromCurrentLocation)
+                        performCommuteRefresh(context, repo, settings, trigger, widgetMode.direction, today, now, nowEpochMillis, fromCurrentLocation, flights, dismissedEventIds, closedEventKeys)
                     }
                     InWindowBranch.PROBE_AND_CALENDAR -> {
                         maybeRunCommuteProbe(context, repo, settings, widgetMode, phase, today, now, nowEpochMillis)
-                        performCalendarRefresh(context, repo, settings, trigger, direction, now, nowEpochMillis, inWindow = true, cancelCommuteLeaveBy = false)
+                        performCalendarRefresh(context, repo, settings, trigger, direction, now, nowEpochMillis, inWindow = true, cancelCommuteLeaveBy = false, flights = flights, dismissedEventIds = dismissedEventIds, closedEventKeys = closedEventKeys)
                     }
                 }
             }
             WidgetMode.Calendar -> {
-                performCalendarRefresh(context, repo, settings, trigger, direction, now, nowEpochMillis, inWindow = false, cancelCommuteLeaveBy = true)
+                performCalendarRefresh(context, repo, settings, trigger, direction, now, nowEpochMillis, inWindow = false, cancelCommuteLeaveBy = true, flights = flights, dismissedEventIds = dismissedEventIds, closedEventKeys = closedEventKeys)
             }
         }
+
+        // No flight owns the widget right now, so there is no live leave-by to wake for - only
+        // the calendar-derived boundaries, the earliest of which is the next window opening.
+        AirportBoundaryScheduler.schedule(
+            context = context,
+            flights = flights,
+            state = airportState,
+            dismissedEventIds = dismissedEventIds,
+            settings = settings,
+            leaveByMillis = null,
+            nowEpochMillis = nowEpochMillis,
+            existingWorkPolicy = airportBoundaryPolicy,
+        )
     }
 
     private fun eventTakeoverCandidate(
         context: Context,
         settings: AppSettings,
         nowEpochMillis: Long,
+        closedEventKeys: Set<String>,
     ): TodayEvent? {
         if (!settings.calendarEnabled || settings.selectedCalendarIds.isEmpty()) return null
         val reader = CalendarReader(context)
@@ -445,10 +558,261 @@ object CommuteRefresher {
             nowEpochMillis,
             ZoneId.systemDefault(),
             minLookaheadMinutes = settings.eventTakeoverMinutes,
+            closedEventKeys = closedEventKeys,
         ) ?: return null
         return event.takeIf {
             eventTakeoverApplies(it.startEpochMillis, it.location != null, nowEpochMillis, settings.eventTakeoverMinutes)
         }
+    }
+
+    /**
+     * Airport mode's pipeline. Returns the leave-by instant this refresh computed, which the
+     * caller feeds to the airport boundary chain; null whenever none exists (REACHED, or any
+     * degraded outcome). Every exception is turned into a [SnapshotMode.AIRPORT] snapshot with the
+     * airport block populated as far as it is known, so a failure here can never fall through to
+     * [refreshNow]'s generic handler and drop the widget back into the commute pipeline.
+     */
+    private suspend fun performAirportRefresh(
+        context: Context,
+        repo: SettingsRepository,
+        settings: AppSettings,
+        trigger: RefreshTrigger,
+        direction: Direction,
+        window: AirportWindow,
+        storedState: AirportState?,
+        now: ZonedDateTime,
+        nowEpochMillis: Long,
+    ): Long? {
+        val state = resolveAirportState(storedState, window.flight, now.zone, repo.flightPreview(), window.layover)
+        return try {
+            runAirportPipeline(context, repo, settings, trigger, direction, window, state, storedState, now, nowEpochMillis)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            repo.saveSnapshot(
+                airportSnapshotFrom(
+                    window = window,
+                    state = state,
+                    direction = direction,
+                    zone = now.zone,
+                    nowEpochMillis = nowEpochMillis,
+                    healthComputation = healthCarriedForward(repo.snapshot()),
+                    reachedOffered = shouldShowAirportReached(state, window, nowEpochMillis, null, null),
+                    errorMessage = e.message ?: "Airport refresh failed",
+                ),
+            )
+            null
+        }
+    }
+
+    private suspend fun runAirportPipeline(
+        context: Context,
+        repo: SettingsRepository,
+        settings: AppSettings,
+        trigger: RefreshTrigger,
+        direction: Direction,
+        window: AirportWindow,
+        state: AirportState,
+        storedState: AirportState?,
+        now: ZonedDateTime,
+        nowEpochMillis: Long,
+    ): Long? {
+        // The commute window's precise alarm must not fire under an airport takeover - the same
+        // cancel performCalendarRefresh(cancelCommuteLeaveBy = true) performs when it takes the
+        // widget out of a window. EventLeaveByScheduler is deliberately NOT cancelled here: the
+        // airport leave-by below is scheduled through it and would cancel itself every refresh.
+        CommuteLeaveByScheduler.cancel(context)
+
+        if (state != storedState) {
+            repo.setAirportState(state)
+        }
+
+        val flight = window.flight
+        val previousSnapshot = repo.snapshot()
+        val healthComputation = computeHealthFieldsSafely(context, settings, nowEpochMillis, now.zone, previousSnapshot)
+
+        // REACHED and LAYOVER show the flight card instead of the map, so they spend no Routes and
+        // no Static Maps quota at all. The one AirLabs call is the flight status below, which
+        // [shouldAutoFetchFlightStatus] rations to one per [statusTickMillisFor] (half an hour in
+        // REACHED, an hour in LAYOVER) and stops entirely once the flight has landed or been
+        // cancelled. The state is re-read after it so this refresh's snapshot carries the status it
+        // just paid for. The only other network here is [cacheFlightAirports], which is Google
+        // geocoding quota rather than AirLabs, runs at most once per airport for the life of the
+        // install, and is what puts the route distance on the card.
+        if (airportShowsFlightCard(state.phase)) {
+            val fetched = if (shouldAutoFetchFlightStatus(state, settings.flightStatusApiKey, nowEpochMillis)) {
+                refreshFlightStatus(context, repo, flight, settings.flightStatusApiKey, nowEpochMillis)
+                repo.airportState()?.takeIf { it.eventId == flight.eventId } ?: state
+            } else {
+                state
+            }
+            val cache = cacheFlightAirports(repo, settings.apiKey, flight, fetched.lastStatus, nowEpochMillis)
+            // Both caches are filled by [refreshFlightStatus] above; read here so the card renders
+            // whatever this refresh just paid for rather than waiting a tick to show it.
+            val status = fetched.lastStatus
+            val registration = status?.aircraftRegistration?.uppercase()
+            val departureIata = (status?.departureIata ?: flight.departureIata)?.uppercase()
+            repo.saveSnapshot(
+                airportSnapshotFrom(
+                    window = window,
+                    state = fetched,
+                    direction = direction,
+                    zone = now.zone,
+                    nowEpochMillis = nowEpochMillis,
+                    healthComputation = healthComputation,
+                    routeDistanceKm = flightRouteDistanceKm(cache, flight, status),
+                    aircraft = registration?.let { repo.aircraftFleet()[it] },
+                    departureDelayStats = departureIata?.let { repo.airportDelayStats()[it] },
+                ),
+            )
+            return null
+        }
+
+        // Same concurrency discipline as the located-event geocode in performCalendarRefresh: the
+        // device fix and the airport lookup are independent, so they run together.
+        val (destination, deviceResult) = coroutineScope {
+            val deviceDeferred = async { currentDeviceLocation(context) }
+            val resolved = resolveAirportDestination(repo, settings.apiKey, flight, state.lastStatus, nowEpochMillis)
+            resolved to deviceDeferred.await()
+        }
+        val geocodesSpent = destination.geocodesSpent
+
+        val deviceLocation = (deviceResult as? ApiResult.Success)?.value
+        val home = settings.home
+        val origin = when {
+            home != null -> eventRouteOrigin(deviceResult, home)
+            else -> deviceLocation
+        }
+        val airport = destination.location
+        val airportCache = cacheFlightAirports(
+            repo = repo,
+            apiKey = settings.apiKey,
+            flight = flight,
+            status = state.lastStatus,
+            nowEpochMillis = nowEpochMillis,
+            budget = AIRPORT_GEOCODE_BUDGET_PER_REFRESH - geocodesSpent,
+        )
+        val routeDistanceKm = flightRouteDistanceKm(airportCache, flight, state.lastStatus)
+
+        // A missing airport (no usable query text, or a geocode that failed) does not end airport
+        // mode: the pills and the flight card still work off the calendar's own fields, there is
+        // simply no route and no map to draw.
+        if (airport == null || origin == null) {
+            repo.saveSnapshot(
+                airportSnapshotFrom(
+                    window = window,
+                    state = state,
+                    direction = direction,
+                    zone = now.zone,
+                    nowEpochMillis = nowEpochMillis,
+                    healthComputation = healthComputation,
+                    originLabel = airportOriginLabel(deviceResult),
+                    airport = airport,
+                    airportName = destination.name,
+                    reachedOffered = shouldShowAirportReached(state, window, nowEpochMillis, deviceLocation, airport),
+                    routeDistanceKm = routeDistanceKm,
+                    errorMessage = destination.error ?: "No location fix and no Home saved",
+                ),
+            )
+            return null
+        }
+
+        val routes = RoutesClient(settings.apiKey)
+        val travelMode = travelModeFor(settings.travelMode)
+        // Real-time traffic, never a departure probe: the Leave by pill is about leaving now, and
+        // the predicted-traffic question is the Best pill's, answered by the sampler below.
+        val routeResult = routes.computeRoute(origin, airport, travelMode, departureTimeEpochMillis = null)
+        val route = when (routeResult) {
+            is ApiResult.Success -> routeResult.value
+            is ApiResult.Failure -> {
+                repo.saveSnapshot(
+                    airportSnapshotFrom(
+                        window = window,
+                        state = state,
+                        direction = direction,
+                        zone = now.zone,
+                        nowEpochMillis = nowEpochMillis,
+                        healthComputation = healthComputation,
+                        originLabel = airportOriginLabel(deviceResult),
+                        airport = airport,
+                        airportName = destination.name,
+                        reachedOffered = shouldShowAirportReached(state, window, nowEpochMillis, deviceLocation, airport),
+                        routeDistanceKm = routeDistanceKm,
+                        errorMessage = routeResult.message,
+                    ),
+                )
+                return null
+            }
+        }
+
+        // Only RIDING draws the map (see [airportLoadsMap]). OFFERED has just spent the one Routes
+        // call above, which is all Leave by needs; building and downloading a Static Maps PNG for
+        // a journey the owner has not asked for yet is quota spent on nothing. Same render-cache
+        // path the commute and calendar pipelines use when it does run: the key hashes the route
+        // geometry, its traffic colors and both endpoints, so a tick whose route is unchanged
+        // reuses the PNG already on disk instead of re-downloading it.
+        val mapResult = if (airportLoadsMap(state.phase)) {
+            resolveMapImagePath(context, repo, trigger, previousSnapshot, direction, airport, origin, route, settings.apiKey)
+        } else {
+            null
+        }
+
+        // The Best sampling is the Best pill's, and the pill is OFFERED-only, so a ride already in
+        // progress never starts a sampling it has nowhere to show. One that ran while the window
+        // was still OFFERED is kept and carried through.
+        val existingBest = repo.airportDeparture()
+        val best = if (airportShowsLeaveByAndBest(state.phase) &&
+            shouldComputeAirportDeparture(existingBest, flight.eventId, nowEpochMillis, window.windowStartMillis, window.arriveByMillis)
+        ) {
+            AirportDepartureAdvisor.compute(
+                routes = routes,
+                origin = origin,
+                airport = airport,
+                mode = travelMode,
+                eventId = flight.eventId,
+                windowStartMillis = window.windowStartMillis,
+                arriveByMillis = window.arriveByMillis,
+                nowEpochMillis = nowEpochMillis,
+            )?.also { repo.setAirportDeparture(it) } ?: existingBest
+        } else {
+            existingBest
+        }
+
+        val leaveByMillis = airportLeaveByMillis(window.arriveByMillis, route.durationSeconds)
+        repo.saveSnapshot(
+            airportSnapshotFrom(
+                window = window,
+                state = state,
+                direction = direction,
+                zone = now.zone,
+                nowEpochMillis = nowEpochMillis,
+                healthComputation = healthComputation,
+                originLabel = airportOriginLabel(deviceResult),
+                airport = airport,
+                airportName = destination.name,
+                route = route,
+                mapImagePath = (mapResult as? ApiResult.Success)?.value,
+                best = best,
+                reachedOffered = shouldShowAirportReached(state, window, nowEpochMillis, deviceLocation, airport),
+                routeDistanceKm = routeDistanceKm,
+                errorMessage = (mapResult as? ApiResult.Failure)?.message,
+            ),
+        )
+
+        // Dedup is EventLeaveByScheduler's own: its key is eventIdentityKey(start, title), and
+        // both halves are stable for one flight (arrive-by target and airportLeaveByTitle), so a
+        // tick inside the window re-arms the same wake-up rather than re-notifying, and the
+        // airport state carries no notification flag of its own.
+        EventLeaveByScheduler.scheduleOrPost(
+            context = context,
+            eventTitle = airportLeaveByTitle(flight),
+            eventStartEpochMillis = window.arriveByMillis,
+            leaveByEpochMillis = leaveByMillis,
+            durationSeconds = route.durationSeconds,
+            nowEpochMillis = nowEpochMillis,
+        )
+
+        return leaveByMillis
     }
 
     private fun nextWindowFor(settings: AppSettings, dayOfWeekIso: Int, minuteOfDay: Int): NextWindow? =
@@ -533,6 +897,9 @@ object CommuteRefresher {
         now: ZonedDateTime,
         nowEpochMillis: Long,
         fromCurrentLocation: Boolean,
+        flights: List<FlightEvent>,
+        dismissedEventIds: Set<Long>,
+        closedEventKeys: Set<String>,
     ) {
         // v5: a commute-mode refresh of any outcome (success or failure) is "anything else" per
         // the calendar tick's schedule/cancel contract - see CalendarTickScheduler's doc.
@@ -571,6 +938,9 @@ object CommuteRefresher {
                     today = today,
                     now = now,
                     nowEpochMillis = nowEpochMillis,
+                    flights = flights,
+                    dismissedEventIds = dismissedEventIds,
+                    closedEventKeys = closedEventKeys,
                 )
                 return
             }
@@ -592,6 +962,9 @@ object CommuteRefresher {
                     today = today,
                     now = now,
                     nowEpochMillis = nowEpochMillis,
+                    flights = flights,
+                    dismissedEventIds = dismissedEventIds,
+                    closedEventKeys = closedEventKeys,
                 )
                 return
             }
@@ -666,13 +1039,16 @@ object CommuteRefresher {
         today: String,
         now: ZonedDateTime,
         nowEpochMillis: Long,
+        flights: List<FlightEvent>,
+        dismissedEventIds: Set<Long>,
+        closedEventKeys: Set<String>,
     ) {
         if (!isRideFirstAttempt(repo.rideState(), today, direction)) {
             saveFailure(repo, direction, message, SnapshotMode.COMMUTE, destinationLabel)
             return
         }
         repo.updateRideState { applyRideFailed(it, today, direction) }
-        performCalendarRefresh(context, repo, settings, trigger, direction, now, nowEpochMillis, inWindow = true, cancelCommuteLeaveBy = false)
+        performCalendarRefresh(context, repo, settings, trigger, direction, now, nowEpochMillis, inWindow = true, cancelCommuteLeaveBy = false, flights = flights, dismissedEventIds = dismissedEventIds, closedEventKeys = closedEventKeys)
     }
 
     /**
@@ -715,6 +1091,11 @@ object CommuteRefresher {
      * card's "Next up" section is populated instead: the next two events from tomorrow's local
      * midnight onward, within seven days (see [CalendarReader.upcomingEvents]). Event selection,
      * the plain card, the routed event, the near-flip arming and the tick are identical either way.
+     *
+     * [flights] and [dismissedEventIds] are the caller's single calendar flight read, reused here
+     * for the flight-preview row (see [resolveFlightPreview]) rather than queried a second time.
+     * Every snapshot this function stores carries the resolved preview; the [saveFailure] branches
+     * do not, so a failed routed event keeps whatever preview the previous snapshot held.
      */
     private suspend fun performCalendarRefresh(
         context: Context,
@@ -726,6 +1107,9 @@ object CommuteRefresher {
         nowEpochMillis: Long,
         inWindow: Boolean,
         cancelCommuteLeaveBy: Boolean,
+        flights: List<FlightEvent>,
+        dismissedEventIds: Set<Long>,
+        closedEventKeys: Set<String>,
     ) {
         CalendarTickScheduler.cancel(context)
         EventLeaveByScheduler.cancel(context)
@@ -745,12 +1129,24 @@ object CommuteRefresher {
             calendarReader.hasPermission() &&
             settings.selectedCalendarIds.isNotEmpty()
 
+        // At most one AirLabs call per refresh, and only from here: every branch below reuses this
+        // single resolution, so no path can spend a second query.
+        val flightPreview = resolveFlightPreview(
+            repo = repo,
+            settings = settings,
+            flights = if (canReadCalendar) flights else emptyList(),
+            dismissedEventIds = dismissedEventIds,
+            zone = now.zone,
+            nowEpochMillis = nowEpochMillis,
+        )
+
         val event: TodayEvent? = if (canReadCalendar) {
             calendarReader.nextEventToday(
                 settings.selectedCalendarIds,
                 nowEpochMillis,
                 now.zone,
                 minLookaheadMinutes = settings.eventTakeoverMinutes,
+                closedEventKeys = closedEventKeys,
             )
         } else {
             null
@@ -769,12 +1165,18 @@ object CommuteRefresher {
                         healthComputation = healthComputation,
                         todayEventCount = todaySummary?.remainingCount,
                         todayFirstEventStartEpochMillis = todaySummary?.firstStartEpochMillis,
+                        flightPreview = flightPreview,
                     ),
                 )
                 return
             }
             val upcomingEvents = if (canReadCalendar) {
-                calendarReader.upcomingEvents(settings.selectedCalendarIds, nowEpochMillis, now.zone)
+                calendarReader.upcomingEvents(
+                    settings.selectedCalendarIds,
+                    nowEpochMillis,
+                    now.zone,
+                    closedEventKeys = closedEventKeys,
+                )
             } else {
                 emptyList()
             }
@@ -784,6 +1186,7 @@ object CommuteRefresher {
                     nowEpochMillis = nowEpochMillis,
                     upcomingEvents = upcomingEvents,
                     healthComputation = healthComputation,
+                    flightPreview = flightPreview,
                 ),
             )
             return
@@ -792,7 +1195,7 @@ object CommuteRefresher {
         val location = event.location
         if (location.isNullOrBlank()) {
             repo.saveSnapshot(
-                calendarPlainEventSnapshot(direction, nowEpochMillis, event.title, event.startEpochMillis, healthComputation),
+                calendarPlainEventSnapshot(direction, nowEpochMillis, event.title, event.startEpochMillis, healthComputation, flightPreview),
             )
             return
         }
@@ -805,7 +1208,7 @@ object CommuteRefresher {
         // or already-near event falls through unchanged to the routed pipeline below.
         if (!eventTakeoverApplies(event.startEpochMillis, true, nowEpochMillis, settings.eventTakeoverMinutes)) {
             repo.saveSnapshot(
-                calendarPlainEventSnapshot(direction, nowEpochMillis, event.title, event.startEpochMillis, healthComputation),
+                calendarPlainEventSnapshot(direction, nowEpochMillis, event.title, event.startEpochMillis, healthComputation, flightPreview),
             )
             EventNearScheduler.scheduleAt(
                 context,
@@ -933,6 +1336,7 @@ object CommuteRefresher {
                 sleepEstimateMinutes = healthComputation.sleepEstimateMinutes,
                 shortSleepDay = healthComputation.shortSleepDay,
                 customPillOccurrences = healthComputation.customPillOccurrences,
+                flightPreview = flightPreview,
             ),
         )
 
@@ -955,6 +1359,123 @@ object CommuteRefresher {
     }
 
     /**
+     * Resolves the calendar card's flight row and persists it, spending at most one AirLabs query.
+     * Called once per calendar refresh, before any branch, so no path can spend a second.
+     *
+     * The row names [selectPreviewFlight]'s pick from the caller's already-read flight list, for
+     * every upcoming flight including one already inside its airport window or already dismissed:
+     * the row is what keeps the flight's data on the calendar card after Done ends the takeover.
+     * No flight at all clears the stored preview and renders nothing.
+     *
+     * A query is spent only when [previewFetchAllowed] and [shouldFetchPreview] both agree -
+     * airport mode must not already be paying for this flight, and the stored preview must be new,
+     * never fetched, or a full refresh interval old - so a card that re-renders every few minutes
+     * still costs at most one query a day per flight. A status airport mode has already fetched
+     * for this flight is folded in by [newerStatusForPreview] rather than bought again.
+     *
+     * The row also names the connection this flight is the second leg of and the great-circle
+     * distance between its two airports. Both are free of AirLabs quota: the connection comes from
+     * the calendar list the caller already read, and the distance from the permanent per-IATA
+     * airport cache [cacheFlightAirports] fills with Google geocodes.
+     *
+     * A failed fetch keeps the last good status and records the message, mirroring
+     * [applyFlightStatusResult]: a gate that came back yesterday is still the best thing to show
+     * when today's call times out. Both outcomes stamp the fetch time, so a failure is not retried
+     * until the next interval. Any exception degrades to error text on the row rather than failing
+     * the calendar snapshot the caller is about to build.
+     */
+    private suspend fun resolveFlightPreview(
+        repo: SettingsRepository,
+        settings: AppSettings,
+        flights: List<FlightEvent>,
+        dismissedEventIds: Set<Long>,
+        zone: ZoneId,
+        nowEpochMillis: Long,
+    ): FlightPreview? {
+        val flight = selectPreviewFlight(flights, nowEpochMillis)
+        return try {
+            val stored = repo.flightPreview()
+            if (flight == null) {
+                if (stored != null) {
+                    repo.setFlightPreview(null)
+                }
+                return null
+            }
+            val existing = stored?.takeIf { it.eventId == flight.eventId }
+            // The calendar entry itself is free to re-read, so the row always carries the latest
+            // title, terminal, seat and PNR even on a refresh that spends no query; airport mode's
+            // own status is folded in on the same free terms.
+            val carried = newerStatusForPreview(
+                (existing ?: FlightPreview(eventId = flight.eventId, flight = flight)).copy(flight = flight),
+                repo.airportState(),
+            )
+            val mayFetch = previewFetchAllowed(
+                flight,
+                dismissedEventIds,
+                settings.airportPillLeadMinutes,
+                settings.airportArriveAheadMinutes,
+                nowEpochMillis,
+            )
+            val base = if (!mayFetch || !shouldFetchPreview(carried, flight, settings.flightStatusApiKey, nowEpochMillis)) {
+                carried
+            } else {
+                when (
+                    val result = FlightStatusClient(settings.flightStatusApiKey).fetch(
+                        flight.designator,
+                        LocalDate.parse(airportLocalDate(flight, zone)),
+                        flight.departureIata,
+                    )
+                ) {
+                    is FlightStatusResult.Success -> FlightPreview(
+                        eventId = flight.eventId,
+                        flight = flight,
+                        // The row replaces its status wholesale exactly as the card does, so it
+                        // needs the same guard: a thinner answer must not blank the airframe, the
+                        // airline or the two offsets the row was already showing.
+                        status = carryForwardStaticFields(result.status, carried.status),
+                        fetchedAtMillis = nowEpochMillis,
+                        error = null,
+                    )
+                    is FlightStatusResult.Failure -> FlightPreview(
+                        eventId = flight.eventId,
+                        flight = flight,
+                        status = carried.status,
+                        fetchedAtMillis = nowEpochMillis,
+                        error = result.message,
+                    )
+                }
+            }
+            val connection = connectionBefore(flight, flights)
+            val airportCache = cacheFlightAirports(repo, settings.apiKey, flight, base.status, nowEpochMillis)
+            val enriched = base.copy(
+                layoverFromDesignator = connection?.designator,
+                layoverMinutes = connection?.let {
+                    ((flight.departureMillis - it.arrivalMillis) / 60_000L).toInt()
+                },
+                routeDistanceKm = flightRouteDistanceKm(airportCache, flight, base.status),
+            )
+            // Written back only when it actually moved, so an idle refresh costs no disk write.
+            if (enriched != stored) {
+                repo.setFlightPreview(enriched)
+            }
+            enriched
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (flight == null) {
+                null
+            } else {
+                FlightPreview(
+                    eventId = flight.eventId,
+                    flight = flight,
+                    fetchedAtMillis = nowEpochMillis,
+                    error = e.message ?: "Flight status failed",
+                )
+            }
+        }
+    }
+
+    /**
      * Builds a [SnapshotMode.CALENDAR_EMPTY] snapshot for no event remaining today.
      * The commute window (`nextWindowLabel` / `nextWindowStartMinuteOfDay`) is never advertised on
      * this card any more, so both fields are always null here.
@@ -972,6 +1493,7 @@ object CommuteRefresher {
         healthComputation: HealthComputation = HealthComputation(),
         todayEventCount: Int? = null,
         todayFirstEventStartEpochMillis: Long? = null,
+        flightPreview: FlightPreview? = null,
     ): CommuteSnapshot = CommuteSnapshot(
         direction = direction,
         durationSeconds = 0L,
@@ -998,6 +1520,7 @@ object CommuteRefresher {
         shortSleepDay = healthComputation.shortSleepDay,
         customPillOccurrences = healthComputation.customPillOccurrences,
         upcomingEvents = upcomingEvents,
+        flightPreview = flightPreview,
     )
 
     private fun commuteLeaveByPlanFor(
@@ -1126,13 +1649,16 @@ private suspend fun computeHealthFieldsSafely(
 } catch (e: CancellationException) {
     throw e
 } catch (_: Exception) {
-    HealthComputation(
-        healthNudges = previous?.healthNudges ?: emptyList(),
-        sleepEstimateMinutes = previous?.sleepEstimateMinutes,
-        shortSleepDay = previous?.shortSleepDay ?: false,
-        customPillOccurrences = previous?.customPillOccurrences ?: emptyList(),
-    )
+    healthCarriedForward(previous)
 }
+
+/** [previous]'s health fields as a [HealthComputation], for the paths that must not recompute them. */
+private fun healthCarriedForward(previous: CommuteSnapshot?): HealthComputation = HealthComputation(
+    healthNudges = previous?.healthNudges ?: emptyList(),
+    sleepEstimateMinutes = previous?.sleepEstimateMinutes,
+    shortSleepDay = previous?.shortSleepDay ?: false,
+    customPillOccurrences = previous?.customPillOccurrences ?: emptyList(),
+)
 
 /**
  * Resolves the on-disk map path for a trigger-dependent pipeline. [RefreshTrigger.TICK] reuses
@@ -1144,6 +1670,187 @@ private suspend fun computeHealthFieldsSafely(
  * hash covers everything that draws: polyline geometry, per-segment traffic speeds, both
  * endpoints, and the requested dimensions.
  */
+/**
+ * Fills the permanent per-IATA airport cache with both ends of [flight] and returns it. This is
+ * what the flight card's route distance is read from, and it is Google geocoding quota, not the
+ * owner's 1000 lifetime AirLabs queries.
+ *
+ * An airport is geocoded once for the life of the install and then answered from the cache
+ * forever, at most [budget] airports per refresh. A code the geocoder cannot answer is memoised in
+ * `airport_geocode_failures_json` and not retried inside [AIRPORT_GEOCODE_RETRY_MILLIS], so a
+ * calendar entry with a nonsense IATA costs one query a day rather than one per refresh; a later
+ * success drops the memo.
+ */
+/**
+ * What one refresh managed to make of the departure airport: where it is, what it is called, how
+ * many geocodes that cost, and why it failed when it did.
+ */
+private data class AirportDestinationResult(
+    val location: LatLng? = null,
+    val name: String? = null,
+    val geocodesSpent: Int = 0,
+    val error: String? = null,
+)
+
+/**
+ * Resolves the airport this refresh routes to, in the order [airportGeocodeQueries] lays out and
+ * stopping at the first answer. The specific query comes first and is what fixes the owner's own
+ * bug: sending the calendar's raw "Bengaluru BLR" to the geocoder resolves to Bengaluru city
+ * centre, while "BLR airport terminal 2" resolves to the terminal the flight actually leaves from.
+ *
+ * Every step is cached under its own key, so the second refresh of a window pays nothing: a
+ * terminal under `BLR/T2` and the airport as a whole under `BLR`, both permanent (airports do not
+ * move), and the two name-based queries under the single-entry [SettingsRepository.geocodeCache]
+ * they have always used. A terminal hit that lands more than
+ * [AIRPORT_TERMINAL_MAX_OFFSET_METERS] from an already-cached `BLR` is the geocoder matching
+ * something else of the same name and is rejected in favour of the next query.
+ *
+ * At most [AIRPORT_GEOCODE_BUDGET_PER_REFRESH] geocodes are spent here however many queries the
+ * flight offers, and a query that comes back empty is memoised in `airport_geocode_failures_json`
+ * under its own key, so a flight the geocoder has no answer for costs one query a day rather than
+ * one per refresh.
+ */
+private suspend fun resolveAirportDestination(
+    repo: SettingsRepository,
+    apiKey: String,
+    flight: FlightEvent,
+    status: FlightStatus?,
+    nowEpochMillis: Long,
+): AirportDestinationResult {
+    val queries = airportGeocodeQueries(flight, status)
+    if (queries.isEmpty()) {
+        return AirportDestinationResult(error = "No airport location on this flight")
+    }
+    val cache = repo.airportLocations()
+    // The most specific key only: a cached plain airport must not short-circuit the terminal
+    // query, or an airport geocoded before its terminal was known would never gain the terminal.
+    airportEntryFor(cache, queries.first().first)?.let {
+        return AirportDestinationResult(location = LatLng(it.lat, it.lng), name = it.name)
+    }
+    if (apiKey.isBlank()) {
+        return AirportDestinationResult(error = "Airport not found")
+    }
+    val plainAirport = normalizedIata(flight.departureIata ?: status?.departureIata)
+        ?.let { airportEntryFor(cache, it) }
+    val failures = repo.airportGeocodeFailures()
+    val placeCache = repo.geocodeCache()
+    var spent = 0
+    var lastError: String? = null
+    for ((key, query) in queries) {
+        if (spent >= AIRPORT_GEOCODE_BUDGET_PER_REFRESH) {
+            break
+        }
+        airportEntryFor(cache, key)?.let {
+            return AirportDestinationResult(
+                location = LatLng(it.lat, it.lng),
+                name = it.name,
+                geocodesSpent = spent,
+            )
+        }
+        if (key.isEmpty() && placeCache != null && placeCache.address == query) {
+            return AirportDestinationResult(location = LatLng(placeCache.lat, placeCache.lng), geocodesSpent = spent)
+        }
+        val memoKey = key.ifEmpty { query }
+        val failedAtMillis = failures[memoKey]
+        if (failedAtMillis != null && nowEpochMillis - failedAtMillis < AIRPORT_GEOCODE_RETRY_MILLIS) {
+            continue
+        }
+        spent++
+        val hit = when (val result = GeocodingClient(apiKey).geocode(query)) {
+            is ApiResult.Success -> result.value.firstOrNull()
+            is ApiResult.Failure -> {
+                lastError = result.message
+                null
+            }
+        }
+        val tooFarFromAirport = hit != null && key.contains('/') && plainAirport != null &&
+            distanceMeters(hit.location, LatLng(plainAirport.lat, plainAirport.lng)) > AIRPORT_TERMINAL_MAX_OFFSET_METERS
+        if (hit == null || tooFarFromAirport) {
+            repo.updateAirportGeocodeFailures { it + (memoKey to nowEpochMillis) }
+            lastError = lastError ?: "Airport not found"
+            continue
+        }
+        val name = geocodedAirportName(hit.formattedAddress, airportDisplayName(flight))
+        if (key.isEmpty()) {
+            repo.setGeocodeCache(Place(address = query, lat = hit.location.lat, lng = hit.location.lng))
+        } else {
+            repo.updateAirportLocations {
+                it + (
+                    key to AirportLocation(
+                        iata = key.substringBefore('/'),
+                        name = name,
+                        lat = hit.location.lat,
+                        lng = hit.location.lng,
+                    )
+                    )
+            }
+        }
+        if (failedAtMillis != null) {
+            repo.updateAirportGeocodeFailures { it - memoKey }
+        }
+        return AirportDestinationResult(
+            location = hit.location,
+            name = name.takeIf { key.isNotEmpty() },
+            geocodesSpent = spent,
+        )
+    }
+    return AirportDestinationResult(geocodesSpent = spent, error = lastError ?: "Airport not found")
+}
+
+private suspend fun cacheFlightAirports(
+    repo: SettingsRepository,
+    apiKey: String,
+    flight: FlightEvent,
+    status: FlightStatus?,
+    nowEpochMillis: Long,
+    budget: Int = AIRPORT_GEOCODE_BUDGET_PER_REFRESH,
+): Map<String, AirportLocation> {
+    var cache = repo.airportLocations()
+    if (apiKey.isBlank() || budget <= 0) {
+        return cache
+    }
+    val targets = listOfNotNull(
+        normalizedIata(flight.departureIata ?: status?.departureIata)?.let { code ->
+            code to (flight.departureAirportName?.takeIf { it.isNotBlank() } ?: status?.departureAirportName ?: code)
+        },
+        normalizedIata(flight.arrivalIata ?: status?.arrivalIata)?.let { code ->
+            code to (flight.arrivalAirportName?.takeIf { it.isNotBlank() } ?: status?.arrivalAirportName ?: code)
+        },
+    ).distinctBy { it.first }.filter { airportLocationFor(cache, it.first) == null }
+    if (targets.isEmpty()) {
+        return cache
+    }
+    val failures = repo.airportGeocodeFailures()
+    var spent = 0
+    for ((code, name) in targets) {
+        if (spent >= budget) {
+            break
+        }
+        val failedAtMillis = failures[code]
+        if (failedAtMillis != null && nowEpochMillis - failedAtMillis < AIRPORT_GEOCODE_RETRY_MILLIS) {
+            continue
+        }
+        spent++
+        val hit = (GeocodingClient(apiKey).geocode("$code airport") as? ApiResult.Success)?.value?.firstOrNull()
+        if (hit == null) {
+            repo.updateAirportGeocodeFailures { it + (code to nowEpochMillis) }
+            continue
+        }
+        val entry = AirportLocation(
+            iata = code,
+            name = geocodedAirportName(hit.formattedAddress, name),
+            lat = hit.location.lat,
+            lng = hit.location.lng,
+        )
+        repo.updateAirportLocations { it + (code to entry) }
+        cache = cache + (code to entry)
+        if (failedAtMillis != null) {
+            repo.updateAirportGeocodeFailures { it - code }
+        }
+    }
+    return cache
+}
+
 private suspend fun resolveMapImagePath(
     context: Context,
     repo: SettingsRepository,
@@ -1166,7 +1873,7 @@ private suspend fun resolveMapImagePath(
                     destination = destination,
                 )
             if (reuse) {
-                ApiResult.Success(previousSnapshot?.mapImagePath)
+                ApiResult.Success(previousSnapshot.mapImagePath)
             } else {
                 // Destination changed under a tick (e.g. the displayed event was deleted and the
                 // tick flipped the mode back): the old map is for the wrong place, so this is the
@@ -1312,6 +2019,7 @@ internal fun calendarPlainEventSnapshot(
     eventTitle: String,
     eventStartEpochMillis: Long,
     healthComputation: HealthComputation,
+    flightPreview: FlightPreview? = null,
 ): CommuteSnapshot = CommuteSnapshot(
     direction = direction,
     durationSeconds = 0L,
@@ -1333,6 +2041,7 @@ internal fun calendarPlainEventSnapshot(
     sleepEstimateMinutes = healthComputation.sleepEstimateMinutes,
     shortSleepDay = healthComputation.shortSleepDay,
     customPillOccurrences = healthComputation.customPillOccurrences,
+    flightPreview = flightPreview,
 )
 
 /**

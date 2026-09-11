@@ -1,6 +1,7 @@
 package com.crpakala.commutewidget.calendar
 
 import android.provider.CalendarContract
+import com.crpakala.commutewidget.data.eventIdentityKey
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -214,6 +215,70 @@ class TodayEventSelectionTest {
         assertEquals("Meeting", result?.title)
         assertNull(result?.location)
     }
+
+    // ---- closed events ----
+
+    @Test
+    fun closedEvent_isSkippedAndTheNextEventWins() {
+        val rows = listOf(
+            row(title = "Standup", location = "1 Queen Street", beginEpochMillis = now + 60_000L),
+            row(title = "Dentist", location = "5 King Street", beginEpochMillis = now + 90 * 60_000L),
+        )
+
+        val result = selectTodayEvent(rows, setOf(1L), now, setOf(closedKey(now + 60_000L, "Standup")))
+
+        assertEquals("Dentist", result?.title)
+        assertEquals("5 King Street", result?.location)
+    }
+
+    @Test
+    fun closedEvent_locationPreferenceRunsOnTheRemainingEvents() {
+        // The closed located event would have won the 30-minute preference over the unlocated one.
+        // Removing it before selection must hand the preference to the LATER located event, which
+        // starts more than 30 minutes after the unlocated candidate and therefore loses it.
+        val rows = listOf(
+            row(title = "Unlocated first", location = null, beginEpochMillis = now),
+            row(title = "Closed nearby", location = "1 Queen Street", beginEpochMillis = now + 5 * 60_000L),
+            row(title = "Far located", location = "5 King Street", beginEpochMillis = now + 45 * 60_000L),
+        )
+
+        val result = selectTodayEvent(rows, setOf(1L), now, setOf(closedKey(now + 5 * 60_000L, "Closed nearby")))
+
+        assertEquals("Unlocated first", result?.title)
+        assertEquals(false, result?.preferredOverEarlierEvent)
+    }
+
+    @Test
+    fun closedEvent_matchesOnStartAndTitleOnly() {
+        // Another instance of the same recurring event, at a different start, is untouched.
+        val rows = listOf(row(title = "Standup", beginEpochMillis = now + 60_000L))
+
+        assertNull(selectTodayEvent(rows, setOf(1L), now, setOf(closedKey(now + 60_000L, "Standup"))))
+        assertEquals(
+            "Standup",
+            selectTodayEvent(rows, setOf(1L), now, setOf(closedKey(now + 120_000L, "Standup")))?.title,
+        )
+    }
+
+    @Test
+    fun closedEvent_isExcludedFromTheUpcomingList() {
+        val rows = listOf(
+            row(title = "Standup", beginEpochMillis = now + 60_000L),
+            row(title = "Dentist", beginEpochMillis = now + 90 * 60_000L),
+        )
+
+        val result = selectUpcomingEvents(
+            rows,
+            setOf(1L),
+            limit = 2,
+            fromEpochMillis = now,
+            closedEventKeys = setOf(closedKey(now + 60_000L, "Standup")),
+        )
+
+        assertEquals(listOf("Dentist"), result.map { it.title })
+    }
+
+    private fun closedKey(startEpochMillis: Long, title: String) = eventIdentityKey(startEpochMillis, title)
 
     private fun row(
         calendarId: Long = 1L,

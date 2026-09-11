@@ -88,6 +88,18 @@ private object PreferenceKeys {
     val LAST_WOKE_UP_TAP_EPOCH_MILLIS = longPreferencesKey("last_woke_up_tap_epoch_millis")
     val RIDE_STATE_JSON = stringPreferencesKey("ride_state_json")
     val COMMUTE_PROBE_JSON = stringPreferencesKey("commute_probe_json")
+    val AIRPORT_STATE_JSON = stringPreferencesKey("airport_state_json")
+    val AIRPORT_DISMISSED_JSON = stringPreferencesKey("airport_dismissed_json")
+    val AIRPORT_PILL_LEAD_MINUTES = intPreferencesKey("airport_pill_lead_minutes")
+    val AIRPORT_ARRIVE_AHEAD_MINUTES = intPreferencesKey("airport_arrive_ahead_minutes")
+    val AIRPORT_DEPARTURE_JSON = stringPreferencesKey("airport_departure_json")
+    val FLIGHT_STATUS_API_KEY = stringPreferencesKey("flight_status_api_key")
+    val FLIGHT_PREVIEW_JSON = stringPreferencesKey("flight_preview_json")
+    val AIRPORT_LOCATIONS_JSON = stringPreferencesKey("airport_locations_json")
+    val AIRPORT_GEOCODE_FAILURES_JSON = stringPreferencesKey("airport_geocode_failures_json")
+    val AIRCRAFT_FLEET_JSON = stringPreferencesKey("aircraft_fleet_json")
+    val AIRPORT_DELAY_STATS_JSON = stringPreferencesKey("airport_delay_stats_json")
+    val CLOSED_EVENT_KEYS_JSON = stringPreferencesKey("closed_event_keys_json")
 }
 
 private fun Preferences.toAppSettings(): AppSettings {
@@ -150,6 +162,9 @@ private fun Preferences.toAppSettings(): AppSettings {
         customPills = decodeCustomPills(this[PreferenceKeys.CUSTOM_PILLS_JSON]),
         customPillActiveWindowMinutes =
             this[PreferenceKeys.CUSTOM_PILL_ACTIVE_WINDOW_MINUTES] ?: 60,
+        airportPillLeadMinutes = this[PreferenceKeys.AIRPORT_PILL_LEAD_MINUTES] ?: 300,
+        airportArriveAheadMinutes = this[PreferenceKeys.AIRPORT_ARRIVE_AHEAD_MINUTES] ?: 180,
+        flightStatusApiKey = this[PreferenceKeys.FLIGHT_STATUS_API_KEY] ?: "",
     )
 }
 
@@ -184,6 +199,10 @@ class SettingsRepository private constructor(
         preferences[PreferenceKeys.REFRESHING_SINCE_EPOCH_MILLIS]
     }
 
+    val airportStateFlow: Flow<AirportState?> = dataStore.data.map { preferences ->
+        decodeAirportState(preferences[PreferenceKeys.AIRPORT_STATE_JSON])
+    }
+
     val widgetRenderData: Flow<WidgetRenderData> = dataStore.data.map { preferences ->
         WidgetRenderData(
             settings = preferences.toAppSettings(),
@@ -203,6 +222,237 @@ class SettingsRepository private constructor(
     suspend fun snapshot(): CommuteSnapshot? = snapshotFlow.first()
 
     suspend fun refreshingSince(): Long? = refreshingSinceFlow.first()
+
+    suspend fun airportState(): AirportState? = airportStateFlow.first()
+
+    suspend fun setAirportState(value: AirportState?) {
+        dataStore.edit { preferences ->
+            if (value == null) {
+                preferences.remove(PreferenceKeys.AIRPORT_STATE_JSON)
+            } else {
+                preferences[PreferenceKeys.AIRPORT_STATE_JSON] = encodeAirportState(value)
+            }
+        }
+    }
+
+    /**
+     * Atomically reads, transforms, and persists the airport state, mirroring [updateRideState].
+     * Returning null removes the stored state. Returns true when the stored value actually changed.
+     * Every airport tap goes through this rather than a read-then-[setAirportState] pair: the
+     * status fetch behind a Reached or card tap can take up to 30 seconds, and writing back a
+     * state captured before it would undo a Done tap made while the request was in flight.
+     */
+    suspend fun updateAirportState(transform: (AirportState?) -> AirportState?): Boolean {
+        var changed = false
+        dataStore.edit { preferences ->
+            val current = decodeAirportState(preferences[PreferenceKeys.AIRPORT_STATE_JSON])
+            val updated = transform(current)
+            val hadStoredValue = preferences[PreferenceKeys.AIRPORT_STATE_JSON] != null
+            changed = current != updated || (updated == null && hadStoredValue)
+            if (updated == null) {
+                preferences.remove(PreferenceKeys.AIRPORT_STATE_JSON)
+            } else {
+                preferences[PreferenceKeys.AIRPORT_STATE_JSON] = encodeAirportState(updated)
+            }
+        }
+        return changed
+    }
+
+    /**
+     * Event ids the user has tapped Done on. Held apart from [AirportState] because that holds one
+     * flight at a time: on a connecting itinerary the second flight's state would otherwise erase
+     * the first flight's dismissal and bring it back. The refresher prunes this to the ids the
+     * calendar still returns, so it cannot grow without bound.
+     */
+    suspend fun airportDismissedEventIds(): Set<Long> =
+        decodeLongSet(dataStore.data.first()[PreferenceKeys.AIRPORT_DISMISSED_JSON])
+
+    suspend fun updateAirportDismissedEventIds(transform: (Set<Long>) -> Set<Long>): Boolean {
+        var changed = false
+        dataStore.edit { preferences ->
+            val current = decodeLongSet(preferences[PreferenceKeys.AIRPORT_DISMISSED_JSON])
+            val updated = transform(current)
+            changed = current != updated
+            if (updated.isEmpty()) {
+                preferences.remove(PreferenceKeys.AIRPORT_DISMISSED_JSON)
+            } else {
+                preferences[PreferenceKeys.AIRPORT_DISMISSED_JSON] = encodeLongSet(updated)
+            }
+        }
+        return changed
+    }
+
+    /**
+     * Geocoded departure airports, keyed by uppercase IATA code. Never pruned: an airport's
+     * position does not change, and the map only grows by the airports the owner actually flies
+     * from.
+     */
+    suspend fun airportLocations(): Map<String, AirportLocation> =
+        decodeAirportLocations(dataStore.data.first()[PreferenceKeys.AIRPORT_LOCATIONS_JSON])
+
+    suspend fun updateAirportLocations(
+        transform: (Map<String, AirportLocation>) -> Map<String, AirportLocation>,
+    ): Boolean {
+        var changed = false
+        dataStore.edit { preferences ->
+            val current = decodeAirportLocations(preferences[PreferenceKeys.AIRPORT_LOCATIONS_JSON])
+            val updated = transform(current)
+            changed = current != updated
+            if (updated.isEmpty()) {
+                preferences.remove(PreferenceKeys.AIRPORT_LOCATIONS_JSON)
+            } else {
+                preferences[PreferenceKeys.AIRPORT_LOCATIONS_JSON] = encodeAirportLocations(updated)
+            }
+        }
+        return changed
+    }
+
+    /**
+     * Airframes from AirLabs `fleets`, keyed by uppercase registration. Never pruned and never
+     * re-queried: an airframe's build facts do not change, and a registration that came back empty
+     * is stored as an empty record so the miss costs one query for the life of the install.
+     */
+    suspend fun aircraftFleet(): Map<String, AircraftRecord> =
+        decodeAircraftFleet(dataStore.data.first()[PreferenceKeys.AIRCRAFT_FLEET_JSON])
+
+    suspend fun updateAircraftFleet(
+        transform: (Map<String, AircraftRecord>) -> Map<String, AircraftRecord>,
+    ): Boolean {
+        var changed = false
+        dataStore.edit { preferences ->
+            val current = decodeAircraftFleet(preferences[PreferenceKeys.AIRCRAFT_FLEET_JSON])
+            val updated = transform(current)
+            changed = current != updated
+            if (updated.isEmpty()) {
+                preferences.remove(PreferenceKeys.AIRCRAFT_FLEET_JSON)
+            } else {
+                preferences[PreferenceKeys.AIRCRAFT_FLEET_JSON] = encodeAircraftFleet(updated)
+            }
+        }
+        return changed
+    }
+
+    /**
+     * Departure delay boards, keyed by uppercase IATA code. Unlike the fleet map these go stale:
+     * the refresher replaces an entry older than [AIRPORT_DELAY_STATS_MAX_AGE_MILLIS] and otherwise
+     * spends nothing.
+     */
+    suspend fun airportDelayStats(): Map<String, AirportDelayStats> =
+        decodeAirportDelayStats(dataStore.data.first()[PreferenceKeys.AIRPORT_DELAY_STATS_JSON])
+
+    suspend fun updateAirportDelayStats(
+        transform: (Map<String, AirportDelayStats>) -> Map<String, AirportDelayStats>,
+    ): Boolean {
+        var changed = false
+        dataStore.edit { preferences ->
+            val current = decodeAirportDelayStats(preferences[PreferenceKeys.AIRPORT_DELAY_STATS_JSON])
+            val updated = transform(current)
+            changed = current != updated
+            if (updated.isEmpty()) {
+                preferences.remove(PreferenceKeys.AIRPORT_DELAY_STATS_JSON)
+            } else {
+                preferences[PreferenceKeys.AIRPORT_DELAY_STATS_JSON] = encodeAirportDelayStats(updated)
+            }
+        }
+        return changed
+    }
+
+    /**
+     * When each IATA code's airport geocode last failed. The refresher will not retry a code
+     * inside [AIRPORT_GEOCODE_RETRY_MILLIS] of its stamp, so a code the geocoder has no answer for
+     * costs one query a day rather than one per refresh. A success drops the code from the map.
+     */
+    suspend fun airportGeocodeFailures(): Map<String, Long> =
+        decodeAirportGeocodeFailures(dataStore.data.first()[PreferenceKeys.AIRPORT_GEOCODE_FAILURES_JSON])
+
+    suspend fun updateAirportGeocodeFailures(
+        transform: (Map<String, Long>) -> Map<String, Long>,
+    ): Boolean {
+        var changed = false
+        dataStore.edit { preferences ->
+            val current = decodeAirportGeocodeFailures(preferences[PreferenceKeys.AIRPORT_GEOCODE_FAILURES_JSON])
+            val updated = transform(current)
+            changed = current != updated
+            if (updated.isEmpty()) {
+                preferences.remove(PreferenceKeys.AIRPORT_GEOCODE_FAILURES_JSON)
+            } else {
+                preferences[PreferenceKeys.AIRPORT_GEOCODE_FAILURES_JSON] = encodeAirportGeocodeFailures(updated)
+            }
+        }
+        return changed
+    }
+
+    /**
+     * Calendar events the user has closed with the event card's Reached pill, as
+     * [eventIdentityKey] strings. The refresher prunes them by the start embedded in the key (see
+     * [pruneClosedEventKeys]), so the set cannot grow without bound.
+     */
+    suspend fun closedEventKeys(): Set<String> =
+        decodeStringSet(dataStore.data.first()[PreferenceKeys.CLOSED_EVENT_KEYS_JSON])
+
+    suspend fun updateClosedEventKeys(transform: (Set<String>) -> Set<String>): Boolean {
+        var changed = false
+        dataStore.edit { preferences ->
+            val current = decodeStringSet(preferences[PreferenceKeys.CLOSED_EVENT_KEYS_JSON])
+            val updated = transform(current)
+            changed = current != updated
+            if (updated.isEmpty()) {
+                preferences.remove(PreferenceKeys.CLOSED_EVENT_KEYS_JSON)
+            } else {
+                preferences[PreferenceKeys.CLOSED_EVENT_KEYS_JSON] = encodeStringSet(updated)
+            }
+        }
+        return changed
+    }
+
+    suspend fun setAirportPillLeadMinutes(minutes: Int) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.AIRPORT_PILL_LEAD_MINUTES] = minutes
+        }
+    }
+
+    suspend fun setAirportArriveAheadMinutes(minutes: Int) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.AIRPORT_ARRIVE_AHEAD_MINUTES] = minutes
+        }
+    }
+
+    suspend fun setFlightStatusApiKey(apiKey: String) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.FLIGHT_STATUS_API_KEY] = apiKey
+        }
+    }
+
+    suspend fun airportDeparture(): AirportDeparture? =
+        decodeAirportDeparture(dataStore.data.first()[PreferenceKeys.AIRPORT_DEPARTURE_JSON])
+
+    suspend fun setAirportDeparture(value: AirportDeparture?) {
+        dataStore.edit { preferences ->
+            if (value == null) {
+                preferences.remove(PreferenceKeys.AIRPORT_DEPARTURE_JSON)
+            } else {
+                preferences[PreferenceKeys.AIRPORT_DEPARTURE_JSON] = encodeAirportDeparture(value)
+            }
+        }
+    }
+
+    /**
+     * The nearest upcoming flight's calendar entry plus its last AirLabs fetch, for the calendar
+     * card's flight row. Exactly one is ever stored; a null write removes it (no flight is coming,
+     * or the flight the stored preview named has been dismissed or has left).
+     */
+    suspend fun flightPreview(): FlightPreview? =
+        decodeFlightPreview(dataStore.data.first()[PreferenceKeys.FLIGHT_PREVIEW_JSON])
+
+    suspend fun setFlightPreview(value: FlightPreview?) {
+        dataStore.edit { preferences ->
+            if (value == null) {
+                preferences.remove(PreferenceKeys.FLIGHT_PREVIEW_JSON)
+            } else {
+                preferences[PreferenceKeys.FLIGHT_PREVIEW_JSON] = encodeFlightPreview(value)
+            }
+        }
+    }
 
     suspend fun setRefreshing(inProgress: Boolean, nowEpochMillis: Long = System.currentTimeMillis()) {
         dataStore.edit { preferences ->

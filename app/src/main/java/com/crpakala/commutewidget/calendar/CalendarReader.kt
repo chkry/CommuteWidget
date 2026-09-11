@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.CalendarContract
+import com.crpakala.commutewidget.data.eventIdentityKey
 import com.crpakala.commutewidget.data.UpcomingEvent as SnapshotUpcomingEvent
 import java.time.Instant
 import java.time.ZoneId
@@ -54,6 +55,7 @@ class CalendarReader(private val context: Context) {
         selectedCalendarIds: Set<Long>,
         nowEpochMillis: Long,
         lookaheadMinutes: Int,
+        closedEventKeys: Set<String> = emptySet(),
     ): UpcomingEvent? {
         if (!hasPermission() || selectedCalendarIds.isEmpty()) {
             return null
@@ -104,7 +106,7 @@ class CalendarReader(private val context: Context) {
             }.orEmpty()
         }.getOrDefault(emptyList())
 
-        return selectEvent(rows, selectedCalendarIds, nowEpochMillis)
+        return selectEvent(rows, selectedCalendarIds, nowEpochMillis, closedEventKeys)
     }
 
     /**
@@ -121,6 +123,7 @@ class CalendarReader(private val context: Context) {
         nowEpochMillis: Long,
         zoneId: ZoneId,
         minLookaheadMinutes: Int = 0,
+        closedEventKeys: Set<String> = emptySet(),
     ): TodayEvent? {
         if (!hasPermission() || selectedCalendarIds.isEmpty()) {
             return null
@@ -134,7 +137,7 @@ class CalendarReader(private val context: Context) {
             .build()
 
         val rows = queryInstances(instancesUri)
-        return selectTodayEvent(rows, selectedCalendarIds, nowEpochMillis)
+        return selectTodayEvent(rows, selectedCalendarIds, nowEpochMillis, closedEventKeys)
     }
 
     /**
@@ -148,6 +151,7 @@ class CalendarReader(private val context: Context) {
         zone: ZoneId,
         limit: Int = UPCOMING_EVENT_LIMIT,
         lookaheadDays: Long = UPCOMING_LOOKAHEAD_DAYS,
+        closedEventKeys: Set<String> = emptySet(),
     ): List<SnapshotUpcomingEvent> {
         if (!hasPermission() || selectedCalendarIds.isEmpty()) {
             return emptyList()
@@ -159,7 +163,13 @@ class CalendarReader(private val context: Context) {
             .appendPath((queryRange.last + 1).toString())
             .build()
 
-        return selectUpcomingEvents(queryInstances(instancesUri), selectedCalendarIds, limit, fromEpochMillis = queryRange.first)
+        return selectUpcomingEvents(
+            queryInstances(instancesUri),
+            selectedCalendarIds,
+            limit,
+            fromEpochMillis = queryRange.first,
+            closedEventKeys = closedEventKeys,
+        )
     }
 
     fun todaySummary(
@@ -184,6 +194,80 @@ class CalendarReader(private val context: Context) {
             .build()
 
         return selectTodaySummary(queryInstances(instancesUri), selectedCalendarIds, nowEpochMillis)
+    }
+
+    /**
+     * Airport-mode flight detection: parses [FlightEvent]s from instances between six hours
+     * before now (a flight already in progress) and [lookaheadDays] days ahead. Applies the same
+     * cancelled/declined filters as the other entry points. Respects [selectedCalendarIds] just like
+     * the other entry points: early-returns when permission is denied or no calendars are selected.
+     */
+    fun upcomingFlights(
+        selectedCalendarIds: Set<Long>,
+        nowEpochMillis: Long,
+        lookaheadDays: Int = 7,
+    ): List<FlightEvent> {
+        if (!hasPermission() || selectedCalendarIds.isEmpty()) {
+            return emptyList()
+        }
+
+        val queryStartMillis = nowEpochMillis - FLIGHT_LOOKBACK_MILLIS
+        val queryEndMillis = nowEpochMillis + lookaheadDays.toLong() * MILLIS_PER_DAY
+        val instancesUri = CalendarContract.Instances.CONTENT_URI.buildUpon()
+            .appendPath(queryStartMillis.toString())
+            .appendPath(queryEndMillis.toString())
+            .build()
+
+        val flights = runCatching {
+            context.contentResolver.query(
+                instancesUri,
+                INSTANCE_PROJECTION,
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                val eventIdColumn = cursor.getColumnIndexOrThrow(CalendarContract.Instances.EVENT_ID)
+                val calendarIdColumn = cursor.getColumnIndexOrThrow(CalendarContract.Instances.CALENDAR_ID)
+                val titleColumn = cursor.getColumnIndexOrThrow(CalendarContract.Instances.TITLE)
+                val locationColumn = cursor.getColumnIndexOrThrow(CalendarContract.Instances.EVENT_LOCATION)
+                val beginColumn = cursor.getColumnIndexOrThrow(CalendarContract.Instances.BEGIN)
+                val endColumn = cursor.getColumnIndexOrThrow(CalendarContract.Instances.END)
+                val allDayColumn = cursor.getColumnIndexOrThrow(CalendarContract.Instances.ALL_DAY)
+                val statusColumn = cursor.getColumnIndexOrThrow(CalendarContract.Instances.STATUS)
+                val attendeeStatusColumn = cursor.getColumnIndexOrThrow(
+                    CalendarContract.Instances.SELF_ATTENDEE_STATUS,
+                )
+                val descriptionColumn = cursor.getColumnIndexOrThrow(CalendarContract.Instances.DESCRIPTION)
+
+                buildList {
+                    while (cursor.moveToNext()) {
+                        if (cursor.getInt(statusColumn) == CalendarContract.Events.STATUS_CANCELED) continue
+                        if (cursor.getInt(attendeeStatusColumn) ==
+                            CalendarContract.Attendees.ATTENDEE_STATUS_DECLINED
+                        ) {
+                            continue
+                        }
+
+                        val calendarId = cursor.getLong(calendarIdColumn)
+                        if (calendarId !in selectedCalendarIds) continue
+
+                        val flight = FlightParser.parse(
+                            eventId = cursor.getLong(eventIdColumn),
+                            calendarId = calendarId,
+                            title = cursor.getString(titleColumn),
+                            location = cursor.getString(locationColumn),
+                            description = cursor.getString(descriptionColumn),
+                            beginMillis = cursor.getLong(beginColumn),
+                            endMillis = cursor.getLong(endColumn),
+                            allDay = cursor.getInt(allDayColumn) != 0,
+                        )
+                        if (flight != null) add(flight)
+                    }
+                }
+            }.orEmpty()
+        }.getOrDefault(emptyList())
+
+        return flights.sortedBy { it.departureMillis }
     }
 
     private fun queryInstances(instancesUri: Uri): List<RawInstance> {
@@ -230,6 +314,8 @@ class CalendarReader(private val context: Context) {
         const val MILLIS_PER_MINUTE = 60_000L
         const val GRACE_PERIOD_MILLIS = 15 * MILLIS_PER_MINUTE
         const val TODAY_LOOKBACK_MILLIS = 15 * MILLIS_PER_MINUTE
+        const val FLIGHT_LOOKBACK_MILLIS = 6 * 60 * MILLIS_PER_MINUTE
+        const val MILLIS_PER_DAY = 24 * 60 * MILLIS_PER_MINUTE
 
         val CALENDAR_PROJECTION = arrayOf(
             CalendarContract.Calendars._ID,
@@ -247,6 +333,7 @@ class CalendarReader(private val context: Context) {
             CalendarContract.Instances.ALL_DAY,
             CalendarContract.Instances.STATUS,
             CalendarContract.Instances.SELF_ATTENDEE_STATUS,
+            CalendarContract.Instances.DESCRIPTION,
         )
     }
 }
@@ -353,6 +440,21 @@ private fun RawInstance.routableLocation(): String? {
 }
 
 /**
+ * The title every selector puts on its result: trimmed, with a blank/absent title falling back to
+ * "Event". Also half of a row's [eventIdentityKey], so the key a closed-event tap stores from a
+ * snapshot's title matches the key computed here on the next refresh.
+ */
+private fun RawInstance.displayTitle(): String = title?.trim().takeUnless { it.isNullOrEmpty() } ?: "Event"
+
+/**
+ * True when this instance is one the user closed with the event card's Reached pill. Matched on
+ * [eventIdentityKey], which pins both the start and the title, so a recurring event's other
+ * instances are untouched.
+ */
+private fun RawInstance.isClosed(closedEventKeys: Set<String>): Boolean =
+    closedEventKeys.isNotEmpty() && eventIdentityKey(beginEpochMillis, displayTitle()) in closedEventKeys
+
+/**
  * Query end for [CalendarReader.nextEventToday]: end of the local day, extended to at least
  * `now + minLookaheadMinutes` so a temporally imminent after-midnight event still qualifies.
  */
@@ -381,11 +483,15 @@ internal fun calendarQueryEndEpochMillis(
  * preferred over the earliest-starting *unlocated* candidate when it starts within
  * [LOCATION_PREFERENCE_WINDOW_MILLIS] of it (a route we can draw is more actionable than a bare
  * reminder); otherwise the plain earliest-begin (then earliest-end) candidate wins, located or not.
+ * Instances the user closed with the event card's Reached pill ([closedEventKeys]) are dropped
+ * BEFORE any of that, so closing a located event hands the widget to whatever is genuinely next
+ * rather than re-running the preference against an event that is already done with.
  */
 internal fun selectTodayEvent(
     rows: List<RawInstance>,
     selectedCalendarIds: Set<Long>,
     nowEpochMillis: Long,
+    closedEventKeys: Set<String> = emptySet(),
 ): TodayEvent? {
     val eligible = rows.asSequence()
         .filter { it.calendarId in selectedCalendarIds }
@@ -393,6 +499,7 @@ internal fun selectTodayEvent(
         .filter { it.status != CalendarContract.Events.STATUS_CANCELED }
         .filter { it.selfAttendeeStatus != CalendarContract.Attendees.ATTENDEE_STATUS_DECLINED }
         .filter { it.endEpochMillis > nowEpochMillis }
+        .filter { !it.isClosed(closedEventKeys) }
         .toList()
     if (eligible.isEmpty()) return null
 
@@ -416,7 +523,7 @@ internal fun selectTodayEvent(
         earliestLocated.beginEpochMillis > earliestUnlocated.beginEpochMillis
 
     return TodayEvent(
-        title = chosen.title?.trim().takeUnless { it.isNullOrEmpty() } ?: "Event",
+        title = chosen.displayTitle(),
         location = chosen.routableLocation(),
         startEpochMillis = chosen.beginEpochMillis,
         endEpochMillis = chosen.endEpochMillis,
@@ -428,6 +535,7 @@ internal fun selectEvent(
     rows: List<RawInstance>,
     selectedCalendarIds: Set<Long>,
     nowEpochMillis: Long,
+    closedEventKeys: Set<String> = emptySet(),
 ): UpcomingEvent? =
     rows.asSequence()
         .filter { it.calendarId in selectedCalendarIds }
@@ -436,10 +544,11 @@ internal fun selectEvent(
         .filter { it.status != CalendarContract.Events.STATUS_CANCELED }
         .filter { it.selfAttendeeStatus != CalendarContract.Attendees.ATTENDEE_STATUS_DECLINED }
         .filter { it.endEpochMillis > nowEpochMillis }
+        .filter { !it.isClosed(closedEventKeys) }
         .minWithOrNull(compareBy<RawInstance> { it.beginEpochMillis }.thenBy { it.endEpochMillis })
         ?.let { row ->
             UpcomingEvent(
-                title = row.title?.trim().takeUnless { it.isNullOrEmpty() } ?: "Event",
+                title = row.displayTitle(),
                 location = row.location!!.trim(),
                 startEpochMillis = row.beginEpochMillis,
                 endEpochMillis = row.endEpochMillis,
@@ -452,6 +561,7 @@ internal fun selectUpcomingEvents(
     selectedCalendarIds: Set<Long>,
     limit: Int,
     fromEpochMillis: Long,
+    closedEventKeys: Set<String> = emptySet(),
 ): List<SnapshotUpcomingEvent> =
     rows.asSequence()
         .filter { it.calendarId in selectedCalendarIds }
@@ -459,11 +569,12 @@ internal fun selectUpcomingEvents(
         .filter { it.status != CalendarContract.Events.STATUS_CANCELED }
         .filter { it.selfAttendeeStatus != CalendarContract.Attendees.ATTENDEE_STATUS_DECLINED }
         .filter { it.beginEpochMillis >= fromEpochMillis }
+        .filter { !it.isClosed(closedEventKeys) }
         .sortedWith(compareBy({ it.beginEpochMillis }, { it.endEpochMillis }))
         .take(limit)
         .map { row ->
             SnapshotUpcomingEvent(
-                title = row.title?.trim().takeUnless { it.isNullOrEmpty() } ?: "Event",
+                title = row.displayTitle(),
                 startEpochMillis = row.beginEpochMillis,
             )
         }

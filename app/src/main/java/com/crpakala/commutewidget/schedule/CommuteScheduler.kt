@@ -65,6 +65,7 @@ object CommuteScheduler {
         } else {
             HealthBoundaryScheduler.cancel(appContext)
         }
+        AirportBoundaryScheduler.ensureScheduled(appContext, settings)
     }
 
     fun ensureScheduledAsync(context: Context) {

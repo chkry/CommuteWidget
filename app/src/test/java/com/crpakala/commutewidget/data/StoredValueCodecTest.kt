@@ -985,4 +985,37 @@ class StoredValueCodecTest {
         assertNull(decodeCommuteProbe(""))
         assertNull(decodeCommuteProbe(null))
     }
+
+    @Test
+    fun pruneClosedEventKeys_keepsRecentAndDropsOlderThanRetention() {
+        val now = 1_700_000_000_000L
+        val recent = eventIdentityKey(now - 60 * 60_000L, "Standup")
+        val stale = eventIdentityKey(now - 3 * 24 * 60 * 60_000L, "Old dentist")
+
+        assertEquals(setOf(recent), pruneClosedEventKeys(setOf(recent, stale), now))
+    }
+
+    @Test
+    fun pruneClosedEventKeys_dropsKeysWithNoRecoverableStart() {
+        val now = 1_700_000_000_000L
+
+        assertEquals(emptySet<String>(), pruneClosedEventKeys(setOf("Standup", "|Standup"), now))
+    }
+
+    @Test
+    fun airportLocationsJson_roundTripsTheMap() {
+        val locations = mapOf(
+            "MEL" to AirportLocation(iata = "MEL", name = "Melbourne Airport", lat = -37.6690, lng = 144.8410),
+            "SYD" to AirportLocation(iata = "SYD", name = "Sydney Airport", lat = -33.9399, lng = 151.1753),
+        )
+
+        assertEquals(locations, decodeAirportLocations(encodeAirportLocations(locations)))
+    }
+
+    @Test
+    fun airportLocationsJson_garbageAndBlankDecodeToEmpty() {
+        assertEquals(emptyMap<String, AirportLocation>(), decodeAirportLocations("{not json}"))
+        assertEquals(emptyMap<String, AirportLocation>(), decodeAirportLocations(""))
+        assertEquals(emptyMap<String, AirportLocation>(), decodeAirportLocations(null))
+    }
 }

@@ -71,4 +71,10 @@ data class AppSettings(
     val customPills: List<CustomPill> = emptyList(),
     /** Minutes a custom reminder pill remains active around each scheduled slot. */
     val customPillActiveWindowMinutes: Int = 60,
+    /** Airport mode: how many minutes before a flight's scheduled departure the To Airport pill row is offered. */
+    val airportPillLeadMinutes: Int = 300,
+    /** Airport mode: minutes before scheduled departure the leave-by advisor targets arriving at the airport. */
+    val airportArriveAheadMinutes: Int = 180,
+    /** AirLabs API key for the flight status lookups shown on the Reached flight card. */
+    val flightStatusApiKey: String = "",
 )

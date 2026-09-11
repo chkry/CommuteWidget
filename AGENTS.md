@@ -23,7 +23,7 @@ Single user, single device; there is no backward-compatibility audience beyond t
 
 ## Architecture map
 
-- `CommuteWidget.kt`: the entire Glance widget UI (three responsive sizes: SMALL 2x2, WIDE 4x2 which is the owner's size, LARGE 4x4), actions (RefreshAction, NavigateAction), all pure formatting helpers; `RideActions.kt`: the Ride and Reached pill tap actions (RideAction, ReachedAction).
+- `CommuteWidget.kt`: the entire Glance widget UI (five responsive breakpoints: SMALL 110x110, WIDE 220x110, LARGE 220x220, MEDIUM 220x270 and TALL 220x360; the flight card has its own four bodies gated on them), actions (RefreshAction, NavigateAction), all pure formatting helpers; `RideActions.kt`: the Ride and Reached pill tap actions (RideAction, ReachedAction).
 - `engine/CommuteRefresher.kt`: the refresh pipeline; `engine/WidgetMode.kt`: window-model resolution; `engine/BestDepartureAdvisor.kt`: predicted-traffic sampling; `engine/RideLogic.kt`: the pure tap-to-ride state machine and render/probe gates (phase transitions, `shouldOfferRide`, `shouldRunCommutePipeline`, `shouldRunCommuteProbe`, the device-location-to-fixed-origin fallback).
 - `api/`: Google clients (RoutesClient with optional future departureTime, StaticMapUrl with traffic-colored segments, GeocodingClient, MapImageFetcher, Polylines).
 - `calendar/CalendarReader.kt`: content-provider reads with pure, tested selection functions.

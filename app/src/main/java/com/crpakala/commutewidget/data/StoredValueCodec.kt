@@ -136,3 +136,18 @@ fun decodeHealthHistory(json: String?): HealthHistory? {
 
 fun eventIdentityKey(eventStartEpochMillis: Long, title: String): String =
     "$eventStartEpochMillis|${title.trim()}"
+
+/**
+ * Drops closed-event keys (see [eventIdentityKey], whose leading `|`-delimited field is the event
+ * start in epoch millis) whose event started more than [CLOSED_EVENT_RETENTION_MILLIS] ago, so the
+ * set cannot grow without bound. A key whose leading field is not a number is unparseable and is
+ * dropped too - it can never match a live instance again.
+ */
+internal fun pruneClosedEventKeys(keys: Set<String>, nowEpochMillis: Long): Set<String> =
+    keys.filterTo(mutableSetOf()) { key ->
+        val start = key.substringBefore('|').toLongOrNull() ?: return@filterTo false
+        nowEpochMillis - start < CLOSED_EVENT_RETENTION_MILLIS
+    }
+
+/** How long a closed event's key is kept: long enough to outlive the calendar reader's own lookback. */
+internal const val CLOSED_EVENT_RETENTION_MILLIS = 48L * 60L * 60L * 1000L

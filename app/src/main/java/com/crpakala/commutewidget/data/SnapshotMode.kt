@@ -13,6 +13,7 @@ enum class SnapshotMode {
     COMMUTE,
     CALENDAR_EVENT,
     CALENDAR_EMPTY,
+    AIRPORT,
 }
 
 fun parseSnapshotMode(stored: String?, default: SnapshotMode = SnapshotMode.COMMUTE): SnapshotMode {

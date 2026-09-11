@@ -6,6 +6,7 @@ import com.crpakala.commutewidget.data.SnapshotMode
 import com.crpakala.commutewidget.data.UpcomingEvent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.ZoneId
@@ -687,6 +688,40 @@ class CommuteWidgetDisplayTest {
         val rows = commutePillRows(pills, availableWidthDp = CARD_PILL_ROW_WIDTH_DP, textScale = 1.5f)
         assertEquals(listOf(listOf(pills[0]), listOf(pills[1], pills[2])), rows)
     }
+
+    // ---- eventReachedTarget ----
+
+    @Test
+    fun eventReachedTarget_routedEvent_carriesStartAndTitle() {
+        val target = eventReachedTarget(
+            eventSnapshot(SnapshotMode.CALENDAR_EVENT, "  Dentist  ", 1_700_000_000_000L),
+        )
+
+        assertEquals(EventReachedTarget(1_700_000_000_000L, "Dentist"), target)
+    }
+
+    @Test
+    fun eventReachedTarget_otherModesAreNeverOffered() {
+        assertNull(eventReachedTarget(eventSnapshot(SnapshotMode.COMMUTE, "To Work", 1_700_000_000_000L)))
+        assertNull(eventReachedTarget(eventSnapshot(SnapshotMode.CALENDAR_EMPTY, "Dentist", 1_700_000_000_000L)))
+        assertNull(eventReachedTarget(eventSnapshot(SnapshotMode.AIRPORT, "Melbourne Airport", 1_700_000_000_000L)))
+    }
+
+    @Test
+    fun eventReachedTarget_missingStartOrTitleIsNotOffered() {
+        assertNull(eventReachedTarget(eventSnapshot(SnapshotMode.CALENDAR_EVENT, "Dentist", null)))
+        assertNull(eventReachedTarget(eventSnapshot(SnapshotMode.CALENDAR_EVENT, null, 1_700_000_000_000L)))
+        assertNull(eventReachedTarget(eventSnapshot(SnapshotMode.CALENDAR_EVENT, "   ", 1_700_000_000_000L)))
+    }
+
+    private fun eventSnapshot(
+        mode: SnapshotMode,
+        destinationLabel: String?,
+        eventStartEpochMillis: Long?,
+    ): CommuteSnapshot = emptySnapshot(
+        destinationLabel = destinationLabel,
+        eventStartEpochMillis = eventStartEpochMillis,
+    ).copy(mode = mode)
 
     private fun emptySnapshot(
         destinationLabel: String? = null,
