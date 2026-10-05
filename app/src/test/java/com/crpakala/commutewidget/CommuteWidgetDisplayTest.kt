@@ -714,6 +714,94 @@ class CommuteWidgetDisplayTest {
         assertNull(eventReachedTarget(eventSnapshot(SnapshotMode.CALENDAR_EVENT, "   ", 1_700_000_000_000L)))
     }
 
+    // The owner's two-row One UI box matches TWO_ROW_BREAKPOINT (210 dp); 12 dp padding each side.
+    private val twoRowBodyDp = 210f - 2 * CARD_PADDING_DP
+
+    @Test
+    fun windDownLayout_twoFooterRowsOnTwoRowBoxKeepOneEventWithoutAlarm() {
+        val footer = calendarCardFooterHeightDp(hasLineLabel = false, hasChips = true, hasCustomPills = true, textScale = 1f)
+        val layout = windDownLayout(twoRowBodyDp - footer, 1f, hasSleepCaption = true, hasAlarmLine = true, eventCount = 2)
+
+        assertEquals(WindDownLayout(eventCount = 1, titleMaxLines = 1, showAlarmLine = false), layout)
+    }
+
+    @Test
+    fun windDownLayout_oneFooterRowOnTwoRowBoxShowsBothEventsAndAlarm() {
+        val footer = calendarCardFooterHeightDp(hasLineLabel = false, hasChips = true, hasCustomPills = false, textScale = 1f)
+        val layout = windDownLayout(twoRowBodyDp - footer, 1f, hasSleepCaption = true, hasAlarmLine = true, eventCount = 2)
+
+        assertEquals(WindDownLayout(eventCount = 2, titleMaxLines = 1, showAlarmLine = true), layout)
+    }
+
+    @Test
+    fun windDownLayout_noFooterAllowsTwoLineTitles() {
+        val layout = windDownLayout(twoRowBodyDp, 1f, hasSleepCaption = true, hasAlarmLine = true, eventCount = 2)
+
+        assertEquals(WindDownLayout(eventCount = 2, titleMaxLines = 2, showAlarmLine = true), layout)
+    }
+
+    @Test
+    fun windDownLayout_wideFloorWithTwoFooterRowsStillDrawsOneEvent() {
+        val footer = calendarCardFooterHeightDp(hasLineLabel = false, hasChips = true, hasCustomPills = true, textScale = 1f)
+        val layout = windDownLayout(110f - 2 * CARD_PADDING_DP - footer, 1f, hasSleepCaption = true, hasAlarmLine = true, eventCount = 2)
+
+        assertEquals(WindDownLayout(eventCount = 1, titleMaxLines = 1, showAlarmLine = false), layout)
+    }
+
+    @Test
+    fun windDownLayout_largerTextScaleDropsTheAlarmLineFirst() {
+        val footer = calendarCardFooterHeightDp(hasLineLabel = false, hasChips = true, hasCustomPills = false, textScale = 1.15f)
+        val layout = windDownLayout(twoRowBodyDp - footer, 1.15f, hasSleepCaption = true, hasAlarmLine = true, eventCount = 2)
+
+        assertEquals(WindDownLayout(eventCount = 2, titleMaxLines = 1, showAlarmLine = false), layout)
+    }
+
+    @Test
+    fun windDownLayout_singleEventNeverAsksForTwo() {
+        assertEquals(
+            WindDownLayout(eventCount = 1, titleMaxLines = 2, showAlarmLine = true),
+            windDownLayout(500f, 1f, hasSleepCaption = false, hasAlarmLine = true, eventCount = 1),
+        )
+    }
+
+    @Test
+    fun windDownLayout_noAlarmLineNeverOffersOne() {
+        assertEquals(
+            WindDownLayout(eventCount = 2, titleMaxLines = 2, showAlarmLine = false),
+            windDownLayout(500f, 1f, hasSleepCaption = false, hasAlarmLine = false, eventCount = 2),
+        )
+    }
+
+    @Test
+    fun windDownHeightDp_sumsCaptionHeaderEventsGapAndAlarm() {
+        val layout = WindDownLayout(eventCount = 2, titleMaxLines = 1, showAlarmLine = true)
+        // 11 + 11 + (16 + 14) + (16 + 14) + 11 sp at 1.3 dp per sp, plus the 4 dp gap between events.
+        assertEquals(93f * LINE_HEIGHT_PER_SP + 4f, windDownHeightDp(layout, 1f, hasSleepCaption = true), 0.01f)
+    }
+
+    @Test
+    fun calendarCardFooterHeightDp_countsGapChipRowsAndLineLabel() {
+        assertEquals(0f, calendarCardFooterHeightDp(hasLineLabel = false, hasChips = false, hasCustomPills = false, textScale = 1f), 0.01f)
+        assertEquals(56f, calendarCardFooterHeightDp(hasLineLabel = false, hasChips = true, hasCustomPills = false, textScale = 1f), 0.01f)
+        assertEquals(56f, calendarCardFooterHeightDp(hasLineLabel = false, hasChips = false, hasCustomPills = true, textScale = 1f), 0.01f)
+        assertEquals(108f, calendarCardFooterHeightDp(hasLineLabel = false, hasChips = true, hasCustomPills = true, textScale = 1f), 0.01f)
+        assertEquals(56f + 10f * LINE_HEIGHT_PER_SP, calendarCardFooterHeightDp(hasLineLabel = true, hasChips = true, hasCustomPills = false, textScale = 1f), 0.01f)
+    }
+
+    @Test
+    fun flightPreviewHeightDp_rowBudgetsTwoLineTitleAndDetail() {
+        // Title and detail may each wrap: 14 + 14 + 12 + 12 + 10 sp, plus the 4 dp gap under the row.
+        assertEquals(62f * LINE_HEIGHT_PER_SP + 4f, flightPreviewHeightDp(merged = false, showDetail = true, large = false, textScale = 1f), 0.01f)
+        assertEquals(28f * LINE_HEIGHT_PER_SP + 4f, flightPreviewHeightDp(merged = false, showDetail = false, large = false, textScale = 1f), 0.01f)
+    }
+
+    @Test
+    fun flightPreviewHeightDp_mergedBlockAddsCaptionOnlyOnLarge() {
+        // Heading, identity, time, detail and calendar line: 11 + 14 + 28 + 11 + 10 sp; LARGE adds the 10 sp caption.
+        assertEquals(74f * LINE_HEIGHT_PER_SP + 4f, flightPreviewHeightDp(merged = true, showDetail = true, large = false, textScale = 1f), 0.01f)
+        assertEquals(84f * LINE_HEIGHT_PER_SP + 4f, flightPreviewHeightDp(merged = true, showDetail = true, large = true, textScale = 1f), 0.01f)
+    }
+
     private fun eventSnapshot(
         mode: SnapshotMode,
         destinationLabel: String?,

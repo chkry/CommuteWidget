@@ -65,6 +65,11 @@ internal fun calendarSummary(settings: AppSettings): String {
     return "On - $count calendar" + if (count == 1) "" else "s"
 }
 
+internal fun flightsSummary(settings: AppSettings): String {
+    if (!settings.flightsEnabled) return "Off"
+    return if (settings.flightStatusApiKey.isNotBlank()) "On - status key set" else "On - no status key"
+}
+
 internal fun remindersSummary(settings: AppSettings): String {
     val count = settings.customPills.size
     return when (count) {

@@ -282,7 +282,8 @@ object CommuteRefresher {
     /**
      * [bypassCooldown] is for the Ride and Reached pill taps: they write ride state first and the
      * fetch that follows must run even inside the debounce gap, or the pill would vanish with no
-     * map ever loading until the next refresh.
+     * map ever loading until the next refresh. The Flights toggle passes it for the same reason:
+     * it has just changed what the widget may show and the refresh must replace it now.
      *
      * [airportBoundaryPolicy] is the [ExistingWorkPolicy] this refresh uses to re-arm the airport
      * boundary chain at the end of [performRefresh]. It only ever differs for
@@ -424,20 +425,25 @@ object CommuteRefresher {
         val calendarReader = CalendarReader(context)
         val hasCalendarPermission = calendarReader.hasPermission()
         val calendarReadable = settings.calendarEnabled && hasCalendarPermission && settings.selectedCalendarIds.isNotEmpty()
+        // Settings > Flights off reads no flights at all, which is the whole gate: nothing takes
+        // the widget over, resolveFlightPreview clears the stored row, the airport boundary chain
+        // finds no boundary and cancels, and a Gmail flight is just another calendar event.
+        val flightsReadable = calendarReadable && settings.flightsEnabled
         // Read once at FLIGHT_PREVIEW_LOOKAHEAD_DAYS and shared by both consumers: airport mode's
         // takeover check and the calendar card's flight-preview row. selectActiveFlight only ever
         // considers flights whose window has already opened, so the wider list cannot change which
         // flight (if any) takes the widget over - it only lets the preview see further ahead.
-        val flights = if (calendarReadable) {
+        val flights = if (flightsReadable) {
             calendarReader.upcomingFlights(settings.selectedCalendarIds, nowEpochMillis, FLIGHT_PREVIEW_LOOKAHEAD_DAYS)
         } else {
             emptyList()
         }
         // The dismissed set only has to outlive the flights the calendar still returns, so it is
-        // pruned to them on every read the calendar actually served - a read the calendar gates
-        // out returns nothing and must not be mistaken for "these flights are gone".
+        // pruned to them on every read the calendar actually served - a read the calendar or the
+        // Flights toggle gates out returns nothing and must not be mistaken for "these flights
+        // are gone".
         val storedDismissed = repo.airportDismissedEventIds()
-        val dismissedEventIds = if (calendarReadable) {
+        val dismissedEventIds = if (flightsReadable) {
             val flightIds = flights.mapTo(mutableSetOf()) { it.eventId }
             val pruned = storedDismissed intersect flightIds
             if (pruned != storedDismissed) {

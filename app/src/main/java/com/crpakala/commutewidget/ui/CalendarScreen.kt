@@ -74,8 +74,6 @@ fun CalendarScreen(
                 selectedIds = settings.selectedCalendarIds,
                 calendarTickEnabled = settings.calendarTickEnabled,
                 eventTakeoverMinutes = settings.eventTakeoverMinutes,
-                airportPillLeadMinutes = settings.airportPillLeadMinutes,
-                airportArriveAheadMinutes = settings.airportArriveAheadMinutes,
                 onEnabledChanged = { enabled ->
                     scope.launch {
                         repository.setCalendarEnabled(enabled)
@@ -103,18 +101,6 @@ fun CalendarScreen(
                         refreshWidget(applicationContext)
                     }
                 },
-                onAirportPillLeadMinutesChanged = { minutes ->
-                    scope.launch {
-                        repository.setAirportPillLeadMinutes(minutes)
-                        refreshWidget(applicationContext)
-                    }
-                },
-                onAirportArriveAheadMinutesChanged = { minutes ->
-                    scope.launch {
-                        repository.setAirportArriveAheadMinutes(minutes)
-                        refreshWidget(applicationContext)
-                    }
-                },
             )
         }
     }
@@ -126,19 +112,13 @@ internal fun CalendarSection(
     selectedIds: Set<Long>,
     calendarTickEnabled: Boolean,
     eventTakeoverMinutes: Int,
-    airportPillLeadMinutes: Int,
-    airportArriveAheadMinutes: Int,
     onEnabledChanged: (Boolean) -> Unit,
     onSelectedIdsChanged: (Set<Long>) -> Unit,
     onCalendarTickEnabledChanged: (Boolean) -> Unit,
     onEventTakeoverMinutesChanged: (Int) -> Unit,
-    onAirportPillLeadMinutesChanged: (Int) -> Unit,
-    onAirportArriveAheadMinutesChanged: (Int) -> Unit,
 ) {
     val context = LocalContext.current
     var editingTakeover by remember { mutableStateOf(false) }
-    var editingAirportPill by remember { mutableStateOf(false) }
-    var editingArriveAhead by remember { mutableStateOf(false) }
     var permissionGranted by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CALENDAR) ==
@@ -176,16 +156,6 @@ internal fun CalendarSection(
                 "A located event starting within this window shows its route and map, and replaces the commute view even inside commute windows. Farther out, it shows just its name and time.",
                 style = MaterialTheme.typography.bodySmall,
             )
-            DurationRow("Airport pill shows before flight", airportPillLeadMinutes) { editingAirportPill = true }
-            Text(
-                "How long before departure the To Airport pill and airport map appear.",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            DurationRow("Arrive at airport ahead of flight", airportArriveAheadMinutes) { editingArriveAhead = true }
-            Text(
-                "Target arrival at the airport before departure; Leave by and Best are computed from it.",
-                style = MaterialTheme.typography.bodySmall,
-            )
         }
         if (enabled && !permissionGranted) {
             Text("Calendar permission needed", color = MaterialTheme.colorScheme.error)
@@ -216,32 +186,6 @@ internal fun CalendarSection(
             onSave = { minutes ->
                 onEventTakeoverMinutesChanged(minutes)
                 editingTakeover = false
-            },
-        )
-    }
-    if (editingAirportPill) {
-        DurationDialog(
-            initialMinutes = airportPillLeadMinutes,
-            title = "Airport pill shows before flight",
-            minMinutes = 60,
-            maxMinutes = 720,
-            onDismiss = { editingAirportPill = false },
-            onSave = { minutes ->
-                onAirportPillLeadMinutesChanged(minutes)
-                editingAirportPill = false
-            },
-        )
-    }
-    if (editingArriveAhead) {
-        DurationDialog(
-            initialMinutes = airportArriveAheadMinutes,
-            title = "Arrive at airport ahead of flight",
-            minMinutes = 30,
-            maxMinutes = 360,
-            onDismiss = { editingArriveAhead = false },
-            onSave = { minutes ->
-                onAirportArriveAheadMinutesChanged(minutes)
-                editingArriveAhead = false
             },
         )
     }

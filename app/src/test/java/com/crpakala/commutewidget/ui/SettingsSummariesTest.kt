@@ -35,6 +35,13 @@ class SettingsSummariesTest {
     }
 
     @Test
+    fun flightsSummaryReflectsToggleAndStatusKey() {
+        assertEquals("On - no status key", flightsSummary(AppSettings()))
+        assertEquals("On - status key set", flightsSummary(AppSettings(flightStatusApiKey = "airlabs-key")))
+        assertEquals("Off", flightsSummary(AppSettings(flightsEnabled = false, flightStatusApiKey = "airlabs-key")))
+    }
+
+    @Test
     fun placesMapsSummaryReflectsKeyAndSavedPlacesCount() {
         assertEquals("Key not set - No saved places", placesMapsSummary(AppSettings()))
         assertEquals(

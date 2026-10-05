@@ -111,7 +111,7 @@ CommuteWidget requests runtime permissions based on configured features:
 
 Launch the CommuteWidget app on your device to configure initial settings before adding the widget.
 
-The settings home menu has eight Android-Settings-style categories with current-state summaries: **Commute setup**, **Places & Maps**, **Alerts & timing**, **Calendar**, **Reminders**, **Health**, **Widget appearance**, and **Access & app info**.
+The settings home menu has nine Android-Settings-style categories with current-state summaries: **Commute setup**, **Places & Maps**, **Alerts & timing**, **Calendar**, **Flights**, **Reminders**, **Health**, **Widget appearance**, and **Access & app info**.
 
 1. In **Places & Maps**, paste your Google Cloud API key, add saved places, and configure map-related options.
 2. In **Commute setup**, enter and geocode your home and work addresses, choose Car or Two-Wheeler, and set the commute windows.
@@ -124,10 +124,12 @@ The settings home menu has eight Android-Settings-style categories with current-
    Set the "Arrive early by" buffer (0-60 minutes, default 10 minutes) and "Use live traffic within" threshold (15-180 minutes, default 60 minutes).
    The advisor applies to active commute windows as well as calendar events with a location.
 6. In **Calendar**, enable calendar integration, choose device calendars to scan for event locations, configure "Event takes over within" (default 120 minutes, which also gates when located events route with maps), and optionally toggle "Keep event ETA fresh" (enabled by default).
-7. In **Reminders**, add and manage custom pill reminders (with two-row Mo-Th and Fr-Su weekday chips) and set their shared active-window duration.
-8. In **Health**, configure the six core toggles (including selecting installed audiobook apps from the picker dialog) and the nested **Experimental nudges** screen.
-9. In **Widget appearance**, set opacity, text scale, and the map-pill corner.
-10. In **Access & app info**, grant location, calendar, notifications, Health Connect, Usage access, and notification-listener access.
+7. In **Flights**, keep **Show flights on the widget** on (the default) or switch airport mode off as a whole, set how long before departure the To Airport pill appears and how far ahead of departure to arrive at the airport, and paste an AirLabs API key for live flight status.
+   Off, no flight is detected, previewed on the card, routed to, or shown as a flight card, and a Gmail flight event is just another calendar event.
+8. In **Reminders**, add and manage custom pill reminders (with two-row Mo-Th and Fr-Su weekday chips) and set their shared active-window duration.
+9. In **Health**, configure the six core toggles (including selecting installed audiobook apps from the picker dialog) and the nested **Experimental nudges** screen.
+10. In **Widget appearance**, set opacity, text scale, and the map-pill corner.
+11. In **Access & app info**, grant location, calendar, notifications, Health Connect, Usage access, and notification-listener access.
 
 ## Adding and Resizing the Widget on One UI
 
@@ -302,6 +304,8 @@ The 2x2 size shows no health UI.
 | Weekend shows wrong origin | Background location permission is missing or restricted. | Grant "Allow all the time" location permission in system app settings. |
 | Event map routes from Home although you are elsewhere | Device Location is off, or no fix arrived within 15 seconds, so the saved Home place was used as the origin. | Turn on Location in system settings and tap the widget to refresh. |
 | Next up section missing on wind-down card | Calendar feature is disabled or calendars are not selected in settings. | Verify calendar integration is enabled and relevant calendars are selected in app settings. |
+| Next up shows one event, a one-line title, or no alarm line | The card trims the section to the height left under the health and reminder pill rows so the time line is never clipped. | Expected on a 4x2 with two pill rows; the full section returns when a pill row is dismissed or on a taller widget. |
+| Flight row or flight card shows and you do not want airport mode | Flights is on (the default). | Switch **Show flights on the widget** off under **Flights**; the widget refreshes at once. |
 | Next up shows fewer than two events | Fewer than two eligible events fall in the next seven days, or all-day, cancelled, or declined events were filtered out. | Add more events to a selected calendar, or check that the upcoming events are not all-day, cancelled, or declined. |
 | Alarm line missing on wind-down or empty card | No alarm is currently set on the device. | Set an upcoming alarm in the system clock application. |
 

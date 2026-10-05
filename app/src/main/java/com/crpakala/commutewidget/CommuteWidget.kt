@@ -110,6 +110,12 @@ import kotlin.math.roundToInt
 
 private val SMALL_BREAKPOINT = DpSize(110.dp, 110.dp)
 private val WIDE_BREAKPOINT = DpSize(220.dp, 110.dp)
+// The owner's two-row One UI box reports 406x216 dp, almost twice WIDE's height, and the wind-down
+// body sizes its "Next up" section against the matched height (see windDownLayout), so matched at
+// WIDE it would budget for 110 dp and keep one event when the box holds two with the alarm line.
+// 210 is the floor that composition needs (see windDownHeightDp) and sits under the box. Every
+// other gate is LARGE and above, so this composition is otherwise exactly WIDE's.
+private val TWO_ROW_BREAKPOINT = DpSize(220.dp, 210.dp)
 private val LARGE_BREAKPOINT = DpSize(220.dp, 220.dp)
 
 // SizeMode.Responsive reports the matched breakpoint, not the physical box, so LARGE alone cannot
@@ -136,7 +142,7 @@ internal enum class EtaDisplayState {
 
 class CommuteWidget : GlanceAppWidget() {
     override val sizeMode: SizeMode = SizeMode.Responsive(
-        setOf(SMALL_BREAKPOINT, WIDE_BREAKPOINT, LARGE_BREAKPOINT, MEDIUM_BREAKPOINT, TALL_BREAKPOINT),
+        setOf(SMALL_BREAKPOINT, WIDE_BREAKPOINT, TWO_ROW_BREAKPOINT, LARGE_BREAKPOINT, MEDIUM_BREAKPOINT, TALL_BREAKPOINT),
     )
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
@@ -274,6 +280,7 @@ class CommuteWidget : GlanceAppWidget() {
                         rideDirection = windowDirection,
                         commutePillRow = commutePillRow,
                         hasFlightStatusKey = settings.flightStatusApiKey.isNotBlank(),
+                        flightsEnabled = settings.flightsEnabled,
                         healthColors = HealthChromeColors(
                             mapTextDemoted = dayNightColorProvider(
                                 day = lightScheme.onSurfaceVariant.copy(alpha = HEALTH_DEMOTION_ALPHA),
@@ -369,6 +376,8 @@ private data class WidgetExtras(
     val commutePillRow: CommutePillRowContent = CommutePillRowContent(null, null, null, false),
     /** True when an AirLabs key is configured; the flight row invites one when it is not. */
     val hasFlightStatusKey: Boolean = false,
+    /** The Flights toggle; off hides the flight row and card even before the next refresh clears them. */
+    val flightsEnabled: Boolean = true,
 )
 
 /** Owner-configurable text scaling applied to every user-visible size on the widget. */
@@ -468,8 +477,8 @@ private fun ConfiguredContent(
         CalendarEmptyCard(modifier, snapshot, extras)
         return
     }
-    val airport = snapshot.airport
-    if (snapshot.mode == SnapshotMode.AIRPORT && airport != null && airportRendersFlightCard(airport.phase)) {
+    val airport = airportSurface(snapshot, extras)
+    if (airport != null && airportRendersFlightCard(airport.phase)) {
         FlightCard(modifier, airport, extras)
         return
     }
@@ -494,8 +503,8 @@ private fun SmallLayout(
     extras: WidgetExtras,
 ) {
     val accent = trafficAccentColor(snapshot.durationSeconds, snapshot.durationNoTrafficSeconds)
-    val airport = snapshot.airport
-    if (snapshot.mode == SnapshotMode.AIRPORT && airport != null) {
+    val airport = airportSurface(snapshot, extras)
+    if (airport != null) {
         // 2x2 has no map to overlay, so the airport pills take the nav glyph's place while the
         // configured corner still decides which end of the widget they sit at, as on WIDE. Leave
         // by drops out of the info column because the pill row already carries it, and the row
@@ -625,8 +634,8 @@ private fun WideLayout(
             // owner-configurable so the stack can dodge whatever the route usually covers.
             // Reached replaces Best while a ride is active: the map pill corner tracks the ride's
             // end, not the pre-ride best-departure estimate.
-            val airport = snapshot.airport
-            if (snapshot.mode == SnapshotMode.AIRPORT && airport != null) {
+            val airport = airportSurface(snapshot, extras)
+            if (airport != null) {
                 Box(
                     modifier = GlanceModifier.fillMaxSize(),
                     contentAlignment = pillCornerAlignment(extras.pillCorner),
@@ -764,8 +773,8 @@ private fun LargeLayout(
                     .clickable(actionRunCallback<NavigateAction>()),
             )
         }
-        val airport = snapshot.airport
-        if (snapshot.mode == SnapshotMode.AIRPORT && airport != null) {
+        val airport = airportSurface(snapshot, extras)
+        if (airport != null) {
             // LARGE otherwise keeps leave-by and best as plain text inside the info card, but
             // airport mode needs a clickable To Airport pill regardless, so the whole row renders
             // as pills in the pill corner (unused by LARGE outside airport mode).
@@ -843,8 +852,15 @@ private fun CalendarEmptyCard(
     val lineLabel = extras.healthLineLabel.takeIf { showHealth }
     val customPillContent = if (showCustomPillRow) extras.customPillRow else CustomPillRowContent(emptyList(), null)
     val hasHealthFooter = chips.isNotEmpty() || lineLabel != null || !customPillContent.isEmpty
+    // The matched breakpoint's height is the room the box is known to have (see windDownLayout).
+    val bodyHeightDp = size.height.value - 2 * CARD_PADDING_DP - calendarCardFooterHeightDp(
+        hasLineLabel = lineLabel != null,
+        hasChips = chips.isNotEmpty(),
+        hasCustomPills = !customPillContent.isEmpty,
+        textScale = extras.textScale,
+    )
     Box(
-        modifier = modifier.clickable(actionRunCallback<RefreshAction>()).padding(12.dp),
+        modifier = modifier.clickable(actionRunCallback<RefreshAction>()).padding(CARD_PADDING_DP.dp),
         contentAlignment = if (hasHealthFooter) Alignment.TopStart else Alignment.CenterStart,
     ) {
         Column(modifier = if (hasHealthFooter) GlanceModifier.fillMaxSize() else GlanceModifier) {
@@ -853,9 +869,9 @@ private fun CalendarEmptyCard(
                     modifier = GlanceModifier.defaultWeight().fillMaxWidth(),
                     verticalAlignment = Alignment.Vertical.CenterVertically,
                 ) {
-                    CalendarEmptyCardBody(snapshot, extras, showHealth)
+                    CalendarEmptyCardBody(snapshot, extras, showHealth, bodyHeightDp)
                 }
-                Spacer(modifier = GlanceModifier.height(8.dp))
+                Spacer(modifier = GlanceModifier.height(CARD_FOOTER_GAP_DP.dp))
                 if (lineLabel != null) {
                     Text(
                         text = lineLabel,
@@ -875,28 +891,50 @@ private fun CalendarEmptyCard(
                 }
                 if (!customPillContent.isEmpty) {
                     if (chips.isNotEmpty()) {
-                        Spacer(modifier = GlanceModifier.height(4.dp))
+                        Spacer(modifier = GlanceModifier.height(CARD_CHIP_ROW_GAP_DP.dp))
                     }
                     CustomPillChipRow(content = customPillContent, extras = extras)
                 }
             } else {
-                CalendarEmptyCardBody(snapshot, extras, showHealth)
+                CalendarEmptyCardBody(snapshot, extras, showHealth, bodyHeightDp)
             }
         }
     }
 }
 
+/**
+ * Every block here is one child of the caller's Column: the sleep caption, the flight row, the
+ * "Next up" section, the event or none-text block and the pill row. Glance renders at most ten
+ * children per container, and the section's own lines (header, two titles, two times, alarm line,
+ * spacer) used to be direct children too, so a card with a flight row and the sleep caption
+ * passed the limit and the launcher showed "Can't show content" in place of the widget.
+ *
+ * [bodyHeightDp] is the card height the body may use once the padding and the health footer are
+ * taken out; the "Next up" section trims itself to it (see [windDownLayout]).
+ */
 @Composable
-private fun CalendarEmptyCardBody(snapshot: CommuteSnapshot, extras: WidgetExtras, showHealth: Boolean) {
+private fun CalendarEmptyCardBody(
+    snapshot: CommuteSnapshot,
+    extras: WidgetExtras,
+    showHealth: Boolean,
+    bodyHeightDp: Float,
+) {
     val textScale = extras.textScale
     val case = calendarEmptyCase(snapshot)
     // showHealth mirrors the SMALL width gate (finding 5): below 220dp the card renders exactly
     // as before this feature, with no commute body and no pill row.
     val commuteBody = showHealth && showsCommuteWindowBody(extras.rideDirection != null, case)
-    val flightPreview = snapshot.flightPreview
-    val merged = headlineIsPreviewedFlight(snapshot)
+    val flightPreview = snapshot.flightPreview?.takeIf { extras.flightsEnabled }
+    val merged = flightPreview != null && headlineIsPreviewedFlight(snapshot)
     val upcomingEvents = upcomingEventsWithoutPreview(snapshot.upcomingEvents, flightPreview)
-    val windDown = !commuteBody && isWindDown(snapshot)
+    val windDown = !commuteBody && upcomingEvents.isNotEmpty()
+    val size = LocalSize.current
+    val large = size.width >= LARGE_BREAKPOINT.width && size.height >= LARGE_BREAKPOINT.height
+    val previewHeightDp = if (flightPreview == null) {
+        0f
+    } else {
+        flightPreviewHeightDp(merged = merged, showDetail = showHealth, large = large, textScale = textScale)
+    }
     // Owner request 2026-08-31: the sleep estimate shows every day, so calendar-mode cards carry
     // the same brief segment commute mornings get ("Slept ~6h 40m" / "Short sleep").
     val sleepCaption = sleepBriefSegment(
@@ -958,44 +996,54 @@ private fun CalendarEmptyCardBody(snapshot: CommuteSnapshot, extras: WidgetExtra
             }
         }
         if (windDown) {
-            Text(
-                text = "Next up",
-                style = TextStyle(
-                    color = GlanceTheme.colors.onSurfaceVariant,
-                    fontSize = scaledSp(11, textScale),
-                    fontWeight = FontWeight.Medium,
-                ),
-                maxLines = 1,
+            val layout = windDownLayout(
+                availableHeightDp = bodyHeightDp - previewHeightDp,
+                textScale = textScale,
+                hasSleepCaption = sleepCaption != null,
+                hasAlarmLine = extras.nextAlarmLine != null,
+                eventCount = upcomingEvents.size,
             )
-            upcomingEvents.take(UPCOMING_EVENT_LIMIT).forEachIndexed { index, event ->
-                if (index > 0) {
-                    Spacer(modifier = GlanceModifier.height(4.dp))
-                }
-                // Title wraps to two lines and the day-and-time line gets its own line, so a
-                // long meeting title can never ellipsize the time away.
+            Column {
                 Text(
-                    text = event.title,
+                    text = "Next up",
                     style = TextStyle(
-                        color = GlanceTheme.colors.onSurface,
-                        fontSize = scaledSp(16, textScale),
-                        fontWeight = FontWeight.Medium,
-                    ),
-                    maxLines = 2,
-                )
-                Text(
-                    text = formatUpcomingEventLine(event.startEpochMillis, extras.nowEpochMillis),
-                    style = TextStyle(
-                        color = GlanceTheme.colors.onSurface,
-                        fontSize = scaledSp(14, textScale),
+                        color = GlanceTheme.colors.onSurfaceVariant,
+                        fontSize = scaledSp(11, textScale),
                         fontWeight = FontWeight.Medium,
                     ),
                     maxLines = 1,
                 )
+                upcomingEvents.take(layout.eventCount).forEachIndexed { index, event ->
+                    val gap = if (index > 0) GlanceModifier.padding(top = UPCOMING_EVENT_GAP_DP.dp) else GlanceModifier
+                    // The day-and-time line always gets its own line under the title, so a long
+                    // meeting title can never ellipsize the time away. The title gets a second
+                    // line only when the budget has room for it, or the time line was what got
+                    // pushed out of the box instead.
+                    Column(modifier = gap) {
+                        Text(
+                            text = event.title,
+                            style = TextStyle(
+                                color = GlanceTheme.colors.onSurface,
+                                fontSize = scaledSp(16, textScale),
+                                fontWeight = FontWeight.Medium,
+                            ),
+                            maxLines = layout.titleMaxLines,
+                        )
+                        Text(
+                            text = formatUpcomingEventLine(event.startEpochMillis, extras.nowEpochMillis),
+                            style = TextStyle(
+                                color = GlanceTheme.colors.onSurface,
+                                fontSize = scaledSp(14, textScale),
+                                fontWeight = FontWeight.Medium,
+                            ),
+                            maxLines = 1,
+                        )
+                    }
+                }
+                if (layout.showAlarmLine && extras.nextAlarmLine != null) {
+                    AlarmLine(extras.nextAlarmLine, textScale)
+                }
             }
-            if (extras.nextAlarmLine != null) {
-                AlarmLine(extras.nextAlarmLine, textScale)
-            }
-            Spacer(modifier = GlanceModifier.height(4.dp))
         }
         when (case) {
             CalendarEmptyCase.UNLOCATED_EVENT -> if (!merged) {
@@ -1125,8 +1173,8 @@ private fun FlightPreviewRow(preview: FlightPreview, extras: WidgetExtras, showD
                 )
             }
         }
+        Spacer(modifier = GlanceModifier.height(FLIGHT_PREVIEW_GAP_DP.dp))
     }
-    Spacer(modifier = GlanceModifier.height(4.dp))
 }
 
 /** "scheduled" becomes "Scheduled"; a word the API already capitalised is left alone. */
@@ -1537,8 +1585,8 @@ private fun FlightPreviewBlockView(block: FlightPreviewBlock, extras: WidgetExtr
                 maxLines = 1,
             )
         }
+        Spacer(modifier = GlanceModifier.height(FLIGHT_PREVIEW_GAP_DP.dp))
     }
-    Spacer(modifier = GlanceModifier.height(4.dp))
 }
 
 /** The status chip's word plus which theme role carries it; the colour itself is resolved at render time. */
@@ -2315,6 +2363,10 @@ internal fun airportOfferedPillLine(airport: AirportSnapshot, zone: ZoneId = Zon
  * had one.
  */
 internal fun airportRendersFlightCard(phase: AirportPhase): Boolean = phase != AirportPhase.RIDING
+
+/** The airport block a layout may draw pills or the card from: an AIRPORT snapshot's, and only while Flights is on. */
+private fun airportSurface(snapshot: CommuteSnapshot, extras: WidgetExtras): AirportSnapshot? =
+    snapshot.airport?.takeIf { snapshot.mode == SnapshotMode.AIRPORT && extras.flightsEnabled }
 
 /**
  * The RIDING map's two title lines: "SQ509 to SIN" over the airport's own display name. One line
@@ -4091,6 +4143,108 @@ internal fun upcomingEventsWithoutPreview(
     return upcomingEvents.filterNot {
         it.title == preview.flight.title && it.startEpochMillis == preview.flight.departureMillis
     }
+}
+
+/** The calendar card's padding on each side, shared by the composable and the height budget below. */
+internal const val CARD_PADDING_DP = 12f
+/** A card-footer chip row (health pills, custom pills) is 48 dp tall for the tap target. */
+internal const val CARD_CHIP_ROW_HEIGHT_DP = 48f
+private const val CARD_FOOTER_GAP_DP = 8f
+private const val CARD_CHIP_ROW_GAP_DP = 4f
+private const val UPCOMING_EVENT_GAP_DP = 4f
+private const val FLIGHT_PREVIEW_GAP_DP = 4f
+
+/**
+ * Line height per sp of font size. Measured on the owner's phone (One UI Sans), where an 11 sp line
+ * takes 14.3 dp and a 16 sp line 20.8 dp; Roboto's 1.17 would under-count there, and an estimate
+ * that runs high drops a line where one that runs low clips one mid-glyph.
+ */
+internal const val LINE_HEIGHT_PER_SP = 1.3f
+
+internal fun lineHeightDp(fontSizeSp: Int, textScale: Float): Float = fontSizeSp * textScale * LINE_HEIGHT_PER_SP
+
+/** Height of the calendar card's health footer, mirroring what [CalendarEmptyCard] draws under the body. */
+internal fun calendarCardFooterHeightDp(
+    hasLineLabel: Boolean,
+    hasChips: Boolean,
+    hasCustomPills: Boolean,
+    textScale: Float,
+): Float {
+    if (!hasLineLabel && !hasChips && !hasCustomPills) {
+        return 0f
+    }
+    var height = CARD_FOOTER_GAP_DP
+    if (hasLineLabel) {
+        height += lineHeightDp(10, textScale)
+    }
+    if (hasChips) {
+        height += CARD_CHIP_ROW_HEIGHT_DP
+    }
+    if (hasCustomPills) {
+        height += CARD_CHIP_ROW_HEIGHT_DP + if (hasChips) CARD_CHIP_ROW_GAP_DP else 0f
+    }
+    return height
+}
+
+/** Height of the flight row ([FlightPreviewRow]) or the merged block ([FlightPreviewBlockView]) above the "Next up" section. */
+internal fun flightPreviewHeightDp(merged: Boolean, showDetail: Boolean, large: Boolean, textScale: Float): Float {
+    val fontSizes = if (merged) {
+        listOfNotNull(11, 14, 28, 11.takeIf { showDetail }, 10.takeIf { large }, 10)
+    } else {
+        // The row's title and its detail line may each wrap to two lines.
+        listOfNotNull(14, 14, 12.takeIf { showDetail }, 12.takeIf { showDetail }, 10.takeIf { showDetail })
+    }
+    return fontSizes.sumOf { lineHeightDp(it, textScale).toDouble() }.toFloat() + FLIGHT_PREVIEW_GAP_DP
+}
+
+/** What the "Next up" section draws: how many events, how many title lines each, and the alarm line or not. */
+internal data class WindDownLayout(val eventCount: Int, val titleMaxLines: Int, val showAlarmLine: Boolean)
+
+/**
+ * The richest "Next up" section that fits [availableHeightDp], the body's share of the card after
+ * the padding, the health footer and any flight row. Richest first: both events with two-line
+ * titles and the alarm line, then one-line titles, then without the alarm line, then one event.
+ * The floor is one event with a one-line title, drawn even when nothing fits, because the next
+ * event is the card's point. Glance gives a weighted column exactly the leftover height and the
+ * launcher clips whatever runs past it, which is how a two-row footer on the owner's 4x2 used to
+ * cut the first event's time line in half.
+ */
+internal fun windDownLayout(
+    availableHeightDp: Float,
+    textScale: Float,
+    hasSleepCaption: Boolean,
+    hasAlarmLine: Boolean,
+    eventCount: Int,
+): WindDownLayout {
+    val candidates = buildList {
+        for (count in eventCount.coerceIn(1, UPCOMING_EVENT_LIMIT) downTo 1) {
+            add(WindDownLayout(count, titleMaxLines = 2, showAlarmLine = hasAlarmLine))
+            add(WindDownLayout(count, titleMaxLines = 1, showAlarmLine = hasAlarmLine))
+            if (hasAlarmLine) {
+                add(WindDownLayout(count, titleMaxLines = 1, showAlarmLine = false))
+            }
+        }
+    }
+    return candidates.firstOrNull { windDownHeightDp(it, textScale, hasSleepCaption) <= availableHeightDp }
+        ?: candidates.last()
+}
+
+/** The body height [layout] needs, counting the sleep caption that shares the body with the section. */
+internal fun windDownHeightDp(layout: WindDownLayout, textScale: Float, hasSleepCaption: Boolean): Float {
+    var height = lineHeightDp(11, textScale)
+    if (hasSleepCaption) {
+        height += lineHeightDp(11, textScale)
+    }
+    repeat(layout.eventCount) { index ->
+        if (index > 0) {
+            height += UPCOMING_EVENT_GAP_DP
+        }
+        height += layout.titleMaxLines * lineHeightDp(16, textScale) + lineHeightDp(14, textScale)
+    }
+    if (layout.showAlarmLine) {
+        height += lineHeightDp(11, textScale)
+    }
+    return height
 }
 
 /**

@@ -70,6 +70,10 @@ object AirportBoundaryScheduler {
      */
     suspend fun ensureScheduled(context: Context, settings: AppSettings) {
         val appContext = context.applicationContext
+        if (!settings.flightsEnabled) {
+            cancel(appContext)
+            return
+        }
         val repo = SettingsRepository.get(appContext)
         val nowEpochMillis = System.currentTimeMillis()
         // CommuteScheduler.ensureScheduled is called from rememberCoroutineScope() in the settings

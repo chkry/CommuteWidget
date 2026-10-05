@@ -30,7 +30,7 @@ import com.crpakala.commutewidget.data.SettingsRepository
 
 /**
  * Sprint 4: the settings screen host. Android-Settings-style reorganization of the former
- * ~1500-line monolith into a pure category menu (8 rows, each with a live one-line summary) that
+ * ~1500-line monolith into a pure category menu (9 rows, each with a live one-line summary) that
  * opens per-category screens defined in their own files under `ui/`. Navigation is hand-rolled -
  * a single [rememberSaveable] [AppScreen] value, no navigation library - with system back and the
  * top bar's back arrow both returning to the menu (Health > Experimental nudges is the one nested
@@ -55,6 +55,7 @@ private enum class AppScreen {
     PLACES_MAPS,
     ALERTS_TIMING,
     CALENDAR,
+    FLIGHTS,
     REMINDERS,
     HEALTH,
     EXPERIMENTAL_NUDGES,
@@ -68,6 +69,7 @@ private fun titleFor(screen: AppScreen): String = when (screen) {
     AppScreen.PLACES_MAPS -> "Places & Maps"
     AppScreen.ALERTS_TIMING -> "Alerts & timing"
     AppScreen.CALENDAR -> "Calendar"
+    AppScreen.FLIGHTS -> "Flights"
     AppScreen.REMINDERS -> "Reminders"
     AppScreen.HEALTH -> "Health"
     AppScreen.EXPERIMENTAL_NUDGES -> "Experimental nudges"
@@ -127,6 +129,9 @@ private fun SettingsScreen() {
                 settings, repository, scope, applicationContext, padding,
                 onNavigateToAccessInfo = { screen = AppScreen.ACCESS_APP_INFO },
             )
+            AppScreen.FLIGHTS -> FlightsScreen(
+                settings, repository, scope, snackbarHostState, applicationContext, padding,
+            )
             AppScreen.REMINDERS -> RemindersScreen(
                 settings, repository, scope, applicationContext, padding,
             )
@@ -175,6 +180,11 @@ private fun HomeMenu(settings: AppSettings, padding: PaddingValues, onNavigate: 
         item {
             CategoryRow("\uD83D\uDCC5", "Calendar", calendarSummary(settings)) {
                 onNavigate(AppScreen.CALENDAR)
+            }
+        }
+        item {
+            CategoryRow("\u2708", "Flights", flightsSummary(settings)) {
+                onNavigate(AppScreen.FLIGHTS)
             }
         }
         item {

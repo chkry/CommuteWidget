@@ -72,17 +72,6 @@ fun PlacesMapsScreen(
             )
         }
         item {
-            FlightStatusKeySection(
-                savedKey = settings.flightStatusApiKey,
-                onSave = { apiKey ->
-                    scope.launch {
-                        repository.setFlightStatusApiKey(apiKey)
-                        snackbarHostState.showSnackbar("Flight status key saved")
-                    }
-                },
-            )
-        }
-        item {
             FavouritesSection(
                 favourites = settings.favourites,
                 travelMode = settings.travelMode,
@@ -119,35 +108,6 @@ internal fun ApiKeySection(savedKey: String, onSave: (String) -> Unit) {
         )
         Text(
             "Google Maps Platform key with Routes, Static Maps and Geocoding enabled",
-            style = MaterialTheme.typography.bodySmall,
-        )
-        Button(onClick = { onSave(apiKey.trim()) }) {
-            Text("Save key")
-        }
-    }
-}
-
-@Composable
-internal fun FlightStatusKeySection(savedKey: String, onSave: (String) -> Unit) {
-    var apiKey by remember(savedKey) { mutableStateOf(savedKey) }
-    var visible by remember { mutableStateOf(false) }
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Flight status", style = MaterialTheme.typography.titleMedium)
-        OutlinedTextField(
-            value = apiKey,
-            onValueChange = { apiKey = it },
-            label = { Text("AirLabs API key") },
-            visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
-            trailingIcon = {
-                TextButton(onClick = { visible = !visible }) {
-                    Text(if (visible) "Hide" else "Show")
-                }
-            },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Text(
-            "Used for live flight status on the airport card. Free keys have a fixed total query budget.",
             style = MaterialTheme.typography.bodySmall,
         )
         Button(onClick = { onSave(apiKey.trim()) }) {

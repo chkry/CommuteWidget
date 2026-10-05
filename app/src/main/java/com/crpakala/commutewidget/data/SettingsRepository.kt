@@ -90,6 +90,7 @@ private object PreferenceKeys {
     val COMMUTE_PROBE_JSON = stringPreferencesKey("commute_probe_json")
     val AIRPORT_STATE_JSON = stringPreferencesKey("airport_state_json")
     val AIRPORT_DISMISSED_JSON = stringPreferencesKey("airport_dismissed_json")
+    val FLIGHTS_ENABLED = booleanPreferencesKey("flights_enabled")
     val AIRPORT_PILL_LEAD_MINUTES = intPreferencesKey("airport_pill_lead_minutes")
     val AIRPORT_ARRIVE_AHEAD_MINUTES = intPreferencesKey("airport_arrive_ahead_minutes")
     val AIRPORT_DEPARTURE_JSON = stringPreferencesKey("airport_departure_json")
@@ -162,6 +163,7 @@ private fun Preferences.toAppSettings(): AppSettings {
         customPills = decodeCustomPills(this[PreferenceKeys.CUSTOM_PILLS_JSON]),
         customPillActiveWindowMinutes =
             this[PreferenceKeys.CUSTOM_PILL_ACTIVE_WINDOW_MINUTES] ?: 60,
+        flightsEnabled = this[PreferenceKeys.FLIGHTS_ENABLED] ?: true,
         airportPillLeadMinutes = this[PreferenceKeys.AIRPORT_PILL_LEAD_MINUTES] ?: 300,
         airportArriveAheadMinutes = this[PreferenceKeys.AIRPORT_ARRIVE_AHEAD_MINUTES] ?: 180,
         flightStatusApiKey = this[PreferenceKeys.FLIGHT_STATUS_API_KEY] ?: "",
@@ -403,6 +405,12 @@ class SettingsRepository private constructor(
             }
         }
         return changed
+    }
+
+    suspend fun setFlightsEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.FLIGHTS_ENABLED] = enabled
+        }
     }
 
     suspend fun setAirportPillLeadMinutes(minutes: Int) {
