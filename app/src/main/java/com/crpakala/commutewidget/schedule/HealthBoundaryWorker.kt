@@ -31,6 +31,7 @@ import kotlinx.coroutines.withContext
 import java.time.Duration
 import java.time.ZoneId
 import java.time.ZonedDateTime
+import java.time.temporal.ChronoUnit
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -315,5 +316,7 @@ internal fun healthBoundaryMinutesOfDay(
     }
 }.distinct().sorted()
 
+// A candidate past 1439 is a window end at or past midnight (a 23:30 water slot's active window
+// ends at minute 1440), so it rolls into the next day instead of asking for hour 24, which threw.
 private fun atMinuteOfDay(base: ZonedDateTime, minuteOfDay: Int): ZonedDateTime =
-    base.withHour(minuteOfDay / 60).withMinute(minuteOfDay % 60).withSecond(0).withNano(0)
+    base.truncatedTo(ChronoUnit.DAYS).plusMinutes(minuteOfDay.toLong())

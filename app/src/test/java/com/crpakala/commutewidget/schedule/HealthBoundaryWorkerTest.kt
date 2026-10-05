@@ -50,6 +50,16 @@ class HealthBoundaryWorkerTest {
     }
 
     @Test
+    fun waterSlotActiveWindowEndPastMidnight_rollsIntoNextDayInsteadOfThrowing() {
+        val settings = allDisabled.copy(waterRemindersEnabled = true)
+        // A 23:30 slot's 30-minute active window ends at minute 1440, which used to reach withHour(24).
+        val dayState = HealthDayState(date = "2026-08-31", waterSlotPlanMinutes = listOf(1410))
+        val result = nextHealthBoundary(at(23, 40), settings, dayState)
+
+        assertEquals(ZonedDateTime.of(2026, 9, 1, 0, 0, 0, 0, zone), result)
+    }
+
+    @Test
     fun waterMeetingEdgeInsideActiveWindow_isIncludedAndPickedBeforeSlotEnd() {
         val settings = allDisabled.copy(waterRemindersEnabled = true)
         val dayState = HealthDayState(date = "2026-08-31", waterSlotPlanMinutes = listOf(480))
