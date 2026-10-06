@@ -1,6 +1,7 @@
 package com.crpakala.commutewidget.engine
 
 import com.crpakala.commutewidget.calendar.FlightEvent
+import com.crpakala.commutewidget.calendar.TodayEvent
 import com.crpakala.commutewidget.data.AirportState
 import com.crpakala.commutewidget.data.FlightPreview
 import com.crpakala.commutewidget.data.FlightStatus
@@ -74,18 +75,40 @@ class FlightPreviewLogicTest {
         lastStatusFetchedAtMillis = fetchedAtMillis,
     )
 
+    private fun headline(title: String = "SQ509 to Singapore", startEpochMillis: Long): TodayEvent = TodayEvent(
+        title = title,
+        location = null,
+        startEpochMillis = startEpochMillis,
+        endEpochMillis = startEpochMillis + hour,
+    )
+
+    private fun select(
+        flights: List<FlightEvent>,
+        headlineEvent: TodayEvent? = null,
+        pillLeadMinutes: Int = 300,
+        dismissedEventIds: Set<Long> = emptySet(),
+    ): FlightEvent? = selectPreviewFlight(
+        flights = flights,
+        nowEpochMillis = NOW,
+        headlineEvent = headlineEvent,
+        pillLeadMinutes = pillLeadMinutes,
+        arriveAheadMinutes = 180,
+        dismissedEventIds = dismissedEventIds,
+        state = null,
+    )
+
     @Test
-    fun selectPreviewFlight_picksTheEarliestFlightStillAhead() {
-        val soon = flight(eventId = 1L, departureMillis = NOW + 30 * hour)
-        val later = flight(eventId = 2L, departureMillis = NOW + 200 * hour)
-        assertEquals(soon, selectPreviewFlight(listOf(later, soon), NOW))
+    fun selectPreviewFlight_picksTheEarliestNearFlight() {
+        val soon = flight(eventId = 1L, departureMillis = NOW + 3 * hour)
+        val later = flight(eventId = 2L, departureMillis = NOW + 6 * hour)
+        assertEquals(soon, select(listOf(later, soon)))
     }
 
     @Test
     fun selectPreviewFlight_skipsDepartedFlights() {
         val departed = flight(eventId = 1L, departureMillis = NOW - hour)
         val ahead = flight(eventId = 2L, departureMillis = NOW + 5 * hour)
-        assertEquals(ahead, selectPreviewFlight(listOf(departed, ahead), NOW))
+        assertEquals(ahead, select(listOf(departed, ahead)))
     }
 
     /** Done ends the takeover, not the row: the dismissed flight keeps the preview it had. */
@@ -93,20 +116,76 @@ class FlightPreviewLogicTest {
     fun selectPreviewFlight_picksADismissedFlightThatIsStillAhead() {
         val dismissed = flight(eventId = 1L, departureMillis = NOW + 5 * hour)
         val ahead = flight(eventId = 2L, departureMillis = NOW + 50 * hour)
-        assertEquals(dismissed, selectPreviewFlight(listOf(dismissed, ahead), NOW))
+        assertEquals(dismissed, select(listOf(dismissed, ahead), dismissedEventIds = setOf(1L)))
     }
 
     @Test
     fun selectPreviewFlight_nullWhenEveryFlightHasDeparted() {
         val departed = flight(eventId = 1L, departureMillis = NOW - hour)
         val alsoDeparted = flight(eventId = 2L, departureMillis = NOW - 5 * hour)
-        assertNull(selectPreviewFlight(listOf(departed, alsoDeparted), NOW))
-        assertNull(selectPreviewFlight(emptyList(), NOW))
+        assertNull(select(listOf(departed, alsoDeparted)))
+        assertNull(select(emptyList()))
     }
 
     @Test
     fun selectPreviewFlight_flightDepartingExactlyNowIsNotAhead() {
-        assertNull(selectPreviewFlight(listOf(flight(departureMillis = NOW)), NOW))
+        assertNull(select(listOf(flight(departureMillis = NOW))))
+    }
+
+    /** 2026-09-15: a 2 October flight sat under every card for weeks. */
+    @Test
+    fun selectPreviewFlight_hidesAFlightWeeksOut() {
+        val weeksOut = flight(departureMillis = NOW + 17 * 24 * hour)
+        assertNull(select(listOf(weeksOut)))
+        assertNull(select(listOf(weeksOut), headlineEvent = headline("R&D Offsite", NOW + 20 * hour)))
+    }
+
+    @Test
+    fun selectPreviewFlight_showsAFlightFromEightHoursBeforeDeparture() {
+        val atEightHours = flight(departureMillis = NOW + 8 * hour)
+        val justPastEightHours = flight(departureMillis = NOW + 8 * hour + 1)
+        assertEquals(atEightHours, select(listOf(atEightHours)))
+        assertNull(select(listOf(justPastEightHours)))
+    }
+
+    @Test
+    fun selectPreviewFlight_showsTodaysHeadlineFlightHoursAhead() {
+        val tonight = flight(departureMillis = NOW + 14 * hour)
+        assertEquals(tonight, select(listOf(tonight), headlineEvent = headline(startEpochMillis = NOW + 14 * hour)))
+    }
+
+    @Test
+    fun selectPreviewFlight_hidesAFlightBehindAnotherHeadlineEvent() {
+        val tonight = flight(departureMillis = NOW + 14 * hour)
+        assertNull(select(listOf(tonight), headlineEvent = headline("Standup", NOW + 2 * hour)))
+    }
+
+    @Test
+    fun selectPreviewFlight_headlineMatchNeedsTheSameStart() {
+        val tonight = flight(departureMillis = NOW + 14 * hour)
+        assertNull(select(listOf(tonight), headlineEvent = headline(startEpochMillis = NOW + 15 * hour)))
+    }
+
+    @Test
+    fun selectPreviewFlight_keepsAFlightWhoseLongPillLeadOpenedItsWindow() {
+        val nineHoursOut = flight(departureMillis = NOW + 9 * hour)
+        assertEquals(nineHoursOut, select(listOf(nineHoursOut), pillLeadMinutes = 600))
+        assertNull(select(listOf(nineHoursOut), pillLeadMinutes = 300))
+    }
+
+    @Test
+    fun selectPreviewFlight_keepsAConnectionWhoseLayoverWindowIsOpen() {
+        val inbound = flight(eventId = 1L, departureMillis = NOW - 5 * hour)
+        val onward = flight(eventId = 2L, departureMillis = NOW + 9 * hour)
+        assertEquals(onward, select(listOf(inbound, onward)))
+    }
+
+    @Test
+    fun selectPreviewFlight_keepsAConnectionOnceTheInboundLegWasDismissed() {
+        val inbound = flight(eventId = 1L, departureMillis = NOW - 2 * hour)
+        val onward = flight(eventId = 2L, departureMillis = NOW + 11 * hour)
+        assertEquals(onward, select(listOf(inbound, onward), dismissedEventIds = setOf(1L)))
+        assertNull(select(listOf(inbound, onward)))
     }
 
     @Test

@@ -4,7 +4,7 @@ import com.crpakala.commutewidget.calendar.FlightEvent
 import kotlinx.serialization.Serializable
 
 /**
- * The nearest upcoming flight as shown on the calendar card before airport mode opens at T-5h.
+ * The next flight, once it is near, as shown on the calendar card before airport mode opens at T-5h.
  * Exactly one is stored at a time (the flight [com.crpakala.commutewidget.engine.selectPreviewFlight]
  * picks), because the card only ever has room for one flight row and every stored preview costs
  * AirLabs queries to keep fresh.

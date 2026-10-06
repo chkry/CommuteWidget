@@ -1135,17 +1135,6 @@ object CommuteRefresher {
             calendarReader.hasPermission() &&
             settings.selectedCalendarIds.isNotEmpty()
 
-        // At most one AirLabs call per refresh, and only from here: every branch below reuses this
-        // single resolution, so no path can spend a second query.
-        val flightPreview = resolveFlightPreview(
-            repo = repo,
-            settings = settings,
-            flights = if (canReadCalendar) flights else emptyList(),
-            dismissedEventIds = dismissedEventIds,
-            zone = now.zone,
-            nowEpochMillis = nowEpochMillis,
-        )
-
         val event: TodayEvent? = if (canReadCalendar) {
             calendarReader.nextEventToday(
                 settings.selectedCalendarIds,
@@ -1157,6 +1146,19 @@ object CommuteRefresher {
         } else {
             null
         }
+
+        // At most one AirLabs call per refresh, and only from here: every branch below reuses this
+        // single resolution, so no path can spend a second query. It runs after the event read
+        // because a flight that is today's headline event earns the row however far off it is.
+        val flightPreview = resolveFlightPreview(
+            repo = repo,
+            settings = settings,
+            flights = if (canReadCalendar) flights else emptyList(),
+            dismissedEventIds = dismissedEventIds,
+            headlineEvent = event,
+            zone = now.zone,
+            nowEpochMillis = nowEpochMillis,
+        )
 
         if (event == null) {
             if (inWindow) {
@@ -1368,10 +1370,10 @@ object CommuteRefresher {
      * Resolves the calendar card's flight row and persists it, spending at most one AirLabs query.
      * Called once per calendar refresh, before any branch, so no path can spend a second.
      *
-     * The row names [selectPreviewFlight]'s pick from the caller's already-read flight list, for
-     * every upcoming flight including one already inside its airport window or already dismissed:
-     * the row is what keeps the flight's data on the calendar card after Done ends the takeover.
-     * No flight at all clears the stored preview and renders nothing.
+     * The row names [selectPreviewFlight]'s pick from the caller's already-read flight list: the
+     * next flight once it is [headlineEvent], departs within eight hours, or has its airport window
+     * open, dismissed or not, so the row keeps the flight's data on the card after Done ends the
+     * takeover. No near flight clears the stored preview and renders nothing.
      *
      * A query is spent only when [previewFetchAllowed] and [shouldFetchPreview] both agree -
      * airport mode must not already be paying for this flight, and the stored preview must be new,
@@ -1395,10 +1397,20 @@ object CommuteRefresher {
         settings: AppSettings,
         flights: List<FlightEvent>,
         dismissedEventIds: Set<Long>,
+        headlineEvent: TodayEvent?,
         zone: ZoneId,
         nowEpochMillis: Long,
     ): FlightPreview? {
-        val flight = selectPreviewFlight(flights, nowEpochMillis)
+        val airportState = repo.airportState()
+        val flight = selectPreviewFlight(
+            flights = flights,
+            nowEpochMillis = nowEpochMillis,
+            headlineEvent = headlineEvent,
+            pillLeadMinutes = settings.airportPillLeadMinutes,
+            arriveAheadMinutes = settings.airportArriveAheadMinutes,
+            dismissedEventIds = dismissedEventIds,
+            state = airportState,
+        )
         return try {
             val stored = repo.flightPreview()
             if (flight == null) {
@@ -1413,7 +1425,7 @@ object CommuteRefresher {
             // own status is folded in on the same free terms.
             val carried = newerStatusForPreview(
                 (existing ?: FlightPreview(eventId = flight.eventId, flight = flight)).copy(flight = flight),
-                repo.airportState(),
+                airportState,
             )
             val mayFetch = previewFetchAllowed(
                 flight,

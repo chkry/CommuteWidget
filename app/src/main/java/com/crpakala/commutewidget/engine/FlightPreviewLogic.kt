@@ -1,27 +1,30 @@
 package com.crpakala.commutewidget.engine
 
 import com.crpakala.commutewidget.calendar.FlightEvent
+import com.crpakala.commutewidget.calendar.TodayEvent
 import com.crpakala.commutewidget.data.AirportState
 import com.crpakala.commutewidget.data.FlightPreview
 
 /**
  * Pure decision logic for the calendar card's flight row: which upcoming flight it names, when that
- * flight is worth an AirLabs query, and what a tap on the row does. The row is resolved for every
- * upcoming flight, dismissed or not and window open or not - it simply is not on screen while
- * airport mode owns the widget, because the calendar card is not rendered then. The only budget
- * that matters throughout is the owner's 1000 lifetime AirLabs queries.
+ * flight is worth an AirLabs query, and what a tap on the row does. The row names only a near
+ * flight, dismissed or not and window open or not - it simply is not on screen while airport mode
+ * owns the widget, because the calendar card is not rendered then. The only budget that matters
+ * throughout is the owner's 1000 lifetime AirLabs queries.
  *
  * No I/O, no clock reads, no persistence - the refresher owns all three.
  */
 
 /**
- * How far ahead the calendar is read for flights. Deliberately far wider than airport mode's own
- * seven days: the row exists to surface a flight that is still weeks out, and it is the same
- * single provider query either way ([com.crpakala.commutewidget.calendar.CalendarReader.upcomingFlights]),
- * so a wider read costs nothing extra. [selectActiveFlight] only ever considers flights whose
- * window has already opened, so the wider list cannot change airport mode's takeover decision.
+ * How far ahead the calendar is read for flights. It is one provider query whatever the width
+ * ([com.crpakala.commutewidget.calendar.CalendarReader.upcomingFlights]), and [selectActiveFlight]
+ * and [selectPreviewFlight] each gate on nearness themselves, so the wide read cannot put a far
+ * flight on the widget.
  */
 internal const val FLIGHT_PREVIEW_LOOKAHEAD_DAYS = 45
+
+/** A flight that is not today's headline event earns the row this close to departure. */
+private const val PREVIEW_SHOWN_WITHIN_MILLIS = 8 * 60 * 60_000L
 
 /** Departure horizon that splits the two refresh cadences below. */
 private const val PREVIEW_NEAR_DEPARTURE_MILLIS = 48 * 60 * 60_000L
@@ -33,20 +36,44 @@ private const val PREVIEW_FAR_INTERVAL_MILLIS = 72 * 60 * 60_000L
 private const val PREVIEW_NEAR_INTERVAL_MILLIS = 24 * 60 * 60_000L
 
 /**
- * The flight the row names: the earliest one still ahead of [nowEpochMillis]. A flight that has
- * already departed is never previewed - the row is about what is coming.
+ * The flight the row names: the earliest one still ahead of [nowEpochMillis] that is also near.
+ * Near means it is [headlineEvent], the next event on today's calendar card, or it departs within
+ * [PREVIEW_SHOWN_WITHIN_MILLIS], or its airport window is open. A flight days out stays off the
+ * card (owner ruling 2026-10-06), and a departed flight is never previewed.
  *
- * Dismissal is deliberately not consulted. Done ends the map and card takeover for a flight
- * ([selectActiveFlight] does honour the dismissed set); it does not mean the owner stopped caring
- * about the flight, and dropping the row would demote today's boarding pass to a bare calendar
- * title while a flight weeks out took the row.
+ * The open window counts because a long pill lead or a long layover can open it before the eight
+ * hours, and the row is where a Done tap on that flight is undone ([previewTapOutcome]).
+ *
+ * Dismissal never drops a flight from the row, and [dismissedEventIds] only feeds the layover
+ * window check. Done ends the map and card takeover for a flight ([selectActiveFlight] does honour
+ * the dismissed set); it does not mean the owner stopped caring about the flight, and dropping the
+ * row would demote today's boarding pass to a bare calendar title.
  */
 internal fun selectPreviewFlight(
     flights: List<FlightEvent>,
     nowEpochMillis: Long,
+    headlineEvent: TodayEvent?,
+    pillLeadMinutes: Int,
+    arriveAheadMinutes: Int,
+    dismissedEventIds: Set<Long>,
+    state: AirportState?,
 ): FlightEvent? = flights
     .filter { it.departureMillis > nowEpochMillis }
+    .filter { flight ->
+        isCalendarEntryOf(headlineEvent, flight) ||
+            flight.departureMillis - nowEpochMillis <= PREVIEW_SHOWN_WITHIN_MILLIS ||
+            airportWindowIsOpen(
+                airportWindowFor(flight, pillLeadMinutes, arriveAheadMinutes, flights),
+                state,
+                nowEpochMillis,
+                dismissedEventIds,
+            )
+    }
     .minByOrNull { it.departureMillis }
+
+/** True when [event] is [flight]'s own calendar entry, matched on title and start like the card's headline merge. */
+private fun isCalendarEntryOf(event: TodayEvent?, flight: FlightEvent): Boolean =
+    event != null && event.title.trim() == flight.title.trim() && event.startEpochMillis == flight.departureMillis
 
 /**
  * How long a stored preview stays fresh. More than 48 hours from departure a schedule is a
